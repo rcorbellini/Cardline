@@ -9,6 +9,9 @@ Começando por **Disney Lorcana**: você envia o vídeo abrindo o booster e o ca
 4. compara com o valor pago pelo booster (resultado da abertura);
 5. renderiza o vídeo de volta com overlay: preço de cada carta quando ela aparece e o total do booster somando.
 
+Também dá para **cadastrar cartas que você já tem**: grave as cartas uma por uma e o cardline identifica,
+precifica e registra na coleção, sem valor pago e sem vídeo de saída.
+
 <p align="center">
   <img src="docs/demo.gif" width="360" alt="Abertura de um booster com o overlay do cardline: etiqueta com raridade e preço em cada carta revelada, total do booster somando no topo e resumo final com todas as cartas">
 </p>
@@ -32,7 +35,8 @@ são atualizados no próprio passo de preços, então o `sync` só precisa rodar
 uv run cardline serve         # abre a página em http://localhost:8000
 ```
 
-Sem a página, pelo terminal: `uv run cardline process videos/abertura.mp4 --paid 34.90` (e `cardline list`).
+Sem a página, pelo terminal: `uv run cardline process videos/abertura.mp4 --paid 34.90` para uma abertura,
+`uv run cardline process videos/colecao.mp4 --cadastro` para um cadastro, e `cardline list` para ver as pipelines.
 
 ### Como gravar
 
@@ -54,9 +58,13 @@ abaixo são do booster de exemplo.
 
 ![Aba Resumo: valor da coleção, cartas, únicas, foils, investido em boosters e resultado, com o gráfico de gasto vs valor das cartas](docs/pagina-resumo.jpg)
 
-O valor da coleção, o total investido em boosters e o resultado. O gráfico **Gasto vs valor das cartas**
-acumula, abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e valem hoje. Ele tem
-tooltip (também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
+O valor da coleção (somando tudo, com o detalhe de quanto vem de aberturas, de cadastros e de cartas avulsas),
+o total investido em boosters e o resultado das aberturas. O gráfico **Gasto vs valor das cartas** acumula,
+abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e valem hoje. Ele tem tooltip
+(também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
+
+Cadastros de coleção **não entram** no investido, no resultado nem no gráfico: são cartas que você já tinha,
+sem custo, e entrariam como valor sem gasto, inflando o resultado das aberturas.
 
 **Atualizar preços**, ao lado da data dos preços, busca os preços de mercado de hoje das cartas da
 coleção. O valor de cada carta **no momento da abertura** fica guardado e não muda, nem com esse botão
@@ -66,14 +74,19 @@ nem ao reprocessar uma pipeline. É ele que aparece no vídeo e em "Na abertura"
 
 ![Formulário de nova pipeline: área para arrastar o vídeo, valor pago com moeda, set, moeda do vídeo e opções de overlay e conferência com IA local](docs/pagina-nova.jpg)
 
-1. Clique em **+ Nova pipeline** e arraste o vídeo da abertura (MP4 ou MOV, do jeito que sai do celular).
-2. Informe o **valor pago** pelo(s) booster(s), em R$ ou US$. É opcional e pode ser preenchido depois.
-3. **Set dos boosters**: deixe em "Detectar automaticamente" ou escolha o set.
-4. Escolha a **moeda do vídeo com overlay** e se quer gerar o vídeo.
+1. Clique em **+ Nova pipeline** e escolha o tipo:
+   - **Abertura de booster**: identifica, precifica e registra as cartas abertas, compara com o valor pago e
+     gera o vídeo com overlay.
+   - **Cadastro de coleção**: para cartas que você já tem. Identifica, precifica e registra na coleção, sem
+     valor pago e sem vídeo. Como não há booster, a foil não é deduzida: marque as foils pela edição.
+2. Arraste o vídeo (MP4 ou MOV, do jeito que sai do celular).
+3. Na abertura, informe o **valor pago** pelo(s) booster(s), em R$ ou US$. É opcional e pode ser preenchido depois.
+4. **Set das cartas**: deixe em "Detectar automaticamente" ou escolha o set. Na abertura, escolha também a
+   **moeda do vídeo com overlay** e se quer gerar o vídeo.
 5. **Conferir com IA local** só fica habilitado com o Ollama rodando. Com `verify_model` no
    `cardline.toml`, ele já vem marcado.
-6. **Enviar e processar**: a barra mostra o envio. Ao terminar, a página abre a pipeline e acompanha o
-   progresso sozinha.
+6. **Enviar e processar** (ou **Enviar e cadastrar**): a barra mostra o envio. Ao terminar, a página abre a
+   pipeline e acompanha o progresso sozinha.
 
 Um vídeo que já foi processado é recusado, com um link para a pipeline original.
 
@@ -81,8 +94,10 @@ Um vídeo que já foi processado é recusado, com um link para a pipeline origin
 
 ![Lista de pipelines: cada abertura com status, miniaturas das cartas, valor pago, valor de hoje e resultado](docs/pagina-pipelines.jpg)
 
-A lista mostra cada abertura com o status (na fila, rodando, concluída, falhou, interrompida ou
-desatualizada), o progresso ao vivo, as miniaturas das cartas, o valor pago, o valor de hoje e o resultado.
+A lista mostra cada pipeline com o tipo, o status (na fila, rodando, concluída, falhou, interrompida ou
+desatualizada), o progresso ao vivo, as miniaturas das cartas e os valores: pago, hoje e resultado numa
+abertura; no cadastro e hoje num cadastro. O filtro no topo separa **Todas**, **Aberturas** e **Cadastros**.
+O detalhe de um cadastro tem o mesmo editar/remover por deslize e o mesmo reprocessar, mas sem vídeo.
 
 ![Detalhe de uma pipeline: valor pago, valor das cartas e resultado; cartas com o recorte do vídeo ao lado da imagem oficial; passos com tempo de cada um; vídeo com overlay](docs/pagina-pipeline.jpg)
 
@@ -137,7 +152,7 @@ no túnel, ou só redes de confiança.
 | GET | `/api/collection` | cartas da coleção, agrupadas por carta e acabamento, com as cópias |
 | GET | `/api/runs` | pipelines com status, progresso e valores |
 | GET | `/api/runs/{id}` | detalhe: passos, cartas e log |
-| POST | `/api/runs?filename=…&paid=…&paid_currency=BRL` | cria a pipeline; o corpo da requisição é o vídeo |
+| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL` | cria a pipeline (`kind`: `abertura` ou `cadastro`); o corpo da requisição é o vídeo |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}` e/ou `{"currency": "BRL"}` (moeda do vídeo); só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
@@ -157,6 +172,8 @@ no túnel, ou só redes de confiança.
 | Atualizar preços | busca os preços de hoje do set e fixa o preço da abertura de cada carta (foil ou não); ao reprocessar, o preço da abertura é mantido, e uma carta nova recebe o preço do dia da abertura | `scan.json` |
 | Registrar na coleção | substitui as cartas que esta pipeline tinha registrado | banco |
 | Gerar vídeo com overlay | vídeo 1080×1920 com etiquetas, total animado e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` |
+
+Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo).
 
 Cada passo grava seu estado. Se algo falhar ou o servidor cair, a pipeline pode **continuar de onde parou**,
 e qualquer pipeline pode **rodar de novo a partir de um passo** (na página ou com `cardline run ID --from passo`).

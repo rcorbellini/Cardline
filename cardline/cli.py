@@ -36,6 +36,7 @@ def cmd_process(s: Settings, a: argparse.Namespace) -> None:
         run_id = create_run(
             s, Path(a.video), paid=a.paid, paid_currency=a.paid_currency, set_hint=a.set,
             overlay=not a.no_overlay, verify=a.verify, currency=a.currency,
+            kind="cadastro" if a.cadastro else "abertura",
         )
     except DuplicateVideo as e:
         raise SystemExit(f"{e} Para reprocessar: cardline run {e.run_id} --from scan") from e
@@ -62,7 +63,7 @@ def cmd_list(s: Settings, a: argparse.Namespace) -> None:
         cards = load_scan(folder)["cards"] if (folder / "scan.json").exists() else []
         value = sum(c.get("price_usd") or 0 for c in cards)
         paid = f"pago {r['paid']:.2f} {r['paid_currency']}" if r["paid"] else "sem valor pago"
-        print(f"#{r['id']:<4} {r['status']:<11} {r['created_at'][:16]}  {r['video_name']:<34} "
+        print(f"#{r['id']:<4} {r['kind']:<9} {r['status']:<11} {r['created_at'][:16]}  {r['video_name']:<34} "
               f"{len(cards):>3} cartas  US$ {value:7.2f}  {paid}")
 
 
@@ -104,6 +105,8 @@ def main(argv: list[str] | None = None) -> None:
 
     sp = sub.add_parser("process", help="cria uma pipeline para um vídeo e roda tudo (sem o servidor)")
     sp.add_argument("video")
+    sp.add_argument("--cadastro", action="store_true",
+                    help="cadastro de coleção: só identifica e registra as cartas (sem valor pago nem vídeo)")
     sp.add_argument("--paid", type=float, help="valor pago pelos boosters do vídeo")
     sp.add_argument("--paid-currency", default="BRL", choices=["BRL", "USD"], help="moeda do valor pago (padrão BRL)")
     sp.add_argument("--set", help="set(s) do booster, ex.: 1 (padrão: detecta automaticamente)")

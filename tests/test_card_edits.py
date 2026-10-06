@@ -149,3 +149,44 @@ def test_api_edit_card_foil(settings, run):
         assert [c["uid"] for c in detail["cards"] if c["foil"]] == ["02"]
         assert client.patch(f"/api/runs/{run}/cards/02", json={}).status_code == 400
         assert client.patch(f"/api/runs/{run}/cards/99", json={"foil": True}).status_code == 404
+
+
+def test_cadastro_has_no_boosters_nor_deduced_foil(settings, tmp_path):
+    rar = ["Common"] * 6 + ["Uncommon"] * 3 + ["Rare", "Rare"] + ["Uncommon"]
+    scan = {**scan_with([{**card(n, float(n)), "rarity": r} for n, r in enumerate(rar, 1)]), "kind": "cadastro"}
+    _renumber(scan, 12)
+    assert all(c["pack"] is None for c in scan["cards"])
+    assert [c["slot"] for c in scan["cards"]] == list(range(1, 13))
+    assert not any(c["foil"] for c in scan["cards"])
+
+
+def test_marking_foil_in_cadastro_does_not_touch_other_cards(settings, tmp_path):
+    cards = [{**card(n, float(n)), "foil": n == 2, "foil_reason": "manual" if n == 2 else None} for n in range(1, 4)]
+    save_scan(tmp_path, {**scan_with(cards), "kind": "cadastro"})
+    set_card_foil(settings, tmp_path, "01", True)
+    assert [c["uid"] for c in load_scan(tmp_path)["cards"] if c["foil"]] == ["01", "02"]
+
+
+def test_api_rejects_unknown_kind_and_paid_on_cadastro(settings, tmp_path):
+    video = tmp_path / "cadastro.mp4"
+    video.write_bytes(b"outro video")
+    run_id = pipeline.create_run(settings, video, kind="cadastro")
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/runs?filename=x.mp4&kind=troca", content=b"x").status_code == 400
+        assert client.patch(f"/api/runs/{run_id}", json={"paid": 10}).status_code == 400
+        assert [s["name"] for s in client.get(f"/api/runs/{run_id}").json()["steps"]] == ["scan", "verify", "prices", "commit"]
+
+
+def test_api_detail_of_a_cadastro_without_boosters(settings, tmp_path):
+    video = tmp_path / "cadastro.mp4"
+    video.write_bytes(b"mais um video")
+    run_id = pipeline.create_run(settings, video, kind="cadastro")
+    cards = [{**card(n, float(n)), "pack": None, "slot": n} for n in (1, 2)]
+    save_scan(settings.runs_dir / str(run_id), {**scan_with(cards), "kind": "cadastro"})
+    con = db.connect(settings.db_path)
+    with con:
+        con.executemany("INSERT INTO cards(id, set_code, number, name, rarity) VALUES (?, '1', ?, ?, 'Common')",
+                        [("crd_1", "1", "Carta 1"), ("crd_2", "2", "Carta 2")])
+    with TestClient(create_app(settings)) as client:
+        detail = client.get(f"/api/runs/{run_id}").json()
+    assert detail["packs"] == 0 and detail["n_cards"] == 2

@@ -85,15 +85,21 @@ function buildEntries() {
 function renderStats() {
   const total = entries.reduce((s, e) => s + e.value, 0);
   const qty = entries.reduce((s, e) => s + e.qty, 0);
-  const paidRuns = S.runs.filter(r => r.paid_usd != null && r.value_now != null);
+  const paidRuns = S.runs.filter(r => r.kind === 'abertura' && r.paid_usd != null && r.value_now != null);
   const invested = paidRuns.reduce((s, r) => s + r.paid_usd, 0);
   const result = paidRuns.reduce((s, r) => s + r.value_now, 0) - invested;
+  // de onde vem o valor da coleção: aberturas, cadastros ou cartas avulsas
+  const kindOf = Object.fromEntries(S.runs.map(r => [r.id, r.kind]));
+  const origin = { abertura: 0, cadastro: 0, avulsa: 0 };
+  for (const e of entries) for (const x of e.copies) origin[x.run ? kindOf[x.run] || 'abertura' : 'avulsa'] += e.price ?? 0;
+  const parts = [['abertura', 'de aberturas'], ['cadastro', 'de cadastros'], ['avulsa', 'avulsas']].filter(([k]) => origin[k] > 0);
+  const breakdown = parts.length > 1 ? parts.map(([k, label]) => `${money(origin[k])} ${label}`).join(' · ') : '';
   patch($('#stats'), [
-    ['main', 'Valor da coleção', money(total)], ['', 'Cartas', qty], ['', 'Únicas', new Set(entries.map(e => e.card)).size],
+    ['main', 'Valor da coleção', money(total), breakdown], ['', 'Cartas', qty], ['', 'Únicas', new Set(entries.map(e => e.card)).size],
     ['', 'Foils', entries.filter(e => e.foil).reduce((s, e) => s + e.qty, 0)],
     ['', 'Investido em boosters', paidRuns.length ? money(invested) : '—'],
-    ['', 'Resultado', paidRuns.length ? `<span class="${cls(result)}">${money(result, true)}</span>` : '—'],
-  ].map(([c, k, v]) => `<div class="stat ${c}"><small>${k}</small><b class="num">${v}</b></div>`).join(''));
+    ['', 'Resultado das aberturas', paidRuns.length ? `<span class="${cls(result)}">${money(result, true)}</span>` : '—'],
+  ].map(([c, k, v, sub]) => `<div class="stat ${c}"><small>${k}</small><b class="num">${v}</b>${sub ? `<span class="breakdown">${sub}</span>` : ''}</div>`).join(''));
   const brl = S.meta.rates.BRL;
   $('#updated').textContent = `Preços de mercado TCGplayer via Lorcast, atualizados em ${dt(S.meta.prices_updated_at)}` +
     (brl ? ` · US$ 1 = R$ ${nf.format(brl)} (${S.meta.rate_day.split('-').reverse().join('/')})` : '') + '.';
@@ -175,11 +181,13 @@ function openCard(e) {
   const c = e.c, r = rar(c.rarity);
   const copies = e.copies.map(x => {
     const run = S.runs.find(r => r.id === x.run);
+    const cadastro = run?.kind === 'cadastro';
+    const link = `<a href="#/pipelines/${x.run}" onclick="document.getElementById('dlg').close()">${cadastro ? 'Cadastro' : 'Abertura'} #${x.run}</a>`;
     const where = x.run
-      ? `<a href="#/pipelines/${x.run}" onclick="document.getElementById('dlg').close()">Pipeline #${x.run}</a> · ${dt(run?.recorded_at || run?.created_at)} · booster ${x.pack}, carta ${x.slot} (${nf.format(x.t)}s)`
+      ? `${link} · ${dt(run?.recorded_at || run?.created_at)} · ${x.pack ? `booster ${x.pack}, ` : ''}carta ${x.slot} (${nf.format(x.t)}s)`
       : `Adicionada à mão em ${dt(x.added)}`;
     const d = x.paid != null && e.price != null ? e.price - x.paid : 0;
-    return `<li>${where}<br><span class="muted">Na abertura: ${money(x.paid)} → hoje ${money(e.price)}</span>${x.paid ? ` <span class="${cls(d)}">${pctTxt(e.price, x.paid)}</span>` : ''}</li>`;
+    return `<li>${where}<br><span class="muted">${cadastro ? 'No cadastro' : x.run ? 'Na abertura' : 'Quando adicionada'}: ${money(x.paid)} → hoje ${money(e.price)}</span>${x.paid ? ` <span class="${cls(d)}">${pctTxt(e.price, x.paid)}</span>` : ''}</li>`;
   }).join('');
   $('#dlgbody').innerHTML = `
     <button class="iconbtn close" onclick="document.getElementById('dlg').close()" aria-label="Fechar">✕</button>
@@ -209,6 +217,9 @@ $('#dlg').addEventListener('click', ev => {
 
 // ---- lista de pipelines ----
 function statusChip(r) { return `<span class="status ${r.status}">${STATUS[r.status] || r.status}</span>`; }
+const KIND_LABEL = { abertura: 'Abertura de booster', cadastro: 'Cadastro de coleção' };
+function kindChip(r) { return `<span class="kindchip ${r.kind}">${KIND_LABEL[r.kind] || r.kind}</span>`; }
+let runKind = store.get('runkind', 'todas');
 function resultHtml(r) {
   if (r.paid_usd == null || r.value_now == null) return '';
   const d = r.value_now - r.paid_usd;
@@ -221,25 +232,40 @@ function progressHtml(r) {
   return `<div class="bar"><i style="width:${p}%"></i></div><div class="muted" style="font-size:13px">${esc(label)}</div>`;
 }
 function renderRuns() {
-  const head = `<div class="toolbar"><h2>Pipelines</h2><a class="btn" href="#/nova">+ Nova pipeline</a></div>`;
-  if (!S.runs.length) {
-    patch($('#view-pipelines'), head + '<p class="empty">Nenhuma pipeline ainda. Envie o vídeo de uma abertura em <a href="#/nova">Nova pipeline</a>.</p>');
+  const filters = [['todas', 'Todas'], ['abertura', 'Aberturas'], ['cadastro', 'Cadastros']];
+  const head = `<div class="toolbar"><h2>Pipelines</h2>
+    <div class="seg" role="group" aria-label="Tipo de pipeline">${filters.map(([k, label]) =>
+      `<button data-runkind="${k}" aria-pressed="${runKind === k}">${label}</button>`).join('')}</div>
+    <span class="spacer"></span><a class="btn" href="#/nova">+ Nova pipeline</a></div>`;
+  const list = S.runs.filter(r => runKind === 'todas' || r.kind === runKind);
+  if (!list.length) {
+    patch($('#view-pipelines'), head + `<p class="empty">${S.runs.length ? 'Nenhuma pipeline deste tipo.' : 'Nenhuma pipeline ainda.'}
+      Envie um vídeo em <a href="#/nova">Nova pipeline</a>.</p>`);
     return;
   }
-  patch($('#view-pipelines'), head + '<div class="runs">' + S.runs.map(r => `
+  patch($('#view-pipelines'), head + '<div class="runs">' + list.map(r => `
     <a class="panel runcard" href="#/pipelines/${r.id}">
-      <div class="runhead"><h3>#${r.id}</h3><span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
+      <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
         <span class="spacer"></span>${statusChip(r)}</div>
       ${progressHtml(r)}
       ${r.thumbs.length ? `<div class="thumbs">${r.thumbs.map(t => `<img loading="lazy" src="${esc(t)}" alt="">`).join('')}</div>` : ''}
       <div class="metrics">
         <span><small>Cartas</small><b>${r.n_cards || '—'}</b></span>
-        <span><small>Pago</small><b>${r.paid != null ? `${sym(r.paid_currency)} ${nf.format(r.paid)}` : '—'}</b></span>
+        ${r.kind === 'cadastro'
+          ? `<span><small>Valor no cadastro</small><b class="num">${money(r.value_open)}</b></span>`
+          : `<span><small>Pago</small><b>${r.paid != null ? `${sym(r.paid_currency)} ${nf.format(r.paid)}` : '—'}</b></span>`}
         <span><small>Valor hoje</small><b class="num">${money(r.value_now)}</b></span>
-        ${resultHtml(r)}
+        ${r.kind === 'abertura' ? resultHtml(r) : ''}
       </div>
     </a>`).join('') + '</div>');
 }
+$('#view-pipelines').addEventListener('click', ev => {
+  const b = ev.target.closest('[data-runkind]');
+  if (!b) return;
+  runKind = b.dataset.runkind;
+  store.set('runkind', runKind);
+  renderRuns();
+});
 
 // ---- detalhe da pipeline ----
 function runSkeleton() {
@@ -259,24 +285,31 @@ let editingPaid = false;
 function renderRun() {
   const r = S.run;
   if (!r || r.id !== S.runId) return;
-  const steps = S.meta.steps;
+  const steps = r.steps;  // os passos deste tipo de pipeline
+  const cadastro = r.kind === 'cadastro';
   const canRun = !active(r);
   const resumeLabel = steps.find(s => s.name === r.resume_from)?.label;
-  patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${statusChip(r)}<span class="spacer"></span>
+  patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${kindChip(r)}${statusChip(r)}<span class="spacer"></span>
     ${canRun && r.resume_from && r.status !== 'done' ? `<button class="btn" data-action="resume">${r.status === 'stale' ? 'Reprocessar com as edições' : `Continuar de “${esc(resumeLabel)}”`}</button>` : ''}
     ${canRun ? `<span class="rerun"><select id="r-from" aria-label="Passo inicial">${steps.map(s => `<option value="${s.name}">${esc(s.label)}</option>`).join('')}</select>
       <button class="btn ghost" data-action="rerun">Rodar de novo daqui</button></span>
       <button class="btn danger" data-action="delete">Excluir</button>` : ''}</div>`);
   patch($('#r-sub'), `${esc(r.video_name)} · gravado ${dt(r.recorded_at || r.created_at)}${r.sets ? ` · set ${esc(r.sets.join(', '))}` : ''}` +
-    `${r.n_cards ? ` · ${r.n_cards} cartas · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}` : ''}`);
+    `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}`);
 
-  if (!editingPaid) {
+  $('#r-paid').hidden = cadastro;
+  if (!editingPaid && !cadastro) {
     patch($('#r-paid'), `<small>Valor pago</small><b class="num">${r.paid != null ? `${sym(r.paid_currency)} ${nf.format(r.paid)}` : '—'}</b>
       ${r.paid != null && r.paid_currency !== S.cur ? `<div class="muted" style="font-size:13px">≈ ${money(r.paid_usd)}</div>` : ''}
       <div><button class="linkbtn" data-action="edit-paid">${r.paid != null ? 'editar' : 'informar valor pago'}</button></div>`);
   }
   const d = r.paid_usd != null && r.value_now != null ? r.value_now - r.paid_usd : null;
-  patch($('#r-kpis'), `
+  if (cadastro) patch($('#r-kpis'), `
+    <div class="panel kpi"><small>Cartas</small><b class="num">${r.n_cards || '—'}</b></div>
+    <div class="panel kpi"><small>Valor no cadastro</small><b class="num">${money(r.value_open)}</b></div>
+    <div class="panel kpi"><small>Valor hoje</small><b class="num">${money(r.value_now)}</b>
+      ${r.value_open ? `<div class="${cls(r.value_now - r.value_open)}" style="font-size:13px">${pctTxt(r.value_now, r.value_open)} desde o cadastro</div>` : ''}</div>`);
+  else patch($('#r-kpis'), `
     <div class="panel kpi"><small>Cartas na abertura</small><b class="num">${money(r.value_open)}</b></div>
     <div class="panel kpi"><small>Valor hoje</small><b class="num">${money(r.value_now)}</b>
       ${r.value_open ? `<div class="${cls(r.value_now - r.value_open)}" style="font-size:13px">${pctTxt(r.value_now, r.value_open)} desde a abertura</div>` : ''}</div>
@@ -297,10 +330,10 @@ function renderRun() {
 
   const overlayStep = r.steps.find(s => s.name === 'overlay');
   const videoCur = r.options?.currency || 'USD';
-  const curControl = r.options?.overlay === false ? '' : `<div class="vidbar"><span>Moeda do vídeo com overlay</span>
+  const curControl = cadastro || r.options?.overlay === false ? '' : `<div class="vidbar"><span>Moeda do vídeo com overlay</span>
     <div class="seg" role="group" aria-label="Moeda do vídeo com overlay">${['USD', 'BRL'].filter(c => c in S.meta.rates).map(c =>
       `<button data-action="video-currency" data-cur="${c}" aria-pressed="${c === videoCur}" ${active(r) ? 'disabled' : ''}>${sym(c)}</button>`).join('')}</div></div>`;
-  patch($('#r-video'), curControl + (r.overlay && overlayStep.status !== 'running'
+  patch($('#r-video'), curControl + (r.overlay && overlayStep && overlayStep.status !== 'running'
     ? `<video class="player" controls preload="metadata" src="${esc(r.overlay)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"
          ${r.poster ? `poster="${esc(r.poster)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"` : ''}></video>
        <p class="muted" style="font-size:13px"><a href="${esc(r.overlay)}" download="pipeline-${r.id}-overlay.mp4">Baixar vídeo com overlay</a></p>` : ''));
@@ -339,7 +372,8 @@ function renderRun() {
     }).join('')}</ul></div>` : ''}
     <div class="reprocess${pending ? ' pending' : ''}">
       <p>${active(r) ? 'A pipeline está rodando; as cartas ficam editáveis quando ela terminar.'
-        : pending ? 'Edições pendentes: preços, coleção e vídeo só mudam depois de reprocessar.'
+        : pending ? `Edições pendentes: preços${cadastro ? ' e coleção' : ', coleção e vídeo'} só mudam depois de reprocessar.`
+        : cadastro ? 'Deslize uma carta para a direita para marcar se é foil ou para a esquerda para remover, depois reprocesse.'
         : 'Deslize uma carta para a direita para editar ou para a esquerda para remover, depois reprocesse.'}</p>
       <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
     </div>` : '');
@@ -470,6 +504,7 @@ function editCard(uid) {
       </div>
       <label class="toggle"><input type="checkbox" id="edit-foil" ${x.foil ? 'checked' : ''} ${fixed ? 'disabled' : ''}><span>Foil</span></label>
       <p class="muted">${fixed ? `${esc(rar(c.rarity).label)} é sempre foil.`
+        : r.kind === 'cadastro' ? 'Marque se esta cópia é foil. O preço do cadastro é recalculado para o acabamento escolhido quando você reprocessar.'
         : 'Um booster tem uma foil: marcar esta carta tira a marcação automática de outra do mesmo booster. O preço da abertura é recalculado para o acabamento escolhido quando você reprocessar.'}</p>
       <div class="actions"><button class="btn" id="edit-save" ${fixed ? 'disabled' : ''}>Salvar</button>
         <button class="btn ghost" type="button" data-close>Cancelar</button></div>
@@ -525,7 +560,15 @@ function prepareNew() {
   $('#opt-verify').checked = v.available && v.default;
   $('#verify-label').textContent = v.available
     ? `Conferir cada carta com IA local (${v.model}, ~1 s por carta)` : `Conferir com IA local (Ollama não encontrado)`;
+  applyKind();
 }
+const newKind = () => document.querySelector('input[name="kind"]:checked').value;
+function applyKind() {  // valor pago, moeda e vídeo só existem na abertura de booster
+  const cadastro = newKind() === 'cadastro';
+  document.querySelectorAll('#new-form .only-abertura').forEach(el => { el.hidden = cadastro; });
+  $('#send').textContent = cadastro ? 'Enviar e cadastrar' : 'Enviar e processar';
+}
+document.querySelectorAll('input[name="kind"]').forEach(r => r.addEventListener('change', applyKind));
 function pickFile(f) {
   if (!f) return;
   S.file = f;
@@ -546,9 +589,14 @@ $('#new-form').onsubmit = ev => {
   const paidRaw = $('#paid').value.trim();
   const paid = paidRaw ? parseMoney(paidRaw) : null;
   if (paidRaw && paid == null) { newError('Valor pago inválido.'); return; }
-  const params = new URLSearchParams({ filename: S.file.name, paid_currency: $('#paid-currency').value,
-    overlay: $('#opt-overlay').checked, verify: $('#opt-verify').checked, currency: $('#new-currency').value });
-  if (paid != null) params.set('paid', paid);
+  const kind = newKind();
+  const params = new URLSearchParams({ filename: S.file.name, kind, verify: $('#opt-verify').checked });
+  if (kind === 'abertura') {
+    params.set('paid_currency', $('#paid-currency').value);
+    params.set('overlay', $('#opt-overlay').checked);
+    params.set('currency', $('#new-currency').value);
+    if (paid != null) params.set('paid', paid);
+  }
   if ($('#new-set').value) params.set('set_hint', $('#new-set').value);
   const xhr = S.xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/runs?' + params);
@@ -587,7 +635,8 @@ const SERIES = [  // cor segue a série (slots validados), nunca a posição
 ];
 const runTime = r => new Date(r.recorded_at || r.created_at).getTime();
 function chartPoints() {
-  const runs = S.runs.filter(r => r.paid_usd != null && r.value_now != null && r.n_cards).sort((a, b) => runTime(a) - runTime(b));
+  const runs = S.runs.filter(r => r.kind === 'abertura' && r.paid_usd != null && r.value_now != null && r.n_cards)
+    .sort((a, b) => runTime(a) - runTime(b));
   const pts = [{ label: 'início', spent: 0, open: 0, now: 0 }];
   let spent = 0, open = 0, now = 0;
   for (const r of runs) {

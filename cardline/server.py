@@ -137,20 +137,20 @@ def create_app(settings: Settings) -> FastAPI:
         priced = scan is not None and any("price_usd" in x for x in cards)
         steps = {r["name"]: dict(r) for r in c.execute("SELECT * FROM run_steps WHERE run_id = ?", (run["id"],))}
         out = {
-            "id": run["id"], "status": run["status"], "step": run["step"], "progress": run["progress"],
+            "id": run["id"], "kind": run["kind"], "status": run["status"], "step": run["step"], "progress": run["progress"],
             "message": run["message"], "error": (run["error"] or "").strip().splitlines()[-1:] or None,
             "video_name": run["video_name"], "created_at": run["created_at"], "recorded_at": run["recorded_at"],
             "started_at": run["started_at"], "finished_at": run["finished_at"], "resume_from": run["resume_from"],
             "paid": run["paid"], "paid_currency": run["paid_currency"], "paid_usd": run["paid_usd"],
             "options": json.loads(run["options"]), "sets": scan["sets"] if scan else None,
-            "n_cards": len(cards), "packs": max((x["pack"] for x in cards), default=0),
+            "n_cards": len(cards), "packs": max((x["pack"] or 0 for x in cards), default=0),  # cadastro: sem booster
             "value_open": sum(x.get("price_usd") or 0 for x in cards) if priced else None,
             "value_now": sum(db.price_usd(rows[x["card_id"]], x["foil"]) or 0 for x in cards) if cards else None,
             "thumbs": [f"{url}/{x['crop']}" for x in cards if x.get("crop")][:24],
             "overlay": f"{url}/overlay.mp4" if (folder / "overlay.mp4").exists() else None,
             "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
             "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
-                       ("status", "message", "started_at", "finished_at")}} for n in pipeline.STEP_NAMES],
+                       ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
         }
         if detail:
             out["cards"] = [
@@ -186,6 +186,7 @@ def create_app(settings: Settings) -> FastAPI:
             "currency": settings.currency if settings.currency in rates else "USD",
             "rates": rates, "rate_day": fx[1] if fx else None, "pack_size": settings.pack_size,
             "steps": [{"name": n, "label": label} for n, label in pipeline.STEPS],
+            "kinds": [{"name": k, "label": label, "steps": names} for k, (label, names) in pipeline.KINDS.items()],
             "sets": [{"code": r["code"], "name": r["name"], "booster": is_booster_set(r["code"])}
                      for r in c.execute("SELECT code, name FROM sets ORDER BY released_at, code")],
             "rarities": [[k, label, color] for k, (label, color) in rarity.RARITIES.items()],
@@ -229,7 +230,10 @@ def create_app(settings: Settings) -> FastAPI:
     async def upload(
         request: Request, filename: str, paid: float | None = None, paid_currency: str = "BRL",
         set_hint: str | None = None, overlay: bool = True, verify: bool | None = None, currency: str | None = None,
+        kind: str = "abertura",
     ):
+        if kind not in pipeline.KINDS:
+            raise HTTPException(400, "Tipo de pipeline deve ser abertura ou cadastro.")
         if paid_currency.upper() not in CURRENCIES or (currency and currency.upper() not in CURRENCIES):
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
         incoming = settings.runs_dir / "_incoming"
@@ -253,7 +257,7 @@ def create_app(settings: Settings) -> FastAPI:
                 run_id = pipeline.create_run(
                     settings, tmp, video_name=Path(filename).name, sha1=sha1.hexdigest(), paid=paid,
                     paid_currency=paid_currency, set_hint=set_hint, overlay=overlay, verify=verify,
-                    currency=currency, move=True,
+                    currency=currency, move=True, kind=kind,
                 )
             except pipeline.DuplicateVideo as e:
                 raise HTTPException(409, {"message": str(e), "run_id": e.run_id}) from e
@@ -325,13 +329,15 @@ def create_app(settings: Settings) -> FastAPI:
         if con().execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
             raise HTTPException(404, "Pipeline não encontrada.")
         sent = body.model_fields_set
-        if "paid" in sent:
-            pipeline.update_paid(settings, run_id, body.paid, body.paid_currency or "BRL")
-        if "currency" in sent and body.currency:
-            try:
+        try:
+            if "paid" in sent:
+                pipeline.update_paid(settings, run_id, body.paid, body.paid_currency or "BRL")
+            if "currency" in sent and body.currency:
                 pipeline.update_overlay_currency(settings, run_id, body.currency.upper())
-            except RuntimeError as e:
-                raise HTTPException(409, str(e)) from e
+        except ValueError as e:  # cadastro não tem valor pago nem vídeo
+            raise HTTPException(400, str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
         return {"ok": True}
 
     @app.post("/api/prices/refresh")

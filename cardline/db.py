@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -48,9 +48,10 @@ CREATE TABLE IF NOT EXISTS price_history (
     PRIMARY KEY (card_id, day)
 );
 
--- uma execução do pipeline para um vídeo de abertura
+-- uma execução de pipeline para um vídeo
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT NOT NULL DEFAULT 'abertura',  -- abertura (booster, com vídeo e overlay) | cadastro (só coleção)
     video         TEXT NOT NULL,              -- relativo à raiz do projeto
     video_name    TEXT NOT NULL,              -- nome original do arquivo
     video_sha1    TEXT NOT NULL UNIQUE,       -- impede registrar o mesmo vídeo duas vezes
@@ -107,9 +108,22 @@ def connect(path: Path) -> sqlite3.Connection:
     version = con.execute("PRAGMA user_version").fetchone()[0]
     if version > SCHEMA_VERSION:
         raise SystemExit(f"{path} é de uma versão mais nova do cardline (esquema {version}).")
-    con.executescript(SCHEMA)
+    con.executescript(SCHEMA)  # banco novo já nasce no esquema atual
+    if 0 < version < SCHEMA_VERSION:
+        for v in range(version + 1, SCHEMA_VERSION + 1):
+            MIGRATIONS[v](con)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return con
+
+
+def _add_column(con: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    if column not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:  # outro processo pode ter migrado
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+MIGRATIONS = {
+    3: lambda con: _add_column(con, "runs", "kind", "TEXT NOT NULL DEFAULT 'abertura'"),
+}
 
 
 def now() -> str:

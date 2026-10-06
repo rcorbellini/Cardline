@@ -20,7 +20,7 @@ import numpy as np
 
 from . import db
 from .config import Settings, load_settings
-from .foil import assign_foils
+from .foil import FOIL_ONLY, assign_foils
 from .index import indexed_sets, load_index
 from .matcher import Matcher
 from .video import VideoInfo, probe, read_frames
@@ -133,9 +133,14 @@ def _segment(records: list[dict], fps: float) -> list[dict]:
 
 
 def scan_video(
-    settings: Settings, video: Path, run_dir: Path, set_codes: list[str] | None, progress: Progress
+    settings: Settings, video: Path, run_dir: Path, set_codes: list[str] | None, progress: Progress,
+    kind: str = "abertura",
 ) -> dict:
-    """Identifica as cartas do vídeo; grava `scan.json`, `track.json` e `crops/` em `run_dir`."""
+    """Identifica as cartas do vídeo; grava `scan.json`, `track.json` e `crops/` em `run_dir`.
+
+    Numa abertura as cartas são agrupadas em boosters e a foil é deduzida pela estrutura do booster;
+    num cadastro não há booster: só as raridades que existem apenas em foil já entram como foil.
+    """
     info = probe(video)
     (run_dir / "crops").mkdir(parents=True, exist_ok=True)
     for old in (run_dir / "crops").glob("*.jpg"):  # de uma execução anterior
@@ -176,8 +181,8 @@ def scan_video(
                 alternatives[m["card"]] = max(alternatives.get(m["card"], 0), m["inliers"])
         cards.append({
             "uid": f"{n + 1:02d}",
-            "slot": n % settings.pack_size + 1,
-            "pack": n // settings.pack_size + 1,
+            "slot": n % settings.pack_size + 1 if kind == "abertura" else n + 1,
+            "pack": n // settings.pack_size + 1 if kind == "abertura" else None,
             "card_id": row["id"],
             "set": row["set_code"],
             "number": row["number"],
@@ -197,12 +202,18 @@ def scan_video(
                 for c, n in sorted(alternatives.items(), key=lambda kv: -kv[1])[:3]
             ],
         })
-    assign_foils(cards, settings.pack_size)
+    if kind == "abertura":
+        assign_foils(cards, settings.pack_size)
+    else:
+        for c in cards:
+            if c["rarity"] in FOIL_ONLY:
+                c["foil"], c["foil_reason"] = True, "raridade"
     for i, c in enumerate(cards):
         c["t_end"] = cards[i + 1]["t"] if i + 1 < len(cards) else round(info.duration, 2)
 
     result = {
         "version": SCAN_VERSION,
+        "kind": kind,
         "video": os.path.relpath(video.resolve(), settings.root),
         "recorded_at": info.creation_time,
         "duration": round(info.duration, 2),

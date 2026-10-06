@@ -107,3 +107,34 @@ def test_delete_removes_cards_and_folder_but_keeps_external_video(settings, vide
     assert con.execute("SELECT COUNT(*) FROM collection").fetchone()[0] == 0
     assert not folder.exists()
     assert video.exists()
+
+
+def test_cadastro_has_no_paid_value_and_no_video_step(settings, video, fake_steps):
+    calls, _ = fake_steps
+    run_id = pipeline.create_run(settings, video, kind="cadastro", paid=35.0)
+    run = run_row(settings, run_id)
+    assert run["kind"] == "cadastro" and run["paid"] is None
+    assert set(steps(settings, run_id)) == {"scan", "verify", "prices", "commit"}
+    assert pipeline.execute(settings, run_id) is True
+    assert calls == ["scan", "verify", "prices", "commit"]
+    with pytest.raises(ValueError):
+        pipeline.update_paid(settings, run_id, 10.0, "BRL")
+
+
+def test_unknown_kind_is_rejected(settings, video):
+    with pytest.raises(ValueError):
+        pipeline.create_run(settings, video, kind="troca")
+
+
+def test_existing_database_gets_the_kind_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "antigo.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, video TEXT NOT NULL)")
+    old.execute("INSERT INTO runs(id, video) VALUES (1, 'v.mp4')")
+    old.execute("PRAGMA user_version = 2")
+    old.commit()
+    old.close()
+    con = db.connect(path)
+    assert con.execute("SELECT kind FROM runs WHERE id = 1").fetchone()[0] == "abertura"
+    assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION

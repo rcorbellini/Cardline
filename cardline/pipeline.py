@@ -8,6 +8,9 @@ Cada run tem uma pasta (`runs/<id>/`) com os artefatos dos passos:
     commit   tabela collection (run_id)      registra as cartas na coleção, substituindo as anteriores do run
     overlay  overlay.mp4                     vídeo com os preços sobrepostos
 
+Há dois tipos: "abertura" (booster: todos os passos, com o vídeo) e "cadastro" (cartas que você já tem:
+termina ao registrar na coleção, sem valor pago nem vídeo, e sem deduzir a foil pela estrutura do booster).
+
 Corrigir o resultado de um passo (ex.: `cardline edit` no scan) marca os seguintes como
 desatualizados; executar o run de novo a partir dali refaz só o resto, e as cartas registradas
 na coleção mudam junto.
@@ -42,6 +45,14 @@ STEPS = [
 ]
 STEP_NAMES = [name for name, _ in STEPS]
 LABELS = dict(STEPS)
+KINDS = {
+    "abertura": ("Abertura de booster", STEP_NAMES),
+    "cadastro": ("Cadastro de coleção", [n for n in STEP_NAMES if n != "overlay"]),
+}
+
+
+def steps_for(kind: str) -> list[str]:
+    return KINDS[kind][1]
 DEFAULT_VERIFY_MODEL = "qwen3.5:4b"
 
 
@@ -90,8 +101,13 @@ def create_run(
     verify: bool | None = None,
     currency: str | None = None,
     move: bool = False,
+    kind: str = "abertura",
 ) -> int:
     """Cadastra um run na fila. Com `move`, o vídeo (um upload) passa a morar na pasta do run."""
+    if kind not in KINDS:
+        raise ValueError(f"Tipo de pipeline desconhecido: {kind}")
+    if kind == "cadastro":  # sem compra e sem vídeo de saída
+        paid, overlay = None, False
     con = db.connect(settings.db_path)
     sha1 = sha1 or sha1_file(video)
     dup = con.execute("SELECT id FROM runs WHERE video_sha1 = ?", (sha1,)).fetchone()
@@ -105,9 +121,9 @@ def create_run(
     paid_currency = paid_currency.upper()
     with con:
         run_id = con.execute(
-            "INSERT INTO runs(video, video_name, video_sha1, dir, status, paid, paid_currency, paid_usd, set_hint,"
-            " options, created_at) VALUES (?, ?, ?, '', 'queued', ?, ?, ?, ?, ?, ?)",
-            (_stored_path(settings, video), video_name or video.name, sha1, paid, paid_currency if paid else None,
+            "INSERT INTO runs(kind, video, video_name, video_sha1, dir, status, paid, paid_currency, paid_usd, set_hint,"
+            " options, created_at) VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?, ?)",
+            (kind, _stored_path(settings, video), video_name or video.name, sha1, paid, paid_currency if paid else None,
              to_usd(settings, paid, paid_currency), set_hint or None, json.dumps(options), db.now()),
         ).lastrowid
         folder = settings.runs_dir / str(run_id)
@@ -121,7 +137,7 @@ def create_run(
             (_stored_path(settings, video), _stored_path(settings, folder), run_id),
         )
         con.executemany(
-            "INSERT INTO run_steps(run_id, name, status) VALUES (?, ?, 'pending')", [(run_id, n) for n in STEP_NAMES]
+            "INSERT INTO run_steps(run_id, name, status) VALUES (?, ?, 'pending')", [(run_id, n) for n in steps_for(kind)]
         )
     return run_id
 
@@ -166,12 +182,12 @@ def _scan(ctx: RunContext) -> str:
 
     run = ctx.run
     sets = [s.strip() for s in run["set_hint"].split(",")] if run["set_hint"] else None
-    result = scan_video(ctx.settings, ctx.settings.root / run["video"], ctx.dir, sets, ctx.progress)
+    result = scan_video(ctx.settings, ctx.settings.root / run["video"], ctx.dir, sets, ctx.progress, run["kind"])
     with ctx.con:
         ctx.con.execute("UPDATE runs SET recorded_at = ? WHERE id = ?", (result["recorded_at"], ctx.run_id))
     n, size = len(result["cards"]), ctx.settings.pack_size
     msg = f"{n} cartas · set {', '.join(result['sets'])}"
-    if n % size:
+    if run["kind"] == "abertura" and n % size:
         msg += f" · atenção: {n} cartas não fecham boosters de {size}"
     return msg
 
@@ -229,9 +245,10 @@ def _prices(ctx: RunContext) -> str:
         c["price_usd"], c["price_key"] = db.price_on(ctx.con, c["card_id"], c["foil"], day), key
     save_scan(ctx.dir, scan)
     total = sum(c["price_usd"] or 0 for c in scan["cards"])
-    msg = f"cartas valiam {money_for(ctx.settings, 'USD').fmt(total)} na abertura"
+    moment = "no cadastro" if ctx.run["kind"] == "cadastro" else "na abertura"
+    msg = f"cartas valiam {money_for(ctx.settings, 'USD').fmt(total)} {moment}"
     if kept:
-        msg += f" ({kept} com o preço da abertura mantido)"
+        msg += f" ({kept} com o preço {'do cadastro' if ctx.run['kind'] == 'cadastro' else 'da abertura'} mantido)"
     if offline:
         msg += f" · sem conexão: preços em cache para o set {', '.join(offline)}"
     return msg
@@ -261,7 +278,8 @@ def first_step_to_run(con: sqlite3.Connection, run: sqlite3.Row) -> str:
         return run["resume_from"]
     done = {r["name"] for r in con.execute(
         "SELECT name FROM run_steps WHERE run_id = ? AND status IN ('done', 'skipped')", (run["id"],))}
-    return next((n for n in STEP_NAMES if n not in done), STEP_NAMES[0])
+    names = steps_for(run["kind"])
+    return next((n for n in names if n not in done), names[0])
 
 
 def execute(settings: Settings, run_id: int, from_step: str | None = None) -> bool:
@@ -271,7 +289,8 @@ def execute(settings: Settings, run_id: int, from_step: str | None = None) -> bo
     if run is None:
         raise SystemExit(f"Pipeline #{run_id} não existe.")
     start = from_step or first_step_to_run(con, run)
-    todo = STEP_NAMES[STEP_NAMES.index(start):]
+    names = steps_for(run["kind"])
+    todo = names[names.index(start):]
     with con:
         con.execute(
             "UPDATE runs SET status = 'running', pid = ?, started_at = ?, finished_at = NULL, error = NULL,"
@@ -316,12 +335,12 @@ def execute(settings: Settings, run_id: int, from_step: str | None = None) -> bo
 
 def enqueue(settings: Settings, run_id: int, from_step: str | None = None) -> None:
     """Põe o run na fila do servidor para rodar a partir de `from_step` (ou de onde parou)."""
-    if from_step is not None and from_step not in STEP_NAMES:
-        raise ValueError(f"Passo desconhecido: {from_step}")
     con = db.connect(settings.db_path)
     run = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     if run is None:
         raise LookupError(f"Pipeline #{run_id} não existe.")
+    if from_step is not None and from_step not in steps_for(run["kind"]):
+        raise ValueError(f"Passo desconhecido para esta pipeline: {from_step}")
     if run["status"] in ("queued", "running"):
         raise RuntimeError(f"A pipeline #{run_id} já está na fila ou rodando.")
     with con:
@@ -332,10 +351,13 @@ def enqueue(settings: Settings, run_id: int, from_step: str | None = None) -> No
 def mark_stale(settings: Settings, run_id: int, from_step: str) -> None:
     """Depois de uma correção, os passos a partir de `from_step` precisam rodar de novo."""
     con = db.connect(settings.db_path)
+    names = steps_for(con.execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()["kind"])
+    if from_step not in names:
+        return
     with con:
         con.executemany(
             "UPDATE run_steps SET status = 'stale' WHERE run_id = ? AND name = ? AND status != 'pending'",
-            [(run_id, n) for n in STEP_NAMES[STEP_NAMES.index(from_step):]],
+            [(run_id, n) for n in names[names.index(from_step):]],
         )
         con.execute("UPDATE runs SET status = 'stale', resume_from = ? WHERE id = ? AND status NOT IN ('queued', 'running')",
                     (from_step, run_id))
@@ -343,6 +365,8 @@ def mark_stale(settings: Settings, run_id: int, from_step: str) -> None:
 
 def update_paid(settings: Settings, run_id: int, paid: float | None, currency: str) -> None:
     con = db.connect(settings.db_path)
+    if con.execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()["kind"] != "abertura":
+        raise ValueError("Cadastro de coleção não tem valor pago.")
     with con:
         con.execute("UPDATE runs SET paid = ?, paid_currency = ?, paid_usd = ? WHERE id = ?",
                     (paid, currency.upper() if paid else None, to_usd(settings, paid, currency), run_id))
@@ -359,6 +383,8 @@ def update_overlay_currency(settings: Settings, run_id: int, currency: str) -> N
         raise LookupError(f"Pipeline #{run_id} não existe.")
     if run["status"] in ("queued", "running"):
         raise RuntimeError("A pipeline está rodando; espere terminar para mudar a moeda do vídeo.")
+    if run["kind"] != "abertura":
+        raise ValueError("Cadastro de coleção não gera vídeo.")
     options = json.loads(run["options"])
     if options.get("currency") == currency:
         return

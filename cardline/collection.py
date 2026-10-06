@@ -68,7 +68,7 @@ def _set_foil(scan: dict, c: dict, foil: bool) -> bool:
     c["foil"], c["foil_reason"] = foil, "manual"
     if changed:
         _forget_price(c)
-    if foil:  # um booster tem uma foil: a dedução automática em outra carta do mesmo booster sai
+    if foil and scan.get("kind", "abertura") == "abertura":  # um booster tem uma foil: a dedução em outra carta sai
         for other in scan["cards"]:
             if other is not c and other["pack"] == c["pack"] and other["foil"] and other.get("foil_reason") in AUTO_FOIL:
                 other["foil"], other["foil_reason"] = False, None
@@ -120,9 +120,12 @@ def _renumber(scan: dict, pack_size: int) -> None:
     """Reordena pelo vídeo e refaz boosters e foil (a composição de cada booster pode ter mudado)."""
     cards = scan["cards"]
     cards.sort(key=lambda c: c["t"])
+    booster = scan.get("kind", "abertura") == "abertura"
     for i, c in enumerate(cards):
-        c["pack"], c["slot"] = i // pack_size + 1, i % pack_size + 1
+        c["pack"], c["slot"] = (i // pack_size + 1, i % pack_size + 1) if booster else (None, i + 1)
         c["t_end"] = cards[i + 1]["t"] if i + 1 < len(cards) else scan["duration"]
+    if not booster:  # cadastro: sem booster, a foil é só por raridade ou à mão
+        return
     manual = {c["pack"] for c in cards if c.get("foil_reason") == "manual"}  # escolha manual vale para o booster
     assign_foils([c for c in cards if c["pack"] not in manual], pack_size)
 

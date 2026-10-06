@@ -29,7 +29,7 @@
     <section class="panel chartcard" aria-labelledby="chart-title">
       <div class="charthead">
         <div><h2 id="chart-title">Gasto vs valor das cartas</h2>
-          <p class="muted">Acumulado a cada abertura com valor pago informado</p></div>
+          <p class="muted">Acumulado a cada abertura de booster com valor pago (cadastros de coleção não têm custo e ficam de fora)</p></div>
         <ul class="legend" id="chart-legend"></ul>
       </div>
       <div class="chartwrap" id="chart"></div>
@@ -69,27 +69,34 @@
   <section id="view-nova" class="view" hidden>
     <form id="new-form" class="panel form">
       <h2>Nova pipeline</h2>
-      <p class="muted">Envie o vídeo da abertura. As cartas são identificadas, precificadas e registradas na coleção,
-        vinculadas a esta pipeline, e o vídeo com overlay é gerado.</p>
+      <fieldset class="kinds">
+        <legend>Tipo</legend>
+        <label class="kind"><input type="radio" name="kind" value="abertura" checked>
+          <span><b>Abertura de booster</b><small>Identifica, precifica e registra as cartas abertas, compara com o valor
+            pago e gera o vídeo com overlay.</small></span></label>
+        <label class="kind"><input type="radio" name="kind" value="cadastro">
+          <span><b>Cadastro de coleção</b><small>Para cartas que você já tem: identifica, precifica e registra na
+            coleção. Sem valor pago e sem vídeo; as foils você marca na edição.</small></span></label>
+      </fieldset>
       <label class="drop" id="drop">
         <input type="file" id="file" accept="video/*" hidden>
         <strong id="drop-title">Arraste o vídeo aqui ou clique para escolher</strong>
         <span id="drop-sub" class="muted">MP4 ou MOV, como sai da câmera do celular</span>
       </label>
       <div class="fields">
-        <label class="wide">Valor pago pelo(s) booster(s)
+        <label class="wide only-abertura">Valor pago pelo(s) booster(s)
           <span class="inline"><input type="text" id="paid" inputmode="decimal" placeholder="ex.: 34,90">
           <select id="paid-currency"><option value="BRL">R$</option><option value="USD">US$</option></select></span>
           <small class="muted">Se o vídeo tiver mais de um booster, informe o total. Pode deixar em branco e preencher depois.</small>
         </label>
-        <label>Set dos boosters
+        <label>Set das cartas
           <select id="new-set"><option value="">Detectar automaticamente</option></select>
         </label>
-        <label>Moeda do vídeo com overlay
+        <label class="only-abertura">Moeda do vídeo com overlay
           <select id="new-currency"><option value="USD">US$ (dólar)</option><option value="BRL">R$ (real)</option></select>
         </label>
       </div>
-      <label class="check"><input type="checkbox" id="opt-overlay" checked> Gerar vídeo com overlay de preços</label>
+      <label class="check only-abertura"><input type="checkbox" id="opt-overlay" checked> Gerar vídeo com overlay de preços</label>
       <label class="check"><input type="checkbox" id="opt-verify"> <span id="verify-label">Conferir cada carta com IA local</span></label>
       <div class="actions">
         <button class="btn" type="submit" id="send">Enviar e processar</button>
