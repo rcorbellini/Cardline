@@ -9,6 +9,11 @@ Começando por **Disney Lorcana**: você envia o vídeo abrindo o booster e o ca
 4. compara com o valor pago pelo booster (resultado da abertura);
 5. renderiza o vídeo de volta com overlay: preço de cada carta quando ela aparece e o total do booster somando.
 
+<p align="center">
+  <img src="docs/demo.gif" width="360" alt="Abertura de um booster com o overlay do cardline: etiqueta com raridade e preço em cada carta revelada, total do booster somando no topo e resumo final com todas as cartas">
+</p>
+<p align="center"><sub>Vídeo de exemplo processado pelo cardline (acelerado; o valor pago no resumo é ilustrativo).</sub></p>
+
 ## Instalação
 
 Requer [uv](https://docs.astral.sh/uv/). O ffmpeg vem embutido (imageio-ffmpeg), não precisa instalar.
