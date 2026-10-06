@@ -412,6 +412,7 @@ def render(
     bg = Image.fromarray(frame).filter(ImageFilter.GaussianBlur(14 * ov.u))
     bg = np.asarray(bg).astype(np.float32) * 0.45
     panel = ov.summary()
+    out_frame = canvas
     for j in range(int(settings.outro_seconds * FPS)):
         x = clamp01(j / (0.45 * FPS))
         out_frame = (last * (1 - x) + bg * x).astype(np.uint8)
@@ -420,4 +421,8 @@ def render(
         writer.write(out_frame)
     writer.close()
     tmp.replace(out)
+    # capa do vídeo na página: o resumo final
+    poster = Image.fromarray(out_frame)
+    poster.thumbnail((720, 720))
+    poster.save(out.with_suffix(".jpg"), quality=85)
     return out

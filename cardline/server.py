@@ -139,6 +139,7 @@ def create_app(settings: Settings) -> FastAPI:
             "value_now": sum(db.price_usd(rows[x["card_id"]], x["foil"]) or 0 for x in cards) if cards else None,
             "thumbs": [f"{url}/{x['crop']}" for x in cards if x.get("crop")][:24],
             "overlay": f"{url}/overlay.mp4" if (folder / "overlay.mp4").exists() else None,
+            "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
             "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.STEP_NAMES],
         }

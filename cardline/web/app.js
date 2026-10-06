@@ -292,7 +292,8 @@ function renderRun() {
 
   const overlayStep = r.steps.find(s => s.name === 'overlay');
   patch($('#r-video'), r.overlay && overlayStep.status !== 'running'
-    ? `<video class="player" controls preload="metadata" src="${esc(r.overlay)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"></video>
+    ? `<video class="player" controls preload="metadata" src="${esc(r.overlay)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"
+         ${r.poster ? `poster="${esc(r.poster)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"` : ''}></video>
        <p class="muted" style="font-size:13px"><a href="${esc(r.overlay)}" download="pipeline-${r.id}-overlay.mp4">Baixar vídeo com overlay</a></p>` : '');
 
   const cards = r.cards || [];
