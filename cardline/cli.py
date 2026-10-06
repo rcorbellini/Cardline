@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="cardline", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True, metavar="comando")
 
-    sp = sub.add_parser("sync", help="atualiza catálogo e preços; baixa imagens e indexa os sets")
+    sp = sub.add_parser("sync", help="atualiza catálogo e preços; baixa imagens, indexa os sets e busca os ícones")
     sp.add_argument("--sets", help="sets a indexar, ex.: 1,2,5 (padrão: todos os sets de booster)")
     sp.add_argument("--no-images", action="store_true", help="só catálogo e preços (rápido)")
     sp.set_defaults(func=cmd_sync)

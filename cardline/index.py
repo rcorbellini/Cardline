@@ -73,16 +73,19 @@ def build_set_index(settings: Settings, set_code: str, card_ids: list[str]) -> P
         feats = list(ex.map(_features, [paths[i] for i in keep], chunksize=8))
     out = index_path(settings, set_code)
     out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        out,
-        version=INDEX_VERSION,
-        card_ids=np.array([card_ids[i] for i in keep]),
-        counts=np.array([len(f[0]) for f in feats], np.int32),
-        kp=np.concatenate([f[0] for f in feats]),
-        desc=np.concatenate([f[1] for f in feats]),
-        sizes=np.array([f[2] for f in feats], np.int32),
-        hashes=np.stack([f[3] for f in feats]),
-    )
+    tmp = out.with_name(out.name + ".part")  # a sincronização pela página pode rodar junto com um scan
+    with open(tmp, "wb") as fh:
+        np.savez(
+            fh,
+            version=INDEX_VERSION,
+            card_ids=np.array([card_ids[i] for i in keep]),
+            counts=np.array([len(f[0]) for f in feats], np.int32),
+            kp=np.concatenate([f[0] for f in feats]),
+            desc=np.concatenate([f[1] for f in feats]),
+            sizes=np.array([f[2] for f in feats], np.int32),
+            hashes=np.stack([f[3] for f in feats]),
+        )
+    tmp.replace(out)
     return out
 
 

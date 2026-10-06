@@ -196,7 +196,7 @@ function openCard(e) {
       <div>
         <h2>${esc(c.name)}</h2><p class="sub">${esc(c.version || '')}</p>
         <dl class="facts">
-          <dt>Set</dt><dd>${esc(S.meta.sets.find(s => s.code === c.set)?.name || c.set)} · nº ${esc(c.number)}</dd>
+          <dt>Set</dt><dd><span class="setref">${setIcon(c.set, 'seticon small')}${esc(setTitle(c.set))}</span> · nº ${esc(c.number)}</dd>
           <dt>Raridade</dt><dd><span class="rar" style="--c:${r.color};font-size:14px;color:var(--text)"><i></i>${esc(r.label)}</span>${e.foil ? ' <span class="foilpill">FOIL</span>' : ''}</dd>
           <dt>Tinta</dt><dd>${esc(inkLabel(c.ink))}</dd>
           <dt>Tipo</dt><dd>${esc(c.type || '—')}${c.cost != null ? ` · custo ${c.cost}` : ''}</dd>
@@ -217,6 +217,13 @@ $('#dlg').addEventListener('click', ev => {
 
 // ---- lista de pipelines ----
 function statusChip(r) { return `<span class="status ${r.status}">${STATUS[r.status] || r.status}</span>`; }
+// selo hexagonal de quem não tem ícone: o texto encolhe com o tamanho do código (P1, D23, Coconut...)
+const setHex = (code, cls = '') => `<span class="sethex ${cls}" style="--n:${Math.max(2, String(code).length)}" aria-hidden="true">${esc(code)}</span>`;
+function setIcon(code, cls = 'seticon') {
+  const set = S.meta.sets.find(x => x.code === code);
+  return set?.icon ? `<img class="${cls}" src="${esc(set.icon)}" alt="" title="${esc(set.name)}" loading="lazy">` : setHex(code, cls);
+}
+const setTitle = code => S.meta.sets.find(x => x.code === code)?.name || `set ${code}`;
 const KIND_LABEL = { abertura: 'Abertura de booster', cadastro: 'Cadastro de coleção' };
 function kindChip(r) { return `<span class="kindchip ${r.kind}">${KIND_LABEL[r.kind] || r.kind}</span>`; }
 let runKind = store.get('runkind', 'todas');
@@ -245,7 +252,7 @@ function renderRuns() {
   }
   patch($('#view-pipelines'), head + '<div class="runs">' + list.map(r => `
     <a class="panel runcard" href="#/pipelines/${r.id}">
-      <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
+      <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}${(r.sets || []).map(c => setIcon(c, 'seticon small')).join('')}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
         <span class="spacer"></span>${statusChip(r)}</div>
       ${progressHtml(r)}
       ${r.thumbs.length ? `<div class="thumbs">${r.thumbs.map(t => `<img loading="lazy" src="${esc(t)}" alt="">`).join('')}</div>` : ''}
@@ -294,7 +301,7 @@ function renderRun() {
     ${canRun ? `<span class="rerun"><select id="r-from" aria-label="Passo inicial">${steps.map(s => `<option value="${s.name}">${esc(s.label)}</option>`).join('')}</select>
       <button class="btn ghost" data-action="rerun">Rodar de novo daqui</button></span>
       <button class="btn danger" data-action="delete">Excluir</button>` : ''}</div>`);
-  patch($('#r-sub'), `${esc(r.video_name)} · gravado ${dt(r.recorded_at || r.created_at)}${r.sets ? ` · set ${esc(r.sets.join(', '))}` : ''}` +
+  patch($('#r-sub'), `${esc(r.video_name)} · gravado ${dt(r.recorded_at || r.created_at)}${r.sets ? ` · ${r.sets.map(c => `<span class="setref">${setIcon(c, 'seticon small')}${esc(setTitle(c))}</span>`).join(', ')}` : ''}` +
     `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}`);
 
   $('#r-paid').hidden = cadastro;
@@ -758,6 +765,85 @@ $('#refresh-prices').onclick = async () => {
   btn.disabled = false;
 };
 
+// ---- sets: base de coleções, ícones e sincronização ----
+S.sets = [];
+let syncTimer = null;
+async function loadSets() {
+  try { S.sets = await api('/api/sets'); } catch (e) { console.warn(e); }
+  renderSets();
+  pollSync();
+}
+function renderSets() {
+  const fmtDay = d => d ? d.split('-').reverse().join('/') : '—';
+  const card = x => `
+    <article class="panel setcard${x.booster ? '' : ' minor'}">
+      <div class="seticonbox">${x.icon ? `<img src="${esc(x.icon)}" alt="Booster de ${esc(x.name)}" loading="lazy">` : setHex(x.code, 'big')}</div>
+      <div class="setinfo">
+        <h3>${esc(x.name)}</h3>
+        <p class="muted">Set ${esc(x.code)} · ${fmtDay(x.released_at)}${x.booster ? '' : ' · promo/outros'}</p>
+        <p class="setstats"><span>${x.cards} cartas no catálogo</span>
+          <span>${x.owned ? `${x.owned} na coleção (${x.owned_unique} únicas)` : 'nenhuma na coleção'}</span></p>
+        <p class="${x.recognized ? 'ok' : 'muted'}">${x.recognized ? '✓ reconhecido em vídeo' : x.booster ? 'ainda não reconhecido em vídeo: sincronize' : 'não reconhecido em vídeo (sem booster)'}</p>
+        <div class="seticonactions">
+          <button class="linkbtn" data-icon-upload="${esc(x.code)}">Trocar ícone</button>
+          ${x.icon_source === 'manual' ? `<button class="linkbtn" data-icon-reset="${esc(x.code)}">${x.booster ? 'Usar a foto do booster' : 'Voltar ao selo'}</button>` : ''}
+          <span class="muted">${x.icon_source === 'manual' ? 'ícone enviado por você' : x.icon ? 'foto do booster (TCGplayer)' : 'selo com o número do set'}</span>
+        </div>
+      </div>
+    </article>`;
+  const boosters = S.sets.filter(x => x.booster), others = S.sets.filter(x => !x.booster);
+  patch($('#sets-grid'), S.sets.length ? `<h3 class="setsgroup">Sets de booster</h3><div class="setsgrid-inner">${boosters.map(card).join('')}</div>
+    <h3 class="setsgroup">Promos e outros</h3><div class="setsgrid-inner">${others.map(card).join('')}</div>` : '<p class="empty">Carregando…</p>');
+}
+async function pollSync() {
+  clearTimeout(syncTimer);
+  let st;
+  try { st = await api('/api/sets/sync'); } catch { return; }
+  const box = $('#sync-status'), btn = $('#sync-sets');
+  btn.disabled = st.running;
+  btn.textContent = st.running ? 'Sincronizando…' : 'Sincronizar';
+  if (st.running || st.finished_at) {
+    const last = ((st.log || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '').replace(/\s+/g, ' ').trim();
+    box.hidden = false;
+    box.className = `syncstatus ${st.running ? 'running' : st.ok ? 'ok' : 'failed'}`;
+    box.textContent = st.running ? `Sincronizando: ${last}` : st.ok ? `Sincronizado em ${dt(st.finished_at)}.` : `A sincronização falhou: ${last}`;
+  }
+  if (st.running) { S.syncSeen = true; syncTimer = setTimeout(pollSync, 1500); return; }
+  if (S.syncSeen) {  // acabou de terminar: sets, cartas, preços e ícones podem ter mudado
+    S.syncSeen = false;
+    S.meta = await api('/api/meta');
+    S.sets = await api('/api/sets');
+    renderSets();
+    await refresh(true);
+  }
+}
+$('#sync-sets').onclick = async () => {
+  try { await api('/api/sets/sync', { method: 'POST' }); } catch (e) { alert(e.message); }
+  pollSync();
+};
+let iconTarget = null;
+$('#sets-grid').addEventListener('click', async ev => {
+  const up = ev.target.closest('[data-icon-upload]'), reset = ev.target.closest('[data-icon-reset]');
+  if (up) { iconTarget = up.dataset.iconUpload; $('#icon-file').value = ''; $('#icon-file').click(); }
+  if (reset) {
+    try { await api(`/api/sets/${encodeURIComponent(reset.dataset.iconReset)}/icon`, { method: 'DELETE' }); } catch (e) { alert(e.message); }
+    await reloadIcons();
+  }
+});
+$('#icon-file').onchange = async ev => {
+  const f = ev.target.files[0];
+  if (!f || !iconTarget) return;
+  try {
+    await api(`/api/sets/${encodeURIComponent(iconTarget)}/icon`, { method: 'POST', body: f, headers: { 'Content-Type': 'application/octet-stream' } });
+  } catch (e) { alert(e.message); }
+  await reloadIcons();
+};
+async function reloadIcons() {
+  S.meta = await api('/api/meta');
+  S.sets = await api('/api/sets');
+  renderAll();
+}
+
 // ---- rotas, carga e polling ----
 function currentView() {
   const h = location.hash || '#/resumo';  // a página abre no Resumo
@@ -765,11 +851,13 @@ function currentView() {
   if (h.startsWith('#/pipelines')) return 'pipelines';
   if (h.startsWith('#/nova')) return 'nova';
   if (h.startsWith('#/colecao')) return 'colecao';
+  if (h.startsWith('#/sets')) return 'sets';
   return 'resumo';
 }
 async function route() {
   const view = currentView();
-  for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova']) $('#view-' + v).hidden = v !== view;
+  for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
+  if (view === 'sets') loadSets();
   document.querySelectorAll('nav.tabs a').forEach(a => {
     const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -790,6 +878,7 @@ function renderAll() {
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();
   if (view === 'run') renderRun();
+  if (view === 'sets') renderSets();
 }
 
 let timer = null, prevActive = new Set();

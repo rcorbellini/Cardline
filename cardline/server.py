@@ -24,10 +24,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, pipeline, rarity
-from .catalog import is_booster_set, refresh_prices
+from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, restore_card, set_card_foil
 from .config import Settings
-from .index import image_path
+from .index import image_path, indexed_sets
 from .money import CURRENCIES, usd_brl
 from .video import probe
 
@@ -72,6 +72,42 @@ class Runner:
                                 (db.now(), f"O processo da pipeline terminou com código {code}.", row["id"]))
 
 
+class SyncJob:
+    """`cardline sync` em segundo plano (sets novos, cartas, preços, imagens, índices e ícones), um por vez."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.log_path = settings.cache_dir / "sync.log"
+        self.proc: subprocess.Popen | None = None
+        self.started_at = self.finished_at = None
+        self.code: int | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self) -> None:
+        if self.running:
+            raise RuntimeError("A sincronização já está rodando.")
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.log_path, "wb") as log:
+            self.proc = subprocess.Popen(
+                [sys.executable, "-m", "cardline", "sync"], cwd=self.settings.root, stdout=log,
+                stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+        self.started_at, self.finished_at, self.code = db.now(), None, None
+
+    def status(self) -> dict:
+        if self.proc is not None and not self.running and self.finished_at is None:
+            self.finished_at, self.code = db.now(), self.proc.returncode
+        lines = self.log_path.read_text(errors="replace").splitlines()[-40:] if self.log_path.exists() else []
+        return {
+            "running": self.running, "started_at": self.started_at, "finished_at": self.finished_at,
+            "ok": None if self.code is None else self.code == 0,
+            "log": "\n".join(line.rsplit("\r", 1)[-1] for line in lines),
+        }
+
+
 class RerunBody(BaseModel):
     from_step: str | None = None
 
@@ -90,6 +126,7 @@ class RunPatch(BaseModel):
 
 def create_app(settings: Settings) -> FastAPI:
     runner = Runner(settings)
+    sync_job = SyncJob(settings)
     edit_lock = threading.Lock()  # edições do scan.json não podem se intercalar
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     ollama = {"checked": 0.0, "available": False}
@@ -104,6 +141,10 @@ def create_app(settings: Settings) -> FastAPI:
 
     def con():
         return db.connect(settings.db_path)
+
+    def icon_url(r) -> str | None:
+        path = settings.root / r["icon"] if r["icon"] else None
+        return f"/set-icons/{path.name}?v={int(path.stat().st_mtime)}" if path and path.exists() else None
 
     def card_json(r) -> dict:
         local = image_path(settings, r["set_code"], r["id"])
@@ -187,8 +228,8 @@ def create_app(settings: Settings) -> FastAPI:
             "rates": rates, "rate_day": fx[1] if fx else None, "pack_size": settings.pack_size,
             "steps": [{"name": n, "label": label} for n, label in pipeline.STEPS],
             "kinds": [{"name": k, "label": label, "steps": names} for k, (label, names) in pipeline.KINDS.items()],
-            "sets": [{"code": r["code"], "name": r["name"], "booster": is_booster_set(r["code"])}
-                     for r in c.execute("SELECT code, name FROM sets ORDER BY released_at, code")],
+            "sets": [{"code": r["code"], "name": r["name"], "booster": is_booster_set(r["code"]), "icon": icon_url(r)}
+                     for r in c.execute("SELECT code, name, icon FROM sets ORDER BY released_at, code")],
             "rarities": [[k, label, color] for k, (label, color) in rarity.RARITIES.items()],
             "inks": [[k, label, color] for k, (label, color) in rarity.INKS.items()],
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
@@ -360,10 +401,64 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(409, str(e)) from e
         return {"ok": True}
 
+    @app.get("/api/sets")
+    def sets_list():
+        """Sets do catálogo com ícone, cartas no catálogo, na coleção e se já são reconhecidos em vídeo."""
+        c = con()
+        catalog = {r["set_code"]: r["n"] for r in c.execute("SELECT set_code, COUNT(*) AS n FROM cards GROUP BY set_code")}
+        owned = {r["set_code"]: (r["copies"], r["unique_cards"]) for r in c.execute(
+            "SELECT cards.set_code, COUNT(*) AS copies, COUNT(DISTINCT collection.card_id) AS unique_cards"
+            " FROM collection JOIN cards ON cards.id = collection.card_id GROUP BY cards.set_code")}
+        indexed = set(indexed_sets(settings))
+        out = []
+        for r in c.execute("SELECT * FROM sets ORDER BY released_at DESC, code"):
+            icon = icon_url(r)
+            copies, unique = owned.get(r["code"], (0, 0))
+            out.append({"code": r["code"], "name": r["name"], "released_at": r["released_at"],
+                        "booster": is_booster_set(r["code"]), "icon": icon, "icon_source": r["icon_source"] if icon else None,
+                        "cards": catalog.get(r["code"], 0), "owned": copies, "owned_unique": unique,
+                        "recognized": r["code"] in indexed})
+        return out
+
+    @app.get("/api/sets/sync")
+    def sync_status():
+        return sync_job.status()
+
+    @app.post("/api/sets/sync")
+    def sync_start():
+        try:
+            sync_job.start()
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+        return sync_job.status()
+
+    @app.post("/api/sets/{code}/icon")
+    async def set_icon(code: str, request: Request):
+        data = await request.body()
+        if len(data) > 8 * 1024 * 1024:
+            raise HTTPException(413, "Imagem grande demais (máximo 8 MB).")
+        try:
+            save_manual_icon(settings, code, data)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True}
+
+    @app.delete("/api/sets/{code}/icon")
+    def unset_icon(code: str):
+        try:
+            reset_icon(settings, code)
+        except (OSError, ValueError, KeyError) as e:
+            raise HTTPException(502, f"Ícone removido, mas não consegui buscar o automático ({e}).") from e
+        return {"ok": True}
+
     # --- arquivos ------------------------------------------------------------------------------
 
     app.mount("/runs", StaticFiles(directory=settings.runs_dir), name="runs")
     app.mount("/img", StaticFiles(directory=settings.images_dir, check_dir=False), name="img")
+    (settings.cache_dir / "sets").mkdir(parents=True, exist_ok=True)
+    app.mount("/set-icons", StaticFiles(directory=settings.cache_dir / "sets"), name="set-icons")
     app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
     return app
 

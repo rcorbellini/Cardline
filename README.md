@@ -7,7 +7,8 @@ Começando por **Disney Lorcana**: você envia o vídeo abrindo o booster e o ca
 2. busca o preço de mercado atual (TCGplayer, via [Lorcast](https://lorcast.com));
 3. registra as cartas na sua coleção, vinculadas à pipeline que as abriu;
 4. compara com o valor pago pelo booster (resultado da abertura);
-5. renderiza o vídeo de volta com overlay: preço de cada carta quando ela aparece e o total do booster somando.
+5. renderiza o vídeo de volta com overlay: preço de cada carta quando ela aparece e o total do booster somando,
+   num painel com o ícone do set.
 
 Também dá para **cadastrar cartas que você já tem**: grave as cartas uma por uma e o cardline identifica,
 precifica e registra na coleção, sem valor pago e sem vídeo de saída.
@@ -27,7 +28,8 @@ uv run cardline sync          # catálogo + preços + imagens + índices (~2 min
 ```
 
 `uv run cardline sync --sets 1,2` indexa só os sets que você abre. Os preços das cartas de cada pipeline
-são atualizados no próprio passo de preços, então o `sync` só precisa rodar de novo quando sair um set novo.
+são atualizados no próprio passo de preços, então o `sync` só precisa rodar de novo quando sair um set novo
+(também dá pela página: botão **Sincronizar** na aba **Sets**).
 
 ## Uso
 
@@ -50,7 +52,7 @@ A página fica em `cardline/web/` (HTML, CSS e JavaScript puros, sem build) e é
 `cardline/server.py` (FastAPI). O mesmo servidor expõe a API, recebe os uploads e roda as pipelines em fila,
 uma por vez, cada uma num processo próprio.
 
-A página tem três abas: **Resumo** (onde ela abre), **Coleção** e **Pipelines**. No topo ficam sempre o
+A página tem quatro abas: **Resumo** (onde ela abre), **Coleção**, **Pipelines** e **Sets**. No topo ficam sempre o
 seletor US$/R$ (pela cotação do dia), o tema claro/escuro e o botão **+ Nova pipeline**. As capturas
 abaixo são do booster de exemplo.
 
@@ -131,6 +133,24 @@ Busca por nome, subtítulo ou número (`1/169`), filtros por set, raridade, tint
 várias ordenações, e visualização em grade ou lista. Clicar numa carta abre a imagem grande, os preços normal e
 foil, o link do TCGplayer e cada cópia: de qual pipeline veio (com link) e quanto valia na abertura e hoje.
 
+### Sets
+
+![Aba Sets: cada set com a foto do booster, data de lançamento, cartas no catálogo e na coleção, se já é reconhecido em vídeo, e o botão Sincronizar](docs/pagina-sets.jpg)
+
+A base de sets que o cardline conhece. Cada set mostra o ícone, a data de lançamento, quantas cartas tem no
+catálogo e na sua coleção, e se já é **reconhecido em vídeo** (imagens baixadas e índice pronto). As cartas de
+Lorcana não têm símbolo de expansão (o símbolo embaixo é a raridade), então o ícone de cada set é a **foto
+oficial do booster** no TCGplayer, com o fundo branco removido. Sets sem booster avulso (promos, quests)
+ficam com um selo hexagonal com o código do set.
+
+- **Sincronizar** roda o `cardline sync` em segundo plano: sets novos, cartas, preços, imagens, índices e
+  ícones. Saiu um set novo, é só clicar; a página mostra o andamento e se atualiza no fim.
+- **Trocar ícone** põe uma imagem sua (o logo do set, por exemplo) no lugar da foto do booster. A
+  sincronização não troca um ícone escolhido por você, e **Usar a foto do booster** desfaz a troca.
+
+O ícone aparece no painel do vídeo que vai somando o booster, na lista e no detalhe das pipelines e no
+detalhe de cada carta.
+
 ### No celular e acesso remoto
 
 <img src="docs/pagina-celular.jpg" width="400" alt="Página no celular: aba Resumo e detalhe de uma pipeline">
@@ -160,6 +180,10 @@ no túnel, ou só redes de confiança.
 | DELETE | `/api/runs/{id}/cards/{uid}` | tira uma carta da identificação (fica pendente até reprocessar) |
 | POST | `/api/runs/{id}/cards/{uid}/restore` | devolve uma carta removida |
 | DELETE | `/api/runs/{id}` | exclui a pipeline e as cartas dela |
+| GET | `/api/sets` | sets com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo |
+| POST | `/api/sets/sync` | inicia o `cardline sync` em segundo plano (um por vez); `GET` na mesma rota mostra o andamento e o log |
+| POST | `/api/sets/{code}/icon` | troca o ícone do set; o corpo da requisição é a imagem |
+| DELETE | `/api/sets/{code}/icon` | volta ao ícone automático (a foto do booster) |
 
 ## Pipeline
 
@@ -171,7 +195,7 @@ no túnel, ou só redes de confiança.
 | Conferir com IA local | (opcional) um modelo de visão do Ollama lê nome e número de cada recorte | `scan.json` |
 | Atualizar preços | busca os preços de hoje do set e fixa o preço da abertura de cada carta (foil ou não); ao reprocessar, o preço da abertura é mantido, e uma carta nova recebe o preço do dia da abertura | `scan.json` |
 | Registrar na coleção | substitui as cartas que esta pipeline tinha registrado | banco |
-| Gerar vídeo com overlay | vídeo 1080×1920 com etiquetas, total animado e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` |
+| Gerar vídeo com overlay | vídeo 1080×1920 com etiquetas, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` |
 
 Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo).
 
@@ -219,6 +243,10 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
   (`cardline run ID`), e a página acompanha o progresso por polling.
 - **Overlay** (`overlay.py`): o ffmpeg decodifica (com tone mapping HDR→SDR para os vídeos HLG do Pixel), o
   Pillow desenha e o x264 codifica mantendo o áudio original.
+- **Ícones dos sets** (`catalog.py`): o [tcgcsv](https://tcgcsv.com) espelha o catálogo do TCGplayer, e o
+  grupo de cada set de Lorcana lá tem a mesma sigla do código do set no Lorcast. Do grupo sai o produto
+  "Booster Pack" avulso (não o sleeved nem a caixa). Na foto em 1000×1000 só sai o branco ligado à borda (o
+  branco da arte fica), e o resultado é recortado no booster.
 - **Conferência com IA local** (`verify.py`): no vídeo de exemplo o `qwen3.5:4b` acertou 12/12 nomes e
   números (~1 s por carta). Ele só **sinaliza** divergências, nunca troca a carta, porque pode alucinar.
 
@@ -227,7 +255,8 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
 - `data/cardline.db`: catálogo, preços, pipelines e **a sua coleção**. Fica fora do git (o repositório é
   público e o banco muda a cada atualização de preço), então faça backup desse arquivo.
 - `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg`) e `pipeline.log` de cada pipeline.
-- `data/cache/`: imagens e índices, regeneráveis com `cardline sync`.
+- `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
+  que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 
 ## Testes
 

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cardline</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpolygon points='50,2 93,26 93,74 50,98 7,74 7,26' fill='%23f2c14e'/%3E%3Ctext x='50' y='68' font-family='system-ui,sans-serif' font-size='50' font-weight='800' text-anchor='middle' fill='%231a1405'%3EC%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -21,6 +22,7 @@
       <a href="#/resumo" data-tab="resumo">Resumo</a>
       <a href="#/colecao" data-tab="colecao">Coleção</a>
       <a href="#/pipelines" data-tab="pipelines">Pipelines <span id="active-badge" class="badge" hidden></span></a>
+      <a href="#/sets" data-tab="sets">Sets</a>
     </nav>
   </header>
 
@@ -64,6 +66,16 @@
   </section>
 
   <section id="view-pipelines" class="view" hidden></section>
+  <section id="view-sets" class="view" hidden>
+    <div class="toolbar"><h2>Sets</h2><span class="spacer"></span>
+      <button class="btn" id="sync-sets">Sincronizar</button></div>
+    <p class="muted setsintro">A base de sets (coleções) do Cardline. <b>Sincronizar</b> traz sets novos, cartas,
+      preços, as imagens que fazem um set ser reconhecido em vídeo e os ícones. Lorcana não tem símbolo de set
+      nas cartas; o ícone é a foto oficial do booster (TCGplayer), e dá para trocar por outra imagem.</p>
+    <div id="sync-status" class="syncstatus" hidden></div>
+    <div id="sets-grid" class="setsgrid"></div>
+    <input type="file" id="icon-file" accept="image/*" hidden>
+  </section>
   <section id="view-run" class="view" hidden></section>
 
   <section id="view-nova" class="view" hidden>

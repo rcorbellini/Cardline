@@ -8,14 +8,17 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
-    code        TEXT PRIMARY KEY,
-    id          TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    released_at TEXT
+    code         TEXT PRIMARY KEY,
+    id           TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    released_at  TEXT,
+    icon         TEXT,     -- imagem do set (relativa à raiz do projeto)
+    icon_source  TEXT,     -- tcgplayer (foto do booster) | manual (enviada na página)
+    tcg_group_id INTEGER   -- grupo do set no TCGplayer
 );
 
 CREATE TABLE IF NOT EXISTS cards (
@@ -121,8 +124,14 @@ def _add_column(con: sqlite3.Connection, table: str, column: str, ddl: str) -> N
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
+def _set_icon_columns(con: sqlite3.Connection) -> None:
+    for column, ddl in (("icon", "TEXT"), ("icon_source", "TEXT"), ("tcg_group_id", "INTEGER")):
+        _add_column(con, "sets", column, ddl)
+
+
 MIGRATIONS = {
     3: lambda con: _add_column(con, "runs", "kind", "TEXT NOT NULL DEFAULT 'abertura'"),
+    4: _set_icon_columns,
 }
 
 

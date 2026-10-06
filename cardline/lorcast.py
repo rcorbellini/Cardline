@@ -48,6 +48,11 @@ def fetch_set_cards(set_id: str) -> list[dict]:
     return _api(f"/sets/{set_id}/cards")
 
 
+def fetch(url: str, timeout: float = 60) -> bytes:
+    """GET simples (com novas tentativas) para outras fontes públicas, como o tcgcsv."""
+    return _fetch(url, timeout=timeout)
+
+
 def download(url: str, dest: Path) -> None:
     """Baixa um arquivo (imagens vêm da CDN, sem o limite de taxa da API)."""
     dest.parent.mkdir(parents=True, exist_ok=True)

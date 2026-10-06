@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import colorsys
 import math
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import rarity
+from . import db, rarity
 from .config import Settings
 from .money import Money
 from .scan import Progress
@@ -149,10 +150,16 @@ def blend_scaled(dst: np.ndarray, img: Image.Image, cx: float, cy: float, scale:
 
 
 class Overlay:
-    def __init__(self, scan: dict, money: Money, size: tuple[int, int], pack_size: int, paid_usd: float | None = None):
+    def __init__(self, scan: dict, money: Money, size: tuple[int, int], pack_size: int, paid_usd: float | None = None,
+                 icons: dict[str, Image.Image] | None = None):
         self.cards = scan["cards"]
         self.money = money
         self.paid_usd = paid_usd
+        self.icons = icons or {}  # ícone (foto do booster) de cada set
+        self._icon_cache: dict = {}
+        # o set de cada booster é o mais comum entre as cartas dele
+        self.pack_set = {p: Counter(c["set"] for c in self.cards if c["pack"] == p).most_common(1)[0][0]
+                         for p in {c["pack"] for c in self.cards}}
         self.W, self.H = size
         self.u = min(size) / 1080  # unidade: 1 px num vídeo 1080 de lado menor
         self.pack_size = pack_size
@@ -241,21 +248,28 @@ class Overlay:
         if key in self._hud_cache:
             return self._hud_cache[key]
         u = self.u
-        w, h = 660 * u, (176 if session_text else 150) * u
+        h = (176 if session_text else 150) * u
+        code = self.pack_set.get(pack)
+        icon = self._set_icon(code, h - 26 * u) if code else None
+        lead = icon.width + 14 * u if icon else 0  # o ícone do set fica à esquerda e o painel alarga
+        w = 660 * u + lead
         shadow = 18 * u
         s = Sprite(w + 2 * shadow, h + 2 * shadow)
         ox, oy = shadow, shadow
         s.rrect([ox, oy, ox + w, oy + h], 32 * u, fill=PANEL, outline=(242, 193, 78, 120), width=2 * u)
+        if icon:
+            s.paste(icon, (ox + 20 * u, oy + (h - icon.height) / 2))
+        x0 = ox + 30 * u + lead
         label = f"BOOSTER {pack}" if self.n_packs > 1 else "BOOSTER"
-        s.text((ox + 30 * u, oy + 26 * u), label, "SemiBold", 25 * u, GOLD)
-        s.text((ox + 30 * u, oy + 60 * u), f"{revealed}/{self.pack_size} cartas", "Medium", 25 * u, MUTED)
+        s.text((x0, oy + 26 * u), label, "SemiBold", 25 * u, GOLD)
+        s.text((x0, oy + 60 * u), f"{revealed}/{self.pack_size} cartas", "Medium", 25 * u, MUTED)
         s.text((ox + w - 30 * u, oy + 58 * u), total_text, "ExtraBold", 62 * u, WHITE, anchor="rm")
         n = self.pack_size
         gap = 8 * u
-        slot_w = (w - 60 * u - gap * (n - 1)) / n
+        slot_w = (w - 60 * u - lead - gap * (n - 1)) / n
         y = oy + 112 * u
         for i in range(n):
-            x = ox + 30 * u + i * (slot_w + gap)
+            x = x0 + i * (slot_w + gap)
             state = slots[i] if i < len(slots) else None
             if state is None:
                 s.rrect([x, y, x + slot_w, y + 14 * u], 7 * u, fill=DIM)
@@ -268,6 +282,26 @@ class Overlay:
         img = s.done(shadow=12 * u)
         self._hud_cache[key] = img
         return img
+
+    def _set_icon(self, code: str, height: float) -> Image.Image:
+        """Foto do booster do set no tamanho do painel; sem foto, um selo hexagonal com o número do set."""
+        key = (code, round(height))
+        if key not in self._icon_cache:
+            src = self.icons.get(code)
+            if src is not None:
+                img = src.copy()
+                img.thumbnail((round(height * 0.8), round(height)), Image.LANCZOS)
+            else:
+                w = height * 0.86
+                s = Sprite(w, height)
+                hexagon = [(w / 2, 0), (w, height * 0.25), (w, height * 0.75), (w / 2, height), (0, height * 0.75), (0, height * 0.25)]
+                s.d.polygon([(x * SS, y * SS) for x, y in hexagon], fill=GOLD)
+                size = height * 0.38
+                size *= min(1.0, w * 0.74 / s.textlen(code, "ExtraBold", size))  # códigos longos encolhem para caber
+                s.text((w / 2, height / 2), code, "ExtraBold", size, (14, 18, 34, 255), anchor="mm")
+                img = s.done()
+            self._icon_cache[key] = img
+        return self._icon_cache[key]
 
     @property
     def n_packs(self) -> int:
@@ -321,7 +355,7 @@ class Overlay:
             if flyer is not None and 0 <= fx <= 1:
                 e = ease_in_out(fx)
                 sx, sy = cx + self.tags[k].width * 0.28, cy
-                tx, ty = hud_cx + 170 * u, hud_cy - 10 * u
+                tx, ty = hud_cx + hud.width / 2 - 178 * u, hud_cy - 10 * u  # centro do total no painel
                 px, py = sx + (tx - sx) * e, sy + (ty - sy) * e - math.sin(math.pi * e) * 120 * u
                 blend_scaled(frame, flyer, px, py, 1.1 - 0.35 * e, 1 - 0.6 * e ** 3)
 
@@ -390,7 +424,13 @@ def render(
     video = settings.root / scan["video"]
     info = probe(video)
     size = info.scaled(settings.output_short_side)
-    ov = Overlay(scan, money, size, settings.pack_size, paid_usd)
+    con = db.connect(settings.db_path)
+    codes = sorted({c["set"] for c in scan["cards"]})
+    icons = {}
+    for r in con.execute(f"SELECT code, icon FROM sets WHERE code IN ({','.join('?' * len(codes))})", codes):
+        if r["icon"] and (settings.root / r["icon"]).exists():
+            icons[r["code"]] = Image.open(settings.root / r["icon"]).convert("RGBA")
+    ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons)
     tmp = out.with_suffix(".part.mp4")  # o vídeo anterior continua válido até o novo ficar pronto
     writer = VideoWriter(tmp, size, FPS, audio_from=video if info.has_audio else None)
     total_frames = int(info.duration * FPS)
