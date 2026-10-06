@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from . import db, pipeline, rarity
 from .catalog import is_booster_set
-from .collection import load_scan
+from .collection import card_uid, load_scan, remove_card, restore_card
 from .config import Settings
 from .index import image_path
 from .money import CURRENCIES, usd_brl
@@ -83,6 +83,7 @@ class PaidBody(BaseModel):
 
 def create_app(settings: Settings) -> FastAPI:
     runner = Runner(settings)
+    edit_lock = threading.Lock()  # edições do scan.json não podem se intercalar
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     ollama = {"checked": 0.0, "available": False}
 
@@ -122,7 +123,8 @@ def create_app(settings: Settings) -> FastAPI:
         url = f"/runs/{folder.name}"
         scan = load_scan(folder) if (folder / "scan.json").exists() else None
         cards = scan["cards"] if scan else []
-        ids = sorted({x["card_id"] for x in cards})
+        removed = scan.get("removed", []) if scan else []
+        ids = sorted({x["card_id"] for x in cards + removed})
         rows = {r["id"]: r for r in c.execute(
             f"SELECT * FROM cards WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
         priced = scan is not None and any("price_usd" in x for x in cards)
@@ -146,13 +148,18 @@ def create_app(settings: Settings) -> FastAPI:
         if detail:
             out["cards"] = [
                 {
-                    "n": n, "card": x["card_id"], "foil": x["foil"], "foil_reason": x.get("foil_reason"),
+                    "n": n, "uid": card_uid(x), "card": x["card_id"], "foil": x["foil"], "foil_reason": x.get("foil_reason"),
                     "pack": x["pack"], "slot": x["slot"], "t": x["t"], "price_open": x.get("price_usd"),
                     "price_now": db.price_usd(rows[x["card_id"]], x["foil"]),
                     "crop": f"{url}/{x['crop']}" if x.get("crop") else None, "inliers": x.get("inliers"),
                     "manual": x.get("manual", False), "check": x.get("check"),
                 }
                 for n, x in enumerate(cards, 1)
+            ]
+            out["removed"] = [
+                {"uid": card_uid(x), "card": x["card_id"], "foil": x["foil"], "t": x["t"],
+                 "crop": f"{url}/{x['crop']}" if x.get("crop") else None, "removed_at": x.get("removed_at")}
+                for x in removed
             ]
             out["card_info"] = {cid: card_json(r) for cid, r in rows.items()}
             log = folder / "pipeline.log"
@@ -257,6 +264,35 @@ def create_app(settings: Settings) -> FastAPI:
         except (RuntimeError, ValueError) as e:
             raise HTTPException(409, str(e)) from e
         runner.wake()
+        return {"ok": True}
+
+    def editable_run(run_id: int):
+        run = con().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise HTTPException(404, "Pipeline não encontrada.")
+        if run["status"] in ("queued", "running"):
+            raise HTTPException(409, "A pipeline está rodando; espere terminar para editar as cartas.")
+        return settings.root / run["dir"]
+
+    @app.delete("/api/runs/{run_id}/cards/{uid}")
+    def delete_card(run_id: int, uid: str):
+        """Tira uma carta identificada errada ou duplicada; vale para a coleção e o vídeo ao reprocessar."""
+        with edit_lock:
+            try:
+                remove_card(settings, editable_run(run_id), uid)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            pipeline.mark_stale(settings, run_id, "prices")
+        return {"ok": True}
+
+    @app.post("/api/runs/{run_id}/cards/{uid}/restore")
+    def restore(run_id: int, uid: str):
+        with edit_lock:
+            try:
+                restore_card(settings, editable_run(run_id), uid)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            pipeline.mark_stale(settings, run_id, "prices")
         return {"ok": True}
 
     @app.patch("/api/runs/{run_id}")

@@ -40,6 +40,7 @@ function dur(a, b) {
   const s = Math.max(0, Math.round(((b ? new Date(b) : new Date()) - new Date(a)) / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}min ${s % 60}s`;
 }
+const TRASH = '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
 const STATUS = { queued: 'Na fila', running: 'Rodando', done: 'Concluída', failed: 'Falhou', interrupted: 'Interrompida', stale: 'Desatualizada' };
 const STEP_ICON = { pending: '', running: '•', done: '✓', skipped: '–', failed: '!', stale: '↻' };
 const active = r => r.status === 'queued' || r.status === 'running';
@@ -245,7 +246,7 @@ function runSkeleton() {
     <p class="error" id="r-error"></p>
     <div class="cols">
       <div><div class="sectionhead"><h3>Cartas</h3><span class="muted" id="r-cards-sub"></span></div>
-        <ul class="pulls" id="r-cards"></ul></div>
+        <ul class="pulls" id="r-cards"></ul><div id="r-edits"></div></div>
       <div class="side"><div class="panel"><ul class="steps" id="r-steps"></ul></div><div id="r-video"></div></div>
     </div>
     <details class="log"><summary>Log da execução</summary><pre id="r-log"></pre></details>`);
@@ -258,7 +259,7 @@ function renderRun() {
   const canRun = !active(r);
   const resumeLabel = steps.find(s => s.name === r.resume_from)?.label;
   patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${statusChip(r)}<span class="spacer"></span>
-    ${canRun && r.resume_from && r.status !== 'done' ? `<button class="btn" data-action="resume">${r.status === 'stale' ? 'Rodar o resto' : 'Continuar'} de “${esc(resumeLabel)}”</button>` : ''}
+    ${canRun && r.resume_from && r.status !== 'done' ? `<button class="btn" data-action="resume">${r.status === 'stale' ? 'Reprocessar com as edições' : `Continuar de “${esc(resumeLabel)}”`}</button>` : ''}
     ${canRun ? `<span class="rerun"><select id="r-from" aria-label="Passo inicial">${steps.map(s => `<option value="${s.name}">${esc(s.label)}</option>`).join('')}</select>
       <button class="btn ghost" data-action="rerun">Rodar de novo daqui</button></span>
       <button class="btn danger" data-action="delete">Excluir</button>` : ''}</div>`);
@@ -285,7 +286,7 @@ function renderRun() {
     const msg = running ? r.message : s.message;
     return `<li class="${s.status}"><span class="ico">${STEP_ICON[s.status] ?? ''}</span>
       <div><div class="label">${esc(s.label)}</div>${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
-        ${s.status === 'stale' ? '<div class="msg">desatualizado: rode de novo para aplicar as correções</div>' : ''}
+        ${s.status === 'stale' ? '<div class="msg">desatualizado: reprocesse para aplicar as edições</div>' : ''}
         ${running ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}</div>
       <span class="dur">${s.started_at && s.status !== 'skipped' ? dur(s.started_at, s.finished_at) : ''}</span></li>`;
   }).join(''));
@@ -297,6 +298,7 @@ function renderRun() {
        <p class="muted" style="font-size:13px"><a href="${esc(r.overlay)}" download="pipeline-${r.id}-overlay.mp4">Baixar vídeo com overlay</a></p>` : '');
 
   const cards = r.cards || [];
+  const editable = !active(r);
   const best = cards.reduce((b, x) => (x.price_now ?? 0) > (b?.price_now ?? -1) ? x : b, null);
   patch($('#r-cards-sub'), cards.length ? 'recorte do vídeo ao lado da imagem oficial' : '');
   patch($('#r-cards'), cards.length ? cards.map(x => {
@@ -304,7 +306,8 @@ function renderRun() {
     const check = x.check?.status === 'divergente'
       ? `<span class="warn" title="${esc(x.check.model)} leu: ${esc(x.check.name)} · ${esc(x.check.number)}">⚠ conferir</span>` : '';
     return `<li class="pull${x === best ? ' best' : ''}" data-card="${esc(x.card)}" data-foil="${x.foil}" title="${x === best ? 'Melhor carta' : ''}">
-      <span class="n">#${x.n}</span>
+      <div class="lead"><span class="n">#${x.n}</span>
+        ${editable ? `<button class="trash" data-action="remove-card" data-uid="${esc(x.uid)}" title="Excluir carta" aria-label="Excluir a carta #${x.n}, ${esc(c.name)}">${TRASH}</button>` : ''}</div>
       ${x.crop ? `<img loading="lazy" src="${esc(x.crop)}" alt="Recorte do vídeo">` : '<span class="noimg">sem recorte</span>'}
       ${img(c)}
       <div class="info"><div><b>${esc(c.name)}</b></div><div class="ver">${esc(c.version || ' ')}</div>
@@ -313,6 +316,22 @@ function renderRun() {
         <div class="line" title="${x.inliers ? `${x.inliers} pontos casados com a imagem oficial` : 'inserida manualmente'}">${esc(c.set)}/${esc(c.number)} · ${x.t != null ? x.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 's' : '—'}</div>
       </div></li>`;
   }).join('') : `<p class="muted">${active(r) ? 'As cartas aparecem aqui quando a identificação terminar.' : 'Nenhuma carta identificada.'}</p>`);
+
+  const removed = r.removed || [];
+  const pending = r.status === 'stale';
+  patch($('#r-edits'), (cards.length || removed.length) ? `
+    ${removed.length ? `<div class="removed"><b>Removidas (${removed.length})</b><ul>${removed.map(x => {
+      const c = r.card_info[x.card];
+      return `<li>${x.crop ? `<img loading="lazy" src="${esc(x.crop)}" alt="">` : '<span class="noimg"></span>'}
+        <span>${esc(c.name)}${c.version ? ` <span class="muted">${esc(c.version)}</span>` : ''}${x.foil ? ' <span class="foilpill">FOIL</span>' : ''}</span>
+        ${editable ? `<button class="btn ghost small" data-action="restore-card" data-uid="${esc(x.uid)}">Restaurar</button>` : ''}</li>`;
+    }).join('')}</ul></div>` : ''}
+    <div class="reprocess${pending ? ' pending' : ''}">
+      <p>${active(r) ? 'A pipeline está rodando; as cartas ficam editáveis quando ela terminar.'
+        : pending ? 'Edições pendentes: preços, coleção e vídeo só mudam depois de reprocessar.'
+        : 'Use a lixeira para tirar uma carta identificada errada ou duplicada, depois reprocesse.'}</p>
+      <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
+    </div>` : '');
 
   const log = $('#r-log');
   if (log.textContent !== (r.log || '')) {
@@ -323,17 +342,25 @@ function renderRun() {
 }
 
 $('#view-run').addEventListener('click', async ev => {
-  const pull = ev.target.closest('.pull');
-  if (pull) {
-    const e = entries.find(x => x.card === pull.dataset.card && String(x.foil) === pull.dataset.foil);
-    const c = S.run.card_info[pull.dataset.card];
-    openCard(e || { c, foil: pull.dataset.foil === 'true', qty: 0, copies: [], value: 0, price: null });
+  const target = ev.target.closest('[data-action]');
+  const action = target?.dataset.action;
+  if (!action) {
+    const pull = ev.target.closest('.pull');
+    if (pull) {
+      const e = entries.find(x => x.card === pull.dataset.card && String(x.foil) === pull.dataset.foil);
+      const c = S.run.card_info[pull.dataset.card];
+      openCard(e || { c, foil: pull.dataset.foil === 'true', qty: 0, copies: [], value: 0, price: null });
+    }
     return;
   }
-  const action = ev.target.closest('[data-action]')?.dataset.action;
-  if (!action) return;
   const id = S.runId;
   try {
+    if (action === 'remove-card' || action === 'restore-card') {
+      target.disabled = true;
+      const uid = encodeURIComponent(target.dataset.uid);
+      await api(action === 'remove-card' ? `/api/runs/${id}/cards/${uid}` : `/api/runs/${id}/cards/${uid}/restore`,
+                { method: action === 'remove-card' ? 'DELETE' : 'POST' });
+    }
     if (action === 'resume') await api(`/api/runs/${id}/rerun`, json({ from_step: null }));
     if (action === 'rerun') await api(`/api/runs/${id}/rerun`, json({ from_step: $('#r-from').value }));
     if (action === 'delete') {

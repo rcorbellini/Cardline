@@ -175,6 +175,7 @@ def scan_video(
             for m in rec["matches"][1:]:
                 alternatives[m["card"]] = max(alternatives.get(m["card"], 0), m["inliers"])
         cards.append({
+            "uid": f"{n + 1:02d}",
             "slot": n % settings.pack_size + 1,
             "pack": n // settings.pack_size + 1,
             "card_id": row["id"],

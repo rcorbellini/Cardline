@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from pathlib import Path
 
 from . import db
 from .config import Settings
-from .foil import FOIL_ONLY
+from .foil import FOIL_ONLY, assign_foils
 from .money import money_for
 
 
@@ -41,12 +42,51 @@ def _fill(c: dict, row) -> None:
     )
 
 
+def card_uid(c: dict) -> str:
+    """Identificador estável da carta no scan (a posição muda quando outra carta sai ou entra)."""
+    if c.get("uid"):
+        return c["uid"]
+    if c.get("crop"):  # scans antigos: o recorte tem o número original da carta
+        return Path(c["crop"]).stem
+    return f"m{c['t']:g}-{c['card_id'][-6:]}"
+
+
+def remove_card(settings: Settings, run_dir: Path, uid: str) -> dict:
+    """Tira a carta da identificação; ela fica em `removed` para poder ser restaurada."""
+    scan = load_scan(run_dir)
+    c = next((c for c in scan["cards"] if card_uid(c) == uid), None)
+    if c is None:
+        raise LookupError("Carta não encontrada nesta pipeline.")
+    scan["cards"].remove(c)
+    c.update(uid=uid, removed_at=db.now())
+    scan.setdefault("removed", []).append(c)
+    _renumber(scan, settings.pack_size)
+    save_scan(run_dir, scan)
+    return c
+
+
+def restore_card(settings: Settings, run_dir: Path, uid: str) -> dict:
+    scan = load_scan(run_dir)
+    c = next((c for c in scan.get("removed", []) if card_uid(c) == uid), None)
+    if c is None:
+        raise LookupError("Carta removida não encontrada nesta pipeline.")
+    scan["removed"].remove(c)
+    c.pop("removed_at", None)
+    scan["cards"].append(c)
+    _renumber(scan, settings.pack_size)
+    save_scan(run_dir, scan)
+    return c
+
+
 def _renumber(scan: dict, pack_size: int) -> None:
+    """Reordena pelo vídeo e refaz boosters e foil (a composição de cada booster pode ter mudado)."""
     cards = scan["cards"]
     cards.sort(key=lambda c: c["t"])
     for i, c in enumerate(cards):
         c["pack"], c["slot"] = i // pack_size + 1, i % pack_size + 1
         c["t_end"] = cards[i + 1]["t"] if i + 1 < len(cards) else scan["duration"]
+    manual = {c["pack"] for c in cards if c.get("foil_reason") == "manual"}  # escolha manual vale para o booster
+    assign_foils([c for c in cards if c["pack"] not in manual], pack_size)
 
 
 def edit_scan(
@@ -69,8 +109,8 @@ def edit_scan(
     if add_at is not None:
         if not card_ref:
             raise SystemExit("--at precisa de --card com a carta a inserir.")
-        c = {"t": add_at, "foil": bool(foil), "foil_reason": "manual" if foil else None, "quad": None, "crop": None,
-             "inliers": None, "frames": 0, "alternatives": [], "manual": True}
+        c = {"uid": uuid.uuid4().hex[:8], "t": add_at, "foil": bool(foil), "foil_reason": "manual" if foil else None,
+             "quad": None, "crop": None, "inliers": None, "frames": 0, "alternatives": [], "manual": True}
         _fill(c, db.resolve_card(con, card_ref))
         cards.append(c)
         action = "Adicionada"
@@ -79,8 +119,8 @@ def edit_scan(
             raise SystemExit(f"Informe o número da carta (1 a {len(cards)}), como aparece na página.")
         c = cards[index - 1]
         if remove:
-            cards.remove(c)
-            action = "Removida"
+            c = remove_card(settings, run_dir, card_uid(c))
+            return f"Removida: {db.display_name(c)} (dá para restaurar na página)"
         else:
             if card_ref:
                 _fill(c, db.resolve_card(con, card_ref))

@@ -47,8 +47,8 @@ A página fica em `cardline/web/` (HTML, CSS e JavaScript puros, sem build) e é
 uma por vez, cada uma num processo próprio.
 
 No topo da página ficam o valor da coleção, o total investido em boosters e o resultado, o seletor
-US$/R$ (pela cotação do dia) e o tema claro/escuro. As capturas abaixo são do vídeo de exemplo, e o valor
-pago nelas é ilustrativo.
+US$/R$ (pela cotação do dia) e o tema claro/escuro. As capturas abaixo são de duas aberturas do mesmo
+booster de exemplo.
 
 ### Nova pipeline
 
@@ -79,11 +79,14 @@ No detalhe de uma pipeline:
 - **Valor pago** (com "editar"), **cartas na abertura**, **valor hoje** e **resultado** sobre o valor pago.
 - **Cartas**: o recorte tirado do vídeo ao lado da imagem oficial, para conferir a identificação. A melhor
   carta fica destacada, e ⚠ marca uma divergência apontada pela IA local. Clicar abre os detalhes da carta.
+- **Corrigir cartas**: a lixeira em cada carta tira uma carta identificada errada ou duplicada, e ela vai
+  para "Removidas", de onde pode ser restaurada. As edições ficam pendentes até você clicar
+  **Reprocessar com as edições**, no fim da lista: aí preços, coleção e vídeo são refeitos sem as cartas
+  removidas, e a dedução da foil é refeita para a nova composição do booster.
 - **Passos** com status, mensagem e tempo de cada um. O passo em andamento mostra a barra de progresso.
 - **Vídeo com overlay** para assistir ou baixar, e o **log** da execução.
-- Ações: **Continuar** (depois de falha ou interrupção), **Rodar o resto** (depois de uma correção),
-  **Rodar de novo daqui** (a partir de qualquer passo) e **Excluir** (remove a pipeline e as cartas que ela
-  registrou na coleção).
+- Ações: **Continuar** (depois de falha ou interrupção), **Rodar de novo daqui** (a partir de qualquer passo)
+  e **Excluir** (remove a pipeline e as cartas que ela registrou na coleção).
 
 ### Coleção
 
@@ -117,6 +120,8 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs?filename=…&paid=…&paid_currency=BRL` | cria a pipeline; o corpo da requisição é o vídeo |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}` |
+| DELETE | `/api/runs/{id}/cards/{uid}` | tira uma carta da identificação (fica pendente até reprocessar) |
+| POST | `/api/runs/{id}/cards/{uid}/restore` | devolve uma carta removida |
 | DELETE | `/api/runs/{id}` | exclui a pipeline e as cartas dela |
 
 ## Pipeline
@@ -136,7 +141,8 @@ e qualquer pipeline pode **rodar de novo a partir de um passo** (na página ou c
 
 ### Correções
 
-Se uma carta foi identificada errado:
+Na página, a lixeira de cada carta resolve cartas erradas ou duplicadas. Pelo terminal dá para fazer
+também, e mais (trocar a carta, marcar foil, inserir uma que faltou):
 
 ```bash
 uv run cardline edit 4 3 --card 1/24          # na pipeline 4, a carta #3 é a 1/24 (também aceita nome)
@@ -146,7 +152,7 @@ uv run cardline edit 4 --card 1/55 --at 9.2   # faltou uma carta aos 9,2 s
 ```
 
 A correção muda só o resultado da identificação. Preço, coleção e vídeo ficam marcados como
-desatualizados até você clicar **Rodar o resto** na página (ou rodar `cardline run 4`). Aí só esses passos
+desatualizados até você clicar **Reprocessar com as edições** na página (ou rodar `cardline run 4`). Aí só esses passos
 rodam de novo, e as cartas registradas na coleção mudam junto.
 
 Cartas obtidas fora de vídeo: `uv run cardline add 1/169 --foil --qty 2`.
