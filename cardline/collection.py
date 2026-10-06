@@ -1,0 +1,112 @@
+"""Coleção: registra as cartas de um run (substituindo as anteriores dele), correções e cartas avulsas."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+from . import db
+from .config import Settings
+from .foil import FOIL_ONLY
+from .money import money_for
+
+
+def load_scan(run_dir: Path) -> dict:
+    return json.loads((run_dir / "scan.json").read_text())
+
+
+def save_scan(run_dir: Path, scan: dict) -> None:
+    (run_dir / "scan.json").write_text(json.dumps(scan, indent=2, ensure_ascii=False))
+
+
+def register(con: sqlite3.Connection, run_id: int, scan: dict) -> None:
+    """Grava as cartas do scan como as cartas do run (substitui o que o run tinha registrado)."""
+    with con:
+        con.execute("DELETE FROM collection WHERE run_id = ?", (run_id,))
+        con.executemany(
+            "INSERT INTO collection(card_id, foil, run_id, pack, slot, video_time, price_usd, added_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (c["card_id"], int(c["foil"]), run_id, c["pack"], c["slot"], c["t"], c.get("price_usd"), scan["scanned_at"])
+                for c in scan["cards"]
+            ],
+        )
+
+
+def _fill(c: dict, row) -> None:
+    c.update(
+        card_id=row["id"], set=row["set_code"], number=row["number"], name=row["name"],
+        version=row["version"], rarity=row["rarity"], ink=row["ink"],
+    )
+
+
+def _renumber(scan: dict, pack_size: int) -> None:
+    cards = scan["cards"]
+    cards.sort(key=lambda c: c["t"])
+    for i, c in enumerate(cards):
+        c["pack"], c["slot"] = i // pack_size + 1, i % pack_size + 1
+        c["t_end"] = cards[i + 1]["t"] if i + 1 < len(cards) else scan["duration"]
+
+
+def edit_scan(
+    settings: Settings,
+    run_dir: Path,
+    index: int | None,
+    card_ref: str | None = None,
+    foil: bool | None = None,
+    remove: bool = False,
+    add_at: float | None = None,
+) -> str:
+    """Corrige o resultado da identificação (carta errada, foil, carta a mais ou faltando).
+
+    Só muda o `scan.json`: os passos seguintes (preço, coleção, vídeo) ficam desatualizados até o
+    run ser executado de novo a partir dali.
+    """
+    scan = load_scan(run_dir)
+    cards = scan["cards"]
+    con = db.connect(settings.db_path)
+    if add_at is not None:
+        if not card_ref:
+            raise SystemExit("--at precisa de --card com a carta a inserir.")
+        c = {"t": add_at, "foil": bool(foil), "foil_reason": "manual" if foil else None, "quad": None, "crop": None,
+             "inliers": None, "frames": 0, "alternatives": [], "manual": True}
+        _fill(c, db.resolve_card(con, card_ref))
+        cards.append(c)
+        action = "Adicionada"
+    else:
+        if index is None or not 1 <= index <= len(cards):
+            raise SystemExit(f"Informe o número da carta (1 a {len(cards)}), como aparece na página.")
+        c = cards[index - 1]
+        if remove:
+            cards.remove(c)
+            action = "Removida"
+        else:
+            if card_ref:
+                _fill(c, db.resolve_card(con, card_ref))
+                c["manual"] = True
+                c.pop("check", None)  # a conferência era sobre a carta antiga
+            if foil is not None:
+                c["foil"], c["foil_reason"] = foil, "manual"
+            action = "Corrigida"
+    if c["rarity"] in FOIL_ONLY:
+        c["foil"] = True
+    _renumber(scan, settings.pack_size)
+    save_scan(run_dir, scan)
+    where = f" como #{cards.index(c) + 1} (a numeração das seguintes mudou)" if action == "Adicionada" else ""
+    return f"{action}{where}: {db.display_name(c)}{' (foil)' if c['foil'] else ''}"
+
+
+def add(settings: Settings, card_ref: str, foil: bool, qty: int) -> None:
+    """Carta obtida fora de vídeo (troca, compra avulsa...)."""
+    con = db.connect(settings.db_path)
+    row = db.resolve_card(con, card_ref)
+    foil = foil or row["rarity"] in FOIL_ONLY
+    price = db.price_usd(row, foil)
+    with con:
+        con.executemany(
+            "INSERT INTO collection(card_id, foil, price_usd, added_at) VALUES (?, ?, ?, ?)",
+            [(row["id"], int(foil), price, db.now())] * qty,
+        )
+    print(f"Adicionada: {qty}× {db.display_name(row)} ({row['set_code']}/{row['number']}){' foil' if foil else ''}"
+          f" — {money_for(settings).fmt(price)} cada")

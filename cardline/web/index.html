@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cardline</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <a class="logo" href="#/colecao" aria-label="Início">C</a>
+      <div><h1>Cardline</h1><p>Coleção Disney Lorcana</p></div>
+      <span class="spacer"></span>
+      <div class="seg" id="currency" role="group" aria-label="Moeda"></div>
+      <button class="iconbtn" id="theme" title="Alternar tema claro/escuro">Tema</button>
+      <a class="btn" href="#/nova">+ Nova pipeline</a>
+    </div>
+    <div class="stats" id="stats"></div>
+    <p class="updated" id="updated"></p>
+    <nav class="tabs">
+      <a href="#/colecao" data-tab="colecao">Coleção</a>
+      <a href="#/pipelines" data-tab="pipelines">Pipelines <span id="active-badge" class="badge" hidden></span></a>
+    </nav>
+  </header>
+
+  <section id="view-colecao" class="view">
+    <div class="filters">
+      <input type="search" id="q" placeholder="Buscar nome, subtítulo ou número (ex.: 1/169)" aria-label="Buscar">
+      <select id="set" aria-label="Set"></select>
+      <select id="rarity" aria-label="Raridade"></select>
+      <select id="foil" aria-label="Acabamento">
+        <option value="all">Normal e foil</option><option value="foil">Só foil</option><option value="normal">Só normal</option>
+      </select>
+      <input type="number" id="min" min="0" step="0.5" placeholder="Preço mín." aria-label="Preço mínimo">
+      <select id="sort" aria-label="Ordenar">
+        <option value="value">Maior valor</option><option value="value-asc">Menor valor</option>
+        <option value="total">Maior valor total (qtd × preço)</option><option value="name">Nome</option>
+        <option value="number">Set e número</option><option value="recent">Mais recentes</option><option value="qty">Quantidade</option>
+      </select>
+      <div class="seg" role="group" aria-label="Visualização">
+        <button data-view="grid" aria-pressed="true">Grade</button><button data-view="list" aria-pressed="false">Lista</button>
+      </div>
+      <div class="chips" id="inks" role="group" aria-label="Tinta"></div>
+    </div>
+    <div class="resultbar"><span id="count"></span><button class="linkbtn" id="clear">Limpar filtros</button></div>
+    <div id="results"></div>
+  </section>
+
+  <section id="view-pipelines" class="view" hidden></section>
+  <section id="view-run" class="view" hidden></section>
+
+  <section id="view-nova" class="view" hidden>
+    <form id="new-form" class="panel form">
+      <h2>Nova pipeline</h2>
+      <p class="muted">Envie o vídeo da abertura. As cartas são identificadas, precificadas e registradas na coleção,
+        vinculadas a esta pipeline, e o vídeo com overlay é gerado.</p>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="video/*" hidden>
+        <strong id="drop-title">Arraste o vídeo aqui ou clique para escolher</strong>
+        <span id="drop-sub" class="muted">MP4 ou MOV, como sai da câmera do celular</span>
+      </label>
+      <div class="fields">
+        <label class="wide">Valor pago pelo(s) booster(s)
+          <span class="inline"><input type="text" id="paid" inputmode="decimal" placeholder="ex.: 34,90">
+          <select id="paid-currency"><option value="BRL">R$</option><option value="USD">US$</option></select></span>
+          <small class="muted">Se o vídeo tiver mais de um booster, informe o total. Pode deixar em branco e preencher depois.</small>
+        </label>
+        <label>Set dos boosters
+          <select id="new-set"><option value="">Detectar automaticamente</option></select>
+        </label>
+        <label>Moeda do vídeo com overlay
+          <select id="new-currency"><option value="USD">US$ (dólar)</option><option value="BRL">R$ (real)</option></select>
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" id="opt-overlay" checked> Gerar vídeo com overlay de preços</label>
+      <label class="check"><input type="checkbox" id="opt-verify"> <span id="verify-label">Conferir cada carta com IA local</span></label>
+      <div class="actions">
+        <button class="btn" type="submit" id="send">Enviar e processar</button>
+        <a class="btn ghost" href="#/pipelines">Cancelar</a>
+      </div>
+      <div id="upload" hidden>
+        <div class="bar"><i id="upload-bar"></i></div>
+        <p class="muted" id="upload-text"></p>
+      </div>
+      <p class="error" id="new-error" hidden></p>
+    </form>
+  </section>
+</div>
+
+<dialog class="dlg" id="dlg"><div id="dlgbody"></div></dialog>
+<script src="app.js"></script>
+</body>
+</html>

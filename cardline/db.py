@@ -1,0 +1,206 @@
+"""Banco SQLite: catálogo de cartas, histórico de preços, pipelines (runs) e coleção."""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+SCHEMA_VERSION = 2
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS sets (
+    code        TEXT PRIMARY KEY,
+    id          TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    released_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cards (
+    id                TEXT PRIMARY KEY,
+    set_code          TEXT NOT NULL,
+    number            TEXT NOT NULL,
+    sort_number       INTEGER,
+    name              TEXT NOT NULL,
+    version           TEXT,
+    rarity            TEXT,
+    ink               TEXT,
+    type              TEXT,
+    cost              INTEGER,
+    image_small       TEXT,
+    image_normal      TEXT,
+    image_large       TEXT,
+    tcgplayer_url     TEXT,
+    usd               REAL,
+    usd_foil          REAL,
+    prices_updated_at TEXT,
+    raw               TEXT
+);
+CREATE INDEX IF NOT EXISTS cards_set_number ON cards(set_code, number);
+
+CREATE TABLE IF NOT EXISTS price_history (
+    card_id  TEXT NOT NULL,
+    day      TEXT NOT NULL,
+    usd      REAL,
+    usd_foil REAL,
+    PRIMARY KEY (card_id, day)
+);
+
+-- uma execução do pipeline para um vídeo de abertura
+CREATE TABLE IF NOT EXISTS runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    video         TEXT NOT NULL,              -- relativo à raiz do projeto
+    video_name    TEXT NOT NULL,              -- nome original do arquivo
+    video_sha1    TEXT NOT NULL UNIQUE,       -- impede registrar o mesmo vídeo duas vezes
+    dir           TEXT NOT NULL,              -- runs/<id>: scan.json, crops/, overlay.mp4, pipeline.log
+    status        TEXT NOT NULL,              -- queued | running | done | failed | interrupted | stale
+    step          TEXT,                       -- passo em execução (ou o que falhou)
+    progress      REAL,                       -- 0..1 do passo em execução
+    message       TEXT,
+    error         TEXT,
+    resume_from   TEXT,                       -- passo de onde a próxima execução começa
+    pid           INTEGER,
+    paid          REAL,                       -- valor de compra informado
+    paid_currency TEXT,
+    paid_usd      REAL,                       -- convertido pela cotação do dia da abertura
+    set_hint      TEXT,
+    options       TEXT NOT NULL DEFAULT '{}', -- {"overlay": bool, "verify": bool, "currency": "USD"|"BRL"}
+    recorded_at   TEXT,
+    created_at    TEXT NOT NULL,
+    started_at    TEXT,
+    finished_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS run_steps (
+    run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    status      TEXT NOT NULL,                -- pending | running | done | skipped | failed | stale
+    message     TEXT,
+    started_at  TEXT,
+    finished_at TEXT,
+    PRIMARY KEY (run_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS collection (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id    TEXT NOT NULL REFERENCES cards(id),
+    foil       INTEGER NOT NULL DEFAULT 0,
+    run_id     INTEGER REFERENCES runs(id) ON DELETE CASCADE,  -- NULL = adicionada à mão
+    pack       INTEGER,
+    slot       INTEGER,
+    video_time REAL,
+    price_usd  REAL,                          -- preço no momento da abertura
+    added_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS collection_run ON collection(run_id);
+"""
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path, timeout=15)  # o servidor e o processo do pipeline usam o banco juntos
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")
+    version = con.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        raise SystemExit(f"{path} é de uma versão mais nova do cardline (esquema {version}).")
+    con.executescript(SCHEMA)
+    con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    return con
+
+
+def now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def upsert_set(con: sqlite3.Connection, s: dict) -> None:
+    con.execute(
+        "INSERT INTO sets(code, id, name, released_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(code) DO UPDATE SET id=excluded.id, name=excluded.name, released_at=excluded.released_at",
+        (s["code"], s["id"], s["name"], s.get("released_at")),
+    )
+
+
+def upsert_cards(con: sqlite3.Connection, cards: list[dict], fetched_at: str) -> None:
+    day = fetched_at[:10]
+    for c in cards:
+        prices = c.get("prices") or {}
+        images = (c.get("image_uris") or {}).get("digital") or {}
+        ink = c.get("ink") or "/".join(c.get("inks") or []) or None
+        number = str(c["collector_number"])
+        m = re.match(r"\d+", number)
+        con.execute(
+            """INSERT INTO cards(id, set_code, number, sort_number, name, version, rarity, ink, type, cost,
+                                 image_small, image_normal, image_large, tcgplayer_url,
+                                 usd, usd_foil, prices_updated_at, raw)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 set_code=excluded.set_code, number=excluded.number, sort_number=excluded.sort_number,
+                 name=excluded.name, version=excluded.version, rarity=excluded.rarity, ink=excluded.ink,
+                 type=excluded.type, cost=excluded.cost, image_small=excluded.image_small,
+                 image_normal=excluded.image_normal, image_large=excluded.image_large,
+                 tcgplayer_url=excluded.tcgplayer_url, usd=excluded.usd, usd_foil=excluded.usd_foil,
+                 prices_updated_at=excluded.prices_updated_at, raw=excluded.raw""",
+            (
+                c["id"], c["set"]["code"], number, int(m.group()) if m else None,
+                c["name"], c.get("version"), c.get("rarity"), ink, " · ".join(c.get("type") or []),
+                c.get("cost"), images.get("small"), images.get("normal"), images.get("large"),
+                (c.get("purchase_uris") or {}).get("tcgplayer"),
+                prices.get("usd"), prices.get("usd_foil"), fetched_at, json.dumps(c),
+            ),
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO price_history(card_id, day, usd, usd_foil) VALUES (?, ?, ?, ?)",
+            (c["id"], day, prices.get("usd"), prices.get("usd_foil")),
+        )
+
+
+def card(con: sqlite3.Connection, card_id: str) -> sqlite3.Row | None:
+    return con.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+
+
+def cards_in_set(con: sqlite3.Connection, set_code: str) -> list[sqlite3.Row]:
+    return con.execute(
+        "SELECT * FROM cards WHERE set_code = ? ORDER BY sort_number, number", (set_code,)
+    ).fetchall()
+
+
+def resolve_card(con: sqlite3.Connection, ref: str) -> sqlite3.Row:
+    """Acha uma carta por `SET/NUM` (ex.: `1/169`), id do Lorcast ou nome (`Scar - Fiery Usurper`)."""
+    ref = ref.strip()
+    if ref.startswith("crd_"):
+        row = card(con, ref)
+        if row:
+            return row
+    m = re.fullmatch(r"([A-Za-z0-9]+)\s*[/-]\s*(\w+)", ref)
+    if m:
+        row = con.execute(
+            "SELECT * FROM cards WHERE set_code = ? COLLATE NOCASE AND number = ?", m.groups()
+        ).fetchone()
+        if row:
+            return row
+    name, _, version = (p.strip() for p in ref.partition(" - "))
+    rows = con.execute(
+        "SELECT * FROM cards WHERE name LIKE ? AND (? = '' OR version LIKE ?) ORDER BY set_code, sort_number",
+        (f"%{name}%", version, f"%{version}%"),
+    ).fetchall()
+    if len(rows) == 1:
+        return rows[0]
+    if not rows:
+        raise SystemExit(f"Nenhuma carta encontrada para {ref!r}.")
+    options = "\n".join(f"  {r['set_code']}/{r['number']}  {display_name(r)}" for r in rows[:15])
+    raise SystemExit(f"{ref!r} é ambíguo; use SET/NÚMERO. Candidatas:\n{options}")
+
+
+def display_name(row: sqlite3.Row | dict) -> str:
+    return f"{row['name']} - {row['version']}" if row["version"] else row["name"]
+
+
+def price_usd(row: sqlite3.Row | dict, foil: bool) -> float | None:
+    """Preço de mercado; foil sem cotação própria cai no preço normal (e vice-versa)."""
+    if foil:
+        return row["usd_foil"] if row["usd_foil"] is not None else row["usd"]
+    return row["usd"] if row["usd"] is not None else row["usd_foil"]

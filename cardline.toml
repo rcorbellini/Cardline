@@ -1,0 +1,24 @@
+# Preferências do cardline. Todas são opcionais; os valores abaixo são os padrões.
+
+# Moeda do overlay e da página: "USD" (preço de mercado do TCGplayer) ou "BRL" (convertido pela cotação do dia).
+currency = "USD"
+
+# Cartas por booster (Lorcana = 12): agrupa os boosters, os totais e a inferência de qual carta é a foil.
+pack_size = 12
+
+# Frames por segundo analisados no scan (mais = instante de cada carta mais preciso, scan mais lento).
+analysis_fps = 10.0
+
+# Lado menor do vídeo com overlay: 1080 → 1080x1920 em retrato; 2160 → 4K.
+output_short_side = 1080
+
+# Segundos do resumo no fim do vídeo com overlay.
+outro_seconds = 4.0
+
+# Modelo de visão do Ollama que confere cada carta lendo nome e número de coleção (ex.: "qwen3.5:4b").
+# Preenchido, a conferência já vem marcada no upload.
+# Só sinaliza divergências, nunca troca a carta sozinho. Vazio = desmarcada (marcando, usa qwen3.5:4b).
+verify_model = ""
+
+# Processos paralelos no scan (padrão: núcleos - 1, no máximo 8).
+# workers = 8
