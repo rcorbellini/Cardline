@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from . import db, pipeline, rarity
 from .catalog import is_booster_set, refresh_prices
-from .collection import card_uid, load_scan, remove_card, restore_card
+from .collection import card_uid, load_scan, remove_card, restore_card, set_card_foil
 from .config import Settings
 from .index import image_path
 from .money import CURRENCIES, usd_brl
@@ -74,6 +74,10 @@ class Runner:
 
 class RerunBody(BaseModel):
     from_step: str | None = None
+
+
+class CardPatch(BaseModel):
+    foil: bool | None = None  # por enquanto só o acabamento; trocar a carta vem depois
 
 
 class RunPatch(BaseModel):
@@ -287,6 +291,22 @@ def create_app(settings: Settings) -> FastAPI:
                 raise HTTPException(404, str(e)) from e
             pipeline.mark_stale(settings, run_id, "prices")
         return {"ok": True}
+
+    @app.patch("/api/runs/{run_id}/cards/{uid}")
+    def edit_card(run_id: int, uid: str, body: CardPatch):
+        """Edita uma carta identificada (por enquanto, se é foil); vale ao reprocessar."""
+        if body.foil is None:
+            raise HTTPException(400, "Nada para editar.")
+        with edit_lock:
+            try:
+                changed = set_card_foil(settings, editable_run(run_id), uid, body.foil)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            if changed:
+                pipeline.mark_stale(settings, run_id, "prices")
+        return {"ok": True, "changed": changed}
 
     @app.post("/api/runs/{run_id}/cards/{uid}/restore")
     def restore(run_id: int, uid: str):

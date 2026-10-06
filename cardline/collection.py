@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from . import db
+from . import db, rarity
 from .config import Settings
 from .foil import FOIL_ONLY, assign_foils
 from .money import money_for
@@ -49,6 +49,44 @@ def card_uid(c: dict) -> str:
     if c.get("crop"):  # scans antigos: o recorte tem o número original da carta
         return Path(c["crop"]).stem
     return f"m{c['t']:g}-{c['card_id'][-6:]}"
+
+
+AUTO_FOIL = ("booster", "posição")  # foil deduzida pelo sistema (não pela raridade nem à mão)
+
+
+def _forget_price(c: dict) -> None:
+    """Outro acabamento/carta: o preço da abertura é recalculado (pelo dia da abertura) ao reprocessar."""
+    c.pop("price_usd", None)
+    c.pop("price_key", None)
+
+
+def _set_foil(scan: dict, c: dict, foil: bool) -> bool:
+    """Marca ou desmarca a carta como foil à mão; devolve se algum acabamento mudou."""
+    if c["rarity"] in FOIL_ONLY and not foil:
+        raise ValueError(f"{rarity.label(c['rarity'])} é sempre foil.")
+    changed = c["foil"] != foil
+    c["foil"], c["foil_reason"] = foil, "manual"
+    if changed:
+        _forget_price(c)
+    if foil:  # um booster tem uma foil: a dedução automática em outra carta do mesmo booster sai
+        for other in scan["cards"]:
+            if other is not c and other["pack"] == c["pack"] and other["foil"] and other.get("foil_reason") in AUTO_FOIL:
+                other["foil"], other["foil_reason"] = False, None
+                _forget_price(other)
+                changed = True
+    return changed
+
+
+def set_card_foil(settings: Settings, run_dir: Path, uid: str, foil: bool) -> bool:
+    """Edita o acabamento de uma carta da pipeline; devolve se mudou algo (aí é preciso reprocessar)."""
+    scan = load_scan(run_dir)
+    c = next((c for c in scan["cards"] if card_uid(c) == uid), None)
+    if c is None:
+        raise LookupError("Carta não encontrada nesta pipeline.")
+    changed = _set_foil(scan, c, foil)
+    _renumber(scan, settings.pack_size)
+    save_scan(run_dir, scan)
+    return changed
 
 
 def remove_card(settings: Settings, run_dir: Path, uid: str) -> dict:
@@ -126,11 +164,12 @@ def edit_scan(
                 _fill(c, db.resolve_card(con, card_ref))
                 c["manual"] = True
                 c.pop("check", None)  # a conferência era sobre a carta antiga
+                _forget_price(c)
             if foil is not None:
-                c["foil"], c["foil_reason"] = foil, "manual"
-            if card_ref or foil is not None:  # outra carta/acabamento: preço da abertura é recalculado
-                c.pop("price_usd", None)
-                c.pop("price_key", None)
+                try:
+                    _set_foil(scan, c, foil)
+                except ValueError as e:
+                    raise SystemExit(str(e)) from e
             action = "Corrigida"
     if c["rarity"] in FOIL_ONLY:
         c["foil"] = True

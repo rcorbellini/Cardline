@@ -41,6 +41,7 @@ function dur(a, b) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}min ${s % 60}s`;
 }
 const TRASH = '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
+const PENCIL = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 const STATUS = { queued: 'Na fila', running: 'Rodando', done: 'Concluída', failed: 'Falhou', interrupted: 'Interrompida', stale: 'Desatualizada' };
 const STEP_ICON = { pending: '', running: '•', done: '✓', skipped: '–', failed: '!', stale: '↻' };
 const active = r => r.status === 'queued' || r.status === 'running';
@@ -199,9 +200,12 @@ function openCard(e) {
         ${c.tcg ? `<a class="btn" href="${esc(c.tcg)}" target="_blank" rel="noopener">Ver no TCGplayer ↗</a>` : ''}
       </div>
     </div>`;
+  $('#dlg').className = 'dlg';
   $('#dlg').showModal();
 }
-$('#dlg').addEventListener('click', ev => { if (ev.target.id === 'dlg') ev.target.close(); });
+$('#dlg').addEventListener('click', ev => {
+  if (ev.target.id === 'dlg' || ev.target.closest('[data-close]')) $('#dlg').close();
+});
 
 // ---- lista de pipelines ----
 function statusChip(r) { return `<span class="status ${r.status}">${STATUS[r.status] || r.status}</span>`; }
@@ -304,21 +308,24 @@ function renderRun() {
   const cards = r.cards || [];
   const editable = !active(r);
   const best = cards.reduce((b, x) => (x.price_now ?? 0) > (b?.price_now ?? -1) ? x : b, null);
-  patch($('#r-cards-sub'), cards.length ? 'recorte do vídeo ao lado da imagem oficial' : '');
+  patch($('#r-cards-sub'), !cards.length ? '' : editable ? 'deslize uma carta para editar ou remover' : 'recorte do vídeo ao lado da imagem oficial');
   patch($('#r-cards'), cards.length ? cards.map(x => {
     const c = r.card_info[x.card], rr = rar(c.rarity);
     const check = x.check?.status === 'divergente'
       ? `<span class="warn" title="${esc(x.check.model)} leu: ${esc(x.check.name)} · ${esc(x.check.number)}">⚠ conferir</span>` : '';
-    return `<li class="pull${x === best ? ' best' : ''}" data-card="${esc(x.card)}" data-foil="${x.foil}" title="${x === best ? 'Melhor carta' : ''}">
-      <div class="lead"><span class="n">#${x.n}</span>
-        ${editable ? `<button class="trash" data-action="remove-card" data-uid="${esc(x.uid)}" title="Excluir carta" aria-label="Excluir a carta #${x.n}, ${esc(c.name)}">${TRASH}</button>` : ''}</div>
-      ${x.crop ? `<img loading="lazy" src="${esc(x.crop)}" alt="Recorte do vídeo">` : '<span class="noimg">sem recorte</span>'}
+    const name = `#${x.n}, ${esc(c.name)}`;
+    return `<li class="swipe${x === best ? ' best' : ''}" data-uid="${esc(x.uid)}">
+      ${editable ? `<div class="swipe-act left"><button data-action="edit-card" data-uid="${esc(x.uid)}" aria-label="Editar a carta ${name}">${PENCIL}<span>Editar</span></button></div>
+      <div class="swipe-act right"><button data-action="remove-card" data-uid="${esc(x.uid)}" aria-label="Remover a carta ${name}">${TRASH}<span>Remover</span></button></div>` : ''}
+      <div class="pull${editable ? ' draggable' : ''}" data-card="${esc(x.card)}" data-foil="${x.foil}" title="${x === best ? 'Melhor carta' : ''}">
+      <span class="n">#${x.n}</span>
+      ${x.crop ? `<img loading="lazy" src="${esc(x.crop)}" alt="Recorte do vídeo" draggable="false">` : '<span class="noimg">sem recorte</span>'}
       ${img(c)}
       <div class="info"><div><b>${esc(c.name)}</b></div><div class="ver">${esc(c.version || ' ')}</div>
         <div class="line"><span class="rar" style="--c:${rr.color}"><i></i>${esc(rr.label)}</span>${x.foil ? '<span class="foilpill">FOIL</span>' : ''}
           <span class="price num" style="color:var(--text)">${money(x.price_now ?? x.price_open)}</span>${x.manual ? '<span>· corrigida</span>' : ''}${check}</div>
         <div class="line" title="${x.inliers ? `${x.inliers} pontos casados com a imagem oficial` : 'inserida manualmente'}">${esc(c.set)}/${esc(c.number)} · ${x.t != null ? x.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 's' : '—'}</div>
-      </div></li>`;
+      </div></div></li>`;
   }).join('') : `<p class="muted">${active(r) ? 'As cartas aparecem aqui quando a identificação terminar.' : 'Nenhuma carta identificada.'}</p>`);
 
   const removed = r.removed || [];
@@ -333,7 +340,7 @@ function renderRun() {
     <div class="reprocess${pending ? ' pending' : ''}">
       <p>${active(r) ? 'A pipeline está rodando; as cartas ficam editáveis quando ela terminar.'
         : pending ? 'Edições pendentes: preços, coleção e vídeo só mudam depois de reprocessar.'
-        : 'Use a lixeira para tirar uma carta identificada errada ou duplicada, depois reprocesse.'}</p>
+        : 'Deslize uma carta para a direita para editar ou para a esquerda para remover, depois reprocesse.'}</p>
       <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
     </div>` : '');
 
@@ -350,6 +357,9 @@ $('#view-run').addEventListener('click', async ev => {
   const action = target?.dataset.action;
   if (!action) {
     const pull = ev.target.closest('.pull');
+    if (Date.now() - swipe.endedAt < 400) return;  // o clique que vem junto com o fim do arraste
+    if (pull && swipe.open === pull.closest('.swipe')) { closeSwipe(); return; }
+    closeSwipe();
     if (pull) {
       const e = entries.find(x => x.card === pull.dataset.card && String(x.foil) === pull.dataset.foil);
       const c = S.run.card_info[pull.dataset.card];
@@ -375,6 +385,7 @@ $('#view-run').addEventListener('click', async ev => {
       return;
     }
     if (action === 'edit-paid') { editPaid(); return; }
+    if (action === 'edit-card') { editCard(target.dataset.uid); return; }
     if (action === 'video-currency') {
       if (target.getAttribute('aria-pressed') === 'true') return;
       await api(`/api/runs/${id}`, json({ currency: target.dataset.cur }, 'PATCH'));
@@ -382,6 +393,106 @@ $('#view-run').addEventListener('click', async ev => {
     await refresh();
   } catch (e) { alert(e.message); }
 });
+// ---- deslizar a carta: direita revela Editar, esquerda revela Remover ----
+const SWIPE_W = 96;
+const swipe = { open: null, drag: null, endedAt: 0 };
+function setSwipe(li, x, animate = true) {
+  const pull = li.querySelector('.pull');
+  pull.style.transition = animate ? '' : 'none';
+  pull.style.transform = x ? `translateX(${x}px)` : '';
+  li.dataset.open = x > 0 ? 'left' : x < 0 ? 'right' : '';
+}
+function closeSwipe() {
+  if (swipe.open?.isConnected) setSwipe(swipe.open, 0);
+  swipe.open = null;
+}
+const cardsEl = $('#view-run');
+cardsEl.addEventListener('pointerdown', ev => {
+  const pull = ev.target.closest('.pull.draggable');
+  if (!pull || ev.button > 0) return;
+  const li = pull.closest('.swipe');
+  const base = li.dataset.open === 'left' ? SWIPE_W : li.dataset.open === 'right' ? -SWIPE_W : 0;
+  swipe.drag = { li, pull, id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, base, x: base, moving: false };
+});
+cardsEl.addEventListener('pointermove', ev => {
+  const d = swipe.drag;
+  if (!d || ev.pointerId !== d.id) return;
+  const dx = ev.clientX - d.x0, dy = ev.clientY - d.y0;
+  if (!d.moving) {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+    if (Math.abs(dy) > Math.abs(dx)) { swipe.drag = null; return; }  // é rolagem da página
+    d.moving = true;
+    d.pull.setPointerCapture(ev.pointerId);
+    if (swipe.open && swipe.open !== d.li) closeSwipe();
+  }
+  const limit = SWIPE_W * 1.3;
+  d.x = Math.max(-limit, Math.min(limit, d.base + dx));
+  setSwipe(d.li, d.x, false);
+});
+const endSwipe = ev => {
+  const d = swipe.drag;
+  if (!d || ev.pointerId !== d.id) return;
+  swipe.drag = null;
+  if (!d.moving) return;
+  const to = d.x > SWIPE_W * 0.45 ? SWIPE_W : d.x < -SWIPE_W * 0.45 ? -SWIPE_W : 0;
+  setSwipe(d.li, to);
+  swipe.open = to ? d.li : null;
+  swipe.endedAt = Date.now();
+};
+cardsEl.addEventListener('pointerup', endSwipe);
+cardsEl.addEventListener('pointercancel', endSwipe);
+// teclado: o botão de ação ganha foco pelo Tab e a carta desliza para mostrá-lo
+cardsEl.addEventListener('focusin', ev => {
+  const act = ev.target.closest('.swipe-act');
+  if (!act) return;
+  const li = act.closest('.swipe');
+  if (swipe.open && swipe.open !== li) closeSwipe();
+  setSwipe(li, act.classList.contains('left') ? SWIPE_W : -SWIPE_W);
+  swipe.open = li;
+});
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#dlg').open) closeSwipe(); });
+document.addEventListener('pointerdown', ev => { if (swipe.open && !swipe.open.contains(ev.target)) closeSwipe(); });
+
+// ---- editar carta (por enquanto, só se é foil) ----
+const FOIL_ONLY = ['Enchanted', 'Epic', 'Iconic'];
+function editCard(uid) {
+  const r = S.run, x = r.cards.find(card => card.uid === uid);
+  if (!x) return;
+  const c = r.card_info[x.card], fixed = FOIL_ONLY.includes(c.rarity);
+  $('#dlgbody').innerHTML = `
+    <form class="editcard" id="edit-form">
+      <button class="iconbtn close" type="button" data-close aria-label="Fechar">✕</button>
+      <h2>Editar carta #${x.n}</h2>
+      <div class="editpreview">
+        ${x.crop ? `<img src="${esc(x.crop)}" alt="Recorte do vídeo">` : ''}${img(c)}
+        <div><b>${esc(c.name)}</b><div class="muted">${esc(c.version || '')}</div>
+          <div class="muted">${esc(rar(c.rarity).label)} · ${esc(c.set)}/${esc(c.number)}</div></div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="edit-foil" ${x.foil ? 'checked' : ''} ${fixed ? 'disabled' : ''}><span>Foil</span></label>
+      <p class="muted">${fixed ? `${esc(rar(c.rarity).label)} é sempre foil.`
+        : 'Um booster tem uma foil: marcar esta carta tira a marcação automática de outra do mesmo booster. O preço da abertura é recalculado para o acabamento escolhido quando você reprocessar.'}</p>
+      <div class="actions"><button class="btn" id="edit-save" ${fixed ? 'disabled' : ''}>Salvar</button>
+        <button class="btn ghost" type="button" data-close>Cancelar</button></div>
+      <p class="error" id="edit-error" hidden></p>
+    </form>`;
+  $('#dlg').className = 'dlg narrow';
+  $('#dlg').showModal();
+  $('#edit-form').onsubmit = async ev => {
+    ev.preventDefault();
+    $('#edit-save').disabled = true;
+    try {
+      await api(`/api/runs/${r.id}/cards/${encodeURIComponent(uid)}`, json({ foil: $('#edit-foil').checked }, 'PATCH'));
+      $('#dlg').close();
+      closeSwipe();
+      await refresh();
+    } catch (e) {
+      $('#edit-error').textContent = e.message;
+      $('#edit-error').hidden = false;
+      $('#edit-save').disabled = false;
+    }
+  };
+}
+
 const json = (body, method = 'POST') => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const parseMoney = s => { const v = parseFloat(String(s).trim().replace(/\./g, '').replace(',', '.')); return isNaN(v) ? null : v; };
 function editPaid() {

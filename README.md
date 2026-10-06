@@ -86,10 +86,17 @@ No detalhe de uma pipeline:
 - **Valor pago** (com "editar"), **cartas na abertura**, **valor hoje** e **resultado** sobre o valor pago.
 - **Cartas**: o recorte tirado do vídeo ao lado da imagem oficial, para conferir a identificação. A melhor
   carta fica destacada, e ⚠ marca uma divergência apontada pela IA local. Clicar abre os detalhes da carta.
-- **Corrigir cartas**: a lixeira em cada carta tira uma carta identificada errada ou duplicada, e ela vai
-  para "Removidas", de onde pode ser restaurada. As edições ficam pendentes até você clicar
-  **Reprocessar com as edições**, no fim da lista: aí preços, coleção e vídeo são refeitos sem as cartas
-  removidas, e a dedução da foil é refeita para a nova composição do booster.
+- **Corrigir cartas**: deslize a carta para a **direita** para **Editar** ou para a **esquerda** para
+  **Remover** (com o mouse, clique e arraste; pelo teclado, Tab chega nos dois botões).
+  - **Editar** abre a carta com a chave **Foil**. Como um booster tem uma foil, marcar uma carta tira a
+    marcação que o sistema tinha deduzido em outra do mesmo booster. Encantada, Épica e Icônica são sempre foil.
+  - **Remover** tira uma carta identificada errada ou duplicada; ela vai para "Removidas", de onde pode ser
+    restaurada.
+  - As edições ficam pendentes até **Reprocessar com as edições**, no fim da lista: preços, coleção e vídeo
+    são refeitos. Cartas que não mudaram mantêm o preço da abertura, e uma carta que mudou de acabamento recebe
+    o preço daquele acabamento no dia da abertura.
+
+  <img src="docs/pagina-editar.jpg" width="560" alt="No celular: carta deslizada para a direita mostrando Editar, outra deslizada para a esquerda mostrando Remover, e a janela de edição com a chave Foil">
 - **Passos** com status, mensagem e tempo de cada um. O passo em andamento mostra a barra de progresso.
 - **Vídeo com overlay** para assistir ou baixar, e o **log** da execução. A **moeda do vídeo** (US$ ou R$)
   pode ser trocada acima do player; o vídeo é refeito ao reprocessar.
@@ -129,6 +136,7 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}` e/ou `{"currency": "BRL"}` (moeda do vídeo); só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
+| PATCH | `/api/runs/{id}/cards/{uid}` | `{"foil": true}`: edita a carta (por enquanto, só o acabamento); fica pendente até reprocessar |
 | DELETE | `/api/runs/{id}/cards/{uid}` | tira uma carta da identificação (fica pendente até reprocessar) |
 | POST | `/api/runs/{id}/cards/{uid}/restore` | devolve uma carta removida |
 | DELETE | `/api/runs/{id}` | exclui a pipeline e as cartas dela |

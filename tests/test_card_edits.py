@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cardline import db, pipeline
-from cardline.collection import card_uid, load_scan, remove_card, restore_card, save_scan
+from cardline.collection import _renumber, card_uid, load_scan, remove_card, restore_card, save_scan, set_card_foil
 from cardline.config import Settings
 from cardline.server import create_app
 
@@ -102,7 +102,6 @@ def test_removing_a_duplicate_redoes_the_foil_deduction(settings, tmp_path):
     rar = ["Common"] * 6 + ["Common"] + ["Uncommon"] * 3 + ["Rare", "Rare"] + ["Uncommon"]  # 7ª carta repetida
     cards = [{**card(n, float(n)), "rarity": r} for n, r in enumerate(rar, 1)]
     scan = scan_with(cards)
-    from cardline.collection import _renumber
     _renumber(scan, 12)
     save_scan(tmp_path, scan)
     assert [c["uid"] for c in load_scan(tmp_path)["cards"] if c["foil"]] == ["07"]  # 13 cartas: dedução errada
@@ -117,3 +116,36 @@ def test_manual_foil_choice_survives_edits(settings, tmp_path):
     save_scan(tmp_path, scan_with(cards))
     remove_card(settings, tmp_path, "03")
     assert load_scan(tmp_path)["cards"][0]["foil"] is True
+
+
+def test_marking_a_card_foil_takes_the_foil_from_the_deduced_one(settings, tmp_path):
+    rar = ["Common"] * 6 + ["Uncommon"] * 3 + ["Rare", "Rare"] + ["Uncommon"]
+    cards = [{**card(n, float(n)), "rarity": r, "price_usd": 0.1, "price_key": f"crd_{n}:0"} for n, r in enumerate(rar, 1)]
+    scan = scan_with(cards)
+    _renumber(scan, 12)
+    save_scan(tmp_path, scan)
+    assert [c["uid"] for c in load_scan(tmp_path)["cards"] if c["foil"]] == ["12"]  # deduzida pelo booster
+
+    assert set_card_foil(settings, tmp_path, "01", True) is True
+    after = {c["uid"]: c for c in load_scan(tmp_path)["cards"]}
+    assert [uid for uid, c in after.items() if c["foil"]] == ["01"]
+    assert after["01"]["foil_reason"] == "manual"
+    assert "price_usd" not in after["01"] and "price_usd" not in after["12"]  # repreço pelo dia da abertura
+    assert after["05"]["price_usd"] == 0.1  # as outras mantêm o preço da abertura
+
+
+def test_foil_only_rarities_stay_foil(settings, tmp_path):
+    save_scan(tmp_path, scan_with([{**card(1, 1.0), "rarity": "Enchanted", "foil": True}]))
+    with pytest.raises(ValueError, match="sempre foil"):
+        set_card_foil(settings, tmp_path, "01", False)
+
+
+def test_api_edit_card_foil(settings, run):
+    with TestClient(create_app(settings)) as client:
+        r = client.patch(f"/api/runs/{run}/cards/02", json={"foil": True})
+        assert r.status_code == 200 and r.json()["changed"] is True
+        detail = client.get(f"/api/runs/{run}").json()
+        assert detail["status"] == "stale" and detail["resume_from"] == "prices"
+        assert [c["uid"] for c in detail["cards"] if c["foil"]] == ["02"]
+        assert client.patch(f"/api/runs/{run}/cards/02", json={}).status_code == 400
+        assert client.patch(f"/api/runs/{run}/cards/99", json={"foil": True}).status_code == 404
