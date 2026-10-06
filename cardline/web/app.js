@@ -7,7 +7,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('cardline:' + k, JSON.stringify(v)); } catch {} },
 };
 // atualiza o HTML de um container só quando mudou (não reinicia vídeo, foco, <details>...)
-const patch = (el, html) => { if (el._html !== html) { el.innerHTML = html; el._html = html; } };
+const patch = (el, html) => { if (el._html === html) return false; el.innerHTML = html; el._html = html; return true; };
 
 const S = { meta: null, col: { cards: {}, owned: [] }, runs: [], run: null, runId: null, cur: 'USD', file: null, xhr: null };
 
@@ -292,10 +292,14 @@ function renderRun() {
   }).join(''));
 
   const overlayStep = r.steps.find(s => s.name === 'overlay');
-  patch($('#r-video'), r.overlay && overlayStep.status !== 'running'
+  const videoCur = r.options?.currency || 'USD';
+  const curControl = r.options?.overlay === false ? '' : `<div class="vidbar"><span>Moeda do vídeo com overlay</span>
+    <div class="seg" role="group" aria-label="Moeda do vídeo com overlay">${['USD', 'BRL'].filter(c => c in S.meta.rates).map(c =>
+      `<button data-action="video-currency" data-cur="${c}" aria-pressed="${c === videoCur}" ${active(r) ? 'disabled' : ''}>${sym(c)}</button>`).join('')}</div></div>`;
+  patch($('#r-video'), curControl + (r.overlay && overlayStep.status !== 'running'
     ? `<video class="player" controls preload="metadata" src="${esc(r.overlay)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"
          ${r.poster ? `poster="${esc(r.poster)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"` : ''}></video>
-       <p class="muted" style="font-size:13px"><a href="${esc(r.overlay)}" download="pipeline-${r.id}-overlay.mp4">Baixar vídeo com overlay</a></p>` : '');
+       <p class="muted" style="font-size:13px"><a href="${esc(r.overlay)}" download="pipeline-${r.id}-overlay.mp4">Baixar vídeo com overlay</a></p>` : ''));
 
   const cards = r.cards || [];
   const editable = !active(r);
@@ -371,6 +375,10 @@ $('#view-run').addEventListener('click', async ev => {
       return;
     }
     if (action === 'edit-paid') { editPaid(); return; }
+    if (action === 'video-currency') {
+      if (target.getAttribute('aria-pressed') === 'true') return;
+      await api(`/api/runs/${id}`, json({ currency: target.dataset.cur }, 'PATCH'));
+    }
     await refresh();
   } catch (e) { alert(e.message); }
 });
@@ -460,6 +468,136 @@ $('#new-form').onsubmit = ev => {
 };
 window.addEventListener('beforeunload', e => { if (S.xhr) e.preventDefault(); });
 
+// ---- gráfico: gasto vs valor das cartas ----
+const SERIES = [  // cor segue a série (slots validados), nunca a posição
+  { key: 'spent', label: 'Gasto', color: 'var(--s-spent)' },
+  { key: 'open', label: 'Valor na abertura', color: 'var(--s-open)' },
+  { key: 'now', label: 'Valor hoje', color: 'var(--s-now)' },
+];
+const runTime = r => new Date(r.recorded_at || r.created_at).getTime();
+function chartPoints() {
+  const runs = S.runs.filter(r => r.paid_usd != null && r.value_now != null && r.n_cards).sort((a, b) => runTime(a) - runTime(b));
+  const pts = [{ label: 'início', spent: 0, open: 0, now: 0 }];
+  let spent = 0, open = 0, now = 0;
+  for (const r of runs) {
+    spent += r.paid_usd; open += r.value_open ?? 0; now += r.value_now ?? 0;
+    pts.push({ label: `#${r.id}`, run: r, spent, open, now });
+  }
+  return pts;
+}
+function niceStep(max, n = 4) {
+  const raw = max / n, mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+}
+function renderChart() {
+  const wrap = $('#chart');
+  patch($('#chart-legend'), SERIES.map(s => `<li><i style="--c:${s.color}"></i>${s.label}</li>`).join(''));
+  const pts = chartPoints(), rate = S.meta.rates[S.cur] ?? 1;
+  if (pts.length < 2) {
+    patch(wrap, '<p class="muted chartempty">Informe o valor pago nas pipelines para comparar o gasto com o valor das cartas.</p>');
+    patch($('#chart-table'), '');
+    return;
+  }
+  if (!chartWidth) return;  // ainda sem layout: o ResizeObserver chama de novo
+  const W = Math.max(280, chartWidth), H = 210, m = { l: 66, r: 96, t: 12, b: 28 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const top = (() => { const max = Math.max(...pts.flatMap(p => SERIES.map(s => p[s.key]))) * rate || 1; const st = niceStep(max); return { st, v: Math.ceil(max / st) * st }; })();
+  const x = i => m.l + i * pw / (pts.length - 1);
+  const y = usd => m.t + ph - usd * rate / top.v * ph;
+  const digits = top.st < 1 ? 2 : Number.isInteger(top.st) ? 0 : 1;  // passo 2,5 → 7,5 e não "8"
+  const tickFmt = v => `${sym(S.cur)} ${v.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  let svg = '';
+  for (let v = 0; v <= top.v + 1e-9; v += top.st) {
+    const yy = (m.t + ph - v / top.v * ph).toFixed(1);
+    svg += `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${yy}" y2="${yy}"/><text class="tick" x="${m.l - 8}" y="${yy}" text-anchor="end" dominant-baseline="middle">${tickFmt(v)}</text>`;
+  }
+  const every = Math.ceil(pts.length / Math.max(2, Math.floor(pw / 56)));
+  pts.forEach((p, i) => { if (i % every === 0 || i === pts.length - 1) svg += `<text class="tick" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(p.label)}</text>`; });
+  for (const s of SERIES) svg += `<polyline points="${pts.map((p, i) => `${x(i).toFixed(1)},${y(p[s.key]).toFixed(1)}`).join(' ')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const last = pts.at(-1), lx = x(pts.length - 1);
+  for (const s of SERIES) svg += `<circle cx="${lx.toFixed(1)}" cy="${y(last[s.key]).toFixed(1)}" r="4" fill="${s.color}" stroke="var(--panel)" stroke-width="2"/>`;
+  const placed = [];  // rótulos no fim só onde não colidem; o resto fica na legenda, tooltip e tabela
+  for (const s of [SERIES[0], SERIES[2], SERIES[1]]) {
+    const yy = y(last[s.key]);
+    if (placed.every(l => Math.abs(l - yy) >= 15)) { placed.push(yy); svg += `<text class="endlabel" x="${(lx + 10).toFixed(1)}" y="${yy.toFixed(1)}" dominant-baseline="middle">${money(last[s.key])}</text>`; }
+  }
+  const summary = `Acumulado: gasto ${money(last.spent)}, cartas valiam ${money(last.open)} na abertura e valem ${money(last.now)} hoje.`;
+  const changed = patch(wrap, `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" tabindex="0" aria-label="${esc(summary)} Use as setas para ver cada abertura.">${svg}
+    <line class="xhair" id="xhair" y1="${m.t}" y2="${m.t + ph}" visibility="hidden"/><rect x="${m.l - 12}" y="0" width="${pw + 24}" height="${H}" fill="transparent"/></svg>
+    <div class="tip" id="chart-tip" hidden></div>`);
+  renderChartTable(pts);
+  if (!changed) return;
+  const el = wrap.querySelector('svg'), tip = $('#chart-tip'), hair = $('#xhair');
+  let idx = pts.length - 1;
+  const show = i => {
+    idx = Math.max(0, Math.min(pts.length - 1, i));
+    const p = pts[idx], xx = x(idx);
+    hair.setAttribute('x1', xx); hair.setAttribute('x2', xx); hair.setAttribute('visibility', 'visible');
+    tip.replaceChildren();
+    const head = document.createElement('div'); head.className = 't-head';
+    head.textContent = p.run ? `Até a pipeline #${p.run.id} · ${dt(p.run.recorded_at || p.run.created_at)}` : 'Início';
+    tip.append(head);
+    for (const s of SERIES) {
+      const row = document.createElement('div'); row.className = 't-row';
+      const key = document.createElement('i'); key.style.setProperty('--c', s.color);
+      const val = document.createElement('b'); val.textContent = money(p[s.key]);
+      const name = document.createElement('span'); name.textContent = s.label;
+      row.append(key, val, name); tip.append(row);
+    }
+    if (p.run) {
+      const foot = document.createElement('div'); foot.className = 't-row t-foot';
+      const val = document.createElement('b'); val.textContent = money(p.now - p.spent, true); val.className = cls(p.now - p.spent);
+      const name = document.createElement('span'); name.textContent = 'resultado acumulado';
+      foot.append(val, name); tip.append(foot);
+    }
+    tip.hidden = false;
+    const tw = tip.offsetWidth;
+    tip.style.left = `${xx + 12 + tw > W ? xx - 12 - tw : xx + 12}px`;
+  };
+  const hide = () => { tip.hidden = true; hair.setAttribute('visibility', 'hidden'); };
+  const nearest = ev => { const r = el.getBoundingClientRect(); return Math.round((ev.clientX - r.left - m.l) / (pw / (pts.length - 1))); };
+  el.addEventListener('pointermove', ev => show(nearest(ev)));
+  el.addEventListener('pointerdown', ev => show(nearest(ev)));
+  el.addEventListener('pointerleave', hide);
+  el.addEventListener('focus', () => show(idx));
+  el.addEventListener('blur', hide);
+  el.addEventListener('keydown', ev => {
+    if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') { ev.preventDefault(); show(idx + (ev.key === 'ArrowRight' ? 1 : -1)); }
+    if (ev.key === 'Escape') hide();
+  });
+}
+function renderChartTable(pts) {
+  const rows = pts.filter(p => p.run).map(p => p.run);
+  const tot = rows.reduce((a, r) => ({ paid: a.paid + r.paid_usd, open: a.open + (r.value_open ?? 0), now: a.now + r.value_now }), { paid: 0, open: 0, now: 0 });
+  const line = (label, date, paid, open, now) => `<td>${label}</td><td>${date}</td><td class="r">${money(paid)}</td><td class="r">${money(open)}</td><td class="r">${money(now)}</td><td class="r ${cls(now - paid)}">${money(now - paid, true)}</td>`;
+  patch($('#chart-table'), `<table><thead><tr><th>Abertura</th><th>Data</th><th class="r">Pago</th><th class="r">Na abertura</th><th class="r">Hoje</th><th class="r">Resultado</th></tr></thead>
+    <tbody>${rows.map(r => `<tr>${line(`<a href="#/pipelines/${r.id}">#${r.id}</a>`, dt(r.recorded_at || r.created_at), r.paid_usd, r.value_open, r.value_now)}</tr>`).join('')}</tbody>
+    <tfoot><tr>${line('Total', '', tot.paid, tot.open, tot.now)}</tr></tfoot></table>`);
+}
+// redesenha quando a largura real do painel muda (layout inicial, rotação do celular, janela)
+let chartWidth = 0;
+new ResizeObserver(([entry]) => {
+  const w = Math.round(entry.contentRect.width);
+  if (Math.abs(w - chartWidth) > 2) { chartWidth = w; if (S.meta) renderChart(); }
+}).observe($('#chart'));
+
+// ---- atualizar preços de hoje (o valor na abertura de cada carta não muda) ----
+$('#refresh-prices').onclick = async () => {
+  const btn = $('#refresh-prices'), status = $('#refresh-status');
+  btn.disabled = true;
+  status.textContent = 'Buscando os preços de hoje…';
+  try {
+    const r = await api('/api/prices/refresh', { method: 'POST' });
+    S.meta = await api('/api/meta');
+    await refresh(true);
+    status.textContent = r.sets.length
+      ? 'Preços de hoje atualizados. O valor de cada carta na abertura continua o mesmo.' : 'Ainda não há cartas na coleção.';
+  } catch (e) {
+    status.textContent = e.message;
+  }
+  btn.disabled = false;
+};
+
 // ---- rotas, carga e polling ----
 function currentView() {
   const h = location.hash || '#/colecao';
@@ -486,7 +624,7 @@ window.addEventListener('hashchange', route);
 
 function renderAll() {
   buildEntries();
-  renderCurrency(); renderStats();
+  renderCurrency(); renderStats(); renderChart();
   const view = currentView();
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();

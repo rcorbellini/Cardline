@@ -199,6 +199,23 @@ def display_name(row: sqlite3.Row | dict) -> str:
     return f"{row['name']} - {row['version']}" if row["version"] else row["name"]
 
 
+def price_on(con: sqlite3.Connection, card_id: str, foil: bool, day: str) -> float | None:
+    """Preço de mercado num dia: o último conhecido até ele; senão o primeiro depois; senão o atual."""
+    cols = ("usd_foil", "usd") if foil else ("usd", "usd_foil")
+    queries = (
+        "SELECT usd, usd_foil FROM price_history WHERE card_id = ? AND day <= ?"
+        " AND COALESCE(usd, usd_foil) IS NOT NULL ORDER BY day DESC LIMIT 1",
+        "SELECT usd, usd_foil FROM price_history WHERE card_id = ? AND day > ?"
+        " AND COALESCE(usd, usd_foil) IS NOT NULL ORDER BY day LIMIT 1",
+    )
+    for q in queries:
+        row = con.execute(q, (card_id, day)).fetchone()
+        if row:
+            return row[cols[0]] if row[cols[0]] is not None else row[cols[1]]
+    current = card(con, card_id)
+    return price_usd(current, foil) if current else None
+
+
 def price_usd(row: sqlite3.Row | dict, foil: bool) -> float | None:
     """Preço de mercado; foil sem cotação própria cai no preço normal (e vice-versa)."""
     if foil:

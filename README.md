@@ -47,8 +47,15 @@ A página fica em `cardline/web/` (HTML, CSS e JavaScript puros, sem build) e é
 uma por vez, cada uma num processo próprio.
 
 No topo da página ficam o valor da coleção, o total investido em boosters e o resultado, o seletor
-US$/R$ (pela cotação do dia) e o tema claro/escuro. As capturas abaixo são de duas aberturas do mesmo
-booster de exemplo.
+US$/R$ (pela cotação do dia) e o tema claro/escuro. Logo abaixo, o gráfico **Gasto vs valor das cartas**
+acumula, abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e valem hoje. O
+gráfico tem tooltip (também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
+
+**Atualizar preços**, ao lado da data dos preços, busca os preços de mercado de hoje das cartas da
+coleção. O valor de cada carta **no momento da abertura** fica guardado e não muda, nem com esse botão
+nem ao reprocessar uma pipeline. É ele que aparece no vídeo e em "Na abertura".
+
+As capturas abaixo são do booster de exemplo.
 
 ### Nova pipeline
 
@@ -84,7 +91,8 @@ No detalhe de uma pipeline:
   **Reprocessar com as edições**, no fim da lista: aí preços, coleção e vídeo são refeitos sem as cartas
   removidas, e a dedução da foil é refeita para a nova composição do booster.
 - **Passos** com status, mensagem e tempo de cada um. O passo em andamento mostra a barra de progresso.
-- **Vídeo com overlay** para assistir ou baixar, e o **log** da execução.
+- **Vídeo com overlay** para assistir ou baixar, e o **log** da execução. A **moeda do vídeo** (US$ ou R$)
+  pode ser trocada acima do player; o vídeo é refeito ao reprocessar.
 - Ações: **Continuar** (depois de falha ou interrupção), **Rodar de novo daqui** (a partir de qualquer passo)
   e **Excluir** (remove a pipeline e as cartas que ela registrou na coleção).
 
@@ -119,7 +127,8 @@ no túnel, ou só redes de confiança.
 | GET | `/api/runs/{id}` | detalhe: passos, cartas e log |
 | POST | `/api/runs?filename=…&paid=…&paid_currency=BRL` | cria a pipeline; o corpo da requisição é o vídeo |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
-| PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}` |
+| PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}` e/ou `{"currency": "BRL"}` (moeda do vídeo); só o que for enviado muda |
+| POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
 | DELETE | `/api/runs/{id}/cards/{uid}` | tira uma carta da identificação (fica pendente até reprocessar) |
 | POST | `/api/runs/{id}/cards/{uid}/restore` | devolve uma carta removida |
 | DELETE | `/api/runs/{id}` | exclui a pipeline e as cartas dela |
@@ -132,7 +141,7 @@ no túnel, ou só redes de confiança.
 |---|---|---|
 | Identificar cartas | casa os frames com as imagens oficiais e acha quando cada carta aparece | `scan.json`, `crops/` |
 | Conferir com IA local | (opcional) um modelo de visão do Ollama lê nome e número de cada recorte | `scan.json` |
-| Atualizar preços | busca os preços atuais do set e precifica cada carta (foil ou não) | `scan.json` |
+| Atualizar preços | busca os preços de hoje do set e fixa o preço da abertura de cada carta (foil ou não); ao reprocessar, o preço da abertura é mantido, e uma carta nova recebe o preço do dia da abertura | `scan.json` |
 | Registrar na coleção | substitui as cartas que esta pipeline tinha registrado | banco |
 | Gerar vídeo com overlay | vídeo 1080×1920 com etiquetas, total animado e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` |
 

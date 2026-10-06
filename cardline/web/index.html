@@ -18,7 +18,18 @@
       <a class="btn" href="#/nova">+ Nova pipeline</a>
     </div>
     <div class="stats" id="stats"></div>
-    <p class="updated" id="updated"></p>
+    <section class="panel chartcard" aria-labelledby="chart-title">
+      <div class="charthead">
+        <div><h2 id="chart-title">Gasto vs valor das cartas</h2>
+          <p class="muted">Acumulado a cada abertura com valor pago informado</p></div>
+        <ul class="legend" id="chart-legend"></ul>
+      </div>
+      <div class="chartwrap" id="chart"></div>
+      <details class="charttable"><summary>Ver tabela</summary><div id="chart-table"></div></details>
+    </section>
+    <div class="updated"><span id="updated"></span>
+      <button class="linkbtn" id="refresh-prices">Atualizar preços</button>
+      <span id="refresh-status" role="status"></span></div>
     <nav class="tabs">
       <a href="#/colecao" data-tab="colecao">Coleção</a>
       <a href="#/pipelines" data-tab="pipelines">Pipelines <span id="active-badge" class="badge" hidden></span></a>

@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, pipeline, rarity
-from .catalog import is_booster_set
+from .catalog import is_booster_set, refresh_prices
 from .collection import card_uid, load_scan, remove_card, restore_card
 from .config import Settings
 from .index import image_path
@@ -76,9 +76,12 @@ class RerunBody(BaseModel):
     from_step: str | None = None
 
 
-class PaidBody(BaseModel):
+class RunPatch(BaseModel):
+    """Só os campos enviados mudam (mandar só a moeda do vídeo não apaga o valor pago)."""
+
     paid: float | None = None
-    paid_currency: str = "BRL"
+    paid_currency: str | None = None
+    currency: str | None = None  # moeda do vídeo com overlay
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -296,11 +299,30 @@ def create_app(settings: Settings) -> FastAPI:
         return {"ok": True}
 
     @app.patch("/api/runs/{run_id}")
-    def set_paid(run_id: int, body: PaidBody):
-        if body.paid_currency.upper() not in CURRENCIES:
+    def update_run(run_id: int, body: RunPatch):
+        if any(c is not None and c.upper() not in CURRENCIES for c in (body.paid_currency, body.currency)):
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
-        pipeline.update_paid(settings, run_id, body.paid, body.paid_currency)
+        if con().execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
+            raise HTTPException(404, "Pipeline não encontrada.")
+        sent = body.model_fields_set
+        if "paid" in sent:
+            pipeline.update_paid(settings, run_id, body.paid, body.paid_currency or "BRL")
+        if "currency" in sent and body.currency:
+            try:
+                pipeline.update_overlay_currency(settings, run_id, body.currency.upper())
+            except RuntimeError as e:
+                raise HTTPException(409, str(e)) from e
         return {"ok": True}
+
+    @app.post("/api/prices/refresh")
+    def refresh_current_prices():
+        """Busca os preços de hoje dos sets da coleção; o preço na abertura de cada carta não muda."""
+        sets = [r[0] for r in con().execute(
+            "SELECT DISTINCT cards.set_code FROM collection JOIN cards ON cards.id = collection.card_id")]
+        try:
+            return refresh_prices(settings, sets)
+        except OSError as e:
+            raise HTTPException(502, f"Não consegui buscar os preços no Lorcast ({e}).") from e
 
     @app.delete("/api/runs/{run_id}")
     def delete(run_id: int):

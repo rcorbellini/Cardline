@@ -25,6 +25,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from . import db, lorcast
@@ -191,7 +192,21 @@ def _verify(ctx: RunContext) -> str:
     return "\n".join([summary, *warnings])
 
 
+def opening_day(run: sqlite3.Row) -> str:
+    """Dia da abertura (data local da gravação do vídeo; senão, de quando a pipeline foi criada)."""
+    stamp = run["recorded_at"] or run["created_at"]
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone().date().isoformat()
+    except ValueError:
+        return stamp[:10]
+
+
 def _prices(ctx: RunContext) -> str:
+    """Atualiza os preços de hoje do set e precifica as cartas que ainda não têm preço da abertura.
+
+    O preço da abertura é fixado na primeira vez e não muda ao reprocessar. Uma carta que entra
+    depois (trocada, inserida, foil corrigida) recebe o preço do dia da abertura, se houver histórico.
+    """
     scan = load_scan(ctx.dir)
     fetched_at, offline = db.now(), []
     for code in sorted({c["set"] for c in scan["cards"]}):
@@ -204,11 +219,19 @@ def _prices(ctx: RunContext) -> str:
             continue
         with ctx.con:
             db.upsert_cards(ctx.con, cards, fetched_at)
+    day, kept = opening_day(ctx.run), 0
     for c in scan["cards"]:
-        c["price_usd"] = db.price_usd(db.card(ctx.con, c["card_id"]), c["foil"])
+        key = f"{c['card_id']}:{int(c['foil'])}"
+        if c.get("price_usd") is not None and c.get("price_key", key) == key:  # sem price_key: scan antigo
+            c["price_key"] = key
+            kept += 1
+            continue
+        c["price_usd"], c["price_key"] = db.price_on(ctx.con, c["card_id"], c["foil"], day), key
     save_scan(ctx.dir, scan)
     total = sum(c["price_usd"] or 0 for c in scan["cards"])
-    msg = f"cartas valem {money_for(ctx.settings, 'USD').fmt(total)}"
+    msg = f"cartas valiam {money_for(ctx.settings, 'USD').fmt(total)} na abertura"
+    if kept:
+        msg += f" ({kept} com o preço da abertura mantido)"
     if offline:
         msg += f" · sem conexão: preços em cache para o set {', '.join(offline)}"
     return msg
@@ -325,6 +348,25 @@ def update_paid(settings: Settings, run_id: int, paid: float | None, currency: s
                     (paid, currency.upper() if paid else None, to_usd(settings, paid, currency), run_id))
     # o resumo do vídeo mostra o valor pago
     if con.execute("SELECT status FROM run_steps WHERE run_id = ? AND name = 'overlay'", (run_id,)).fetchone()[0] == "done":
+        mark_stale(settings, run_id, "overlay")
+
+
+def update_overlay_currency(settings: Settings, run_id: int, currency: str) -> None:
+    """Muda a moeda do vídeo com overlay; o vídeo fica desatualizado até reprocessar."""
+    con = db.connect(settings.db_path)
+    run = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        raise LookupError(f"Pipeline #{run_id} não existe.")
+    if run["status"] in ("queued", "running"):
+        raise RuntimeError("A pipeline está rodando; espere terminar para mudar a moeda do vídeo.")
+    options = json.loads(run["options"])
+    if options.get("currency") == currency:
+        return
+    options["currency"] = currency
+    with con:
+        con.execute("UPDATE runs SET options = ? WHERE id = ?", (json.dumps(options), run_id))
+    step = con.execute("SELECT status FROM run_steps WHERE run_id = ? AND name = 'overlay'", (run_id,)).fetchone()
+    if step and step["status"] in ("done", "stale"):
         mark_stale(settings, run_id, "overlay")
 
 

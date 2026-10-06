@@ -128,6 +128,9 @@ def edit_scan(
                 c.pop("check", None)  # a conferência era sobre a carta antiga
             if foil is not None:
                 c["foil"], c["foil_reason"] = foil, "manual"
+            if card_ref or foil is not None:  # outra carta/acabamento: preço da abertura é recalculado
+                c.pop("price_usd", None)
+                c.pop("price_key", None)
             action = "Corrigida"
     if c["rarity"] in FOIL_ONLY:
         c["foil"] = True

@@ -45,3 +45,19 @@ def sync(settings: Settings, set_codes: list[str] | None = None, images: bool = 
             print(f"Set {code}: indexando features...", flush=True)
             build_set_index(settings, code, ids)
     print("Sync concluído.")
+
+
+def refresh_prices(settings: Settings, set_codes: list[str]) -> dict:
+    """Atualiza os preços de hoje dos sets; o preço de cada carta na abertura fica como estava."""
+    con = db.connect(settings.db_path)
+    fetched_at = db.now()
+    done = []
+    for code in set_codes:
+        row = con.execute("SELECT id FROM sets WHERE code = ?", (code,)).fetchone()
+        if row is None:
+            continue
+        cards = lorcast.fetch_set_cards(row["id"])
+        with con:
+            db.upsert_cards(con, cards, fetched_at)
+        done.append(code)
+    return {"updated_at": fetched_at, "sets": done}
