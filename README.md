@@ -46,16 +46,21 @@ A página fica em `cardline/web/` (HTML, CSS e JavaScript puros, sem build) e é
 `cardline/server.py` (FastAPI). O mesmo servidor expõe a API, recebe os uploads e roda as pipelines em fila,
 uma por vez, cada uma num processo próprio.
 
-No topo da página ficam o valor da coleção, o total investido em boosters e o resultado, o seletor
-US$/R$ (pela cotação do dia) e o tema claro/escuro. Logo abaixo, o gráfico **Gasto vs valor das cartas**
-acumula, abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e valem hoje. O
-gráfico tem tooltip (também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
+A página tem três abas: **Resumo** (onde ela abre), **Coleção** e **Pipelines**. No topo ficam sempre o
+seletor US$/R$ (pela cotação do dia), o tema claro/escuro e o botão **+ Nova pipeline**. As capturas
+abaixo são do booster de exemplo.
+
+### Resumo
+
+![Aba Resumo: valor da coleção, cartas, únicas, foils, investido em boosters e resultado, com o gráfico de gasto vs valor das cartas](docs/pagina-resumo.jpg)
+
+O valor da coleção, o total investido em boosters e o resultado. O gráfico **Gasto vs valor das cartas**
+acumula, abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e valem hoje. Ele tem
+tooltip (também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
 
 **Atualizar preços**, ao lado da data dos preços, busca os preços de mercado de hoje das cartas da
 coleção. O valor de cada carta **no momento da abertura** fica guardado e não muda, nem com esse botão
 nem ao reprocessar uma pipeline. É ele que aparece no vídeo e em "Na abertura".
-
-As capturas abaixo são do booster de exemplo.
 
 ### Nova pipeline
 
@@ -113,7 +118,7 @@ foil, o link do TCGplayer e cada cópia: de qual pipeline veio (com link) e quan
 
 ### No celular e acesso remoto
 
-<img src="docs/pagina-celular.jpg" width="400" alt="Página no celular: coleção e detalhe de uma pipeline">
+<img src="docs/pagina-celular.jpg" width="400" alt="Página no celular: aba Resumo e detalhe de uma pipeline">
 
 A página funciona no celular. Por padrão o servidor só aceita conexões da própria máquina. Para acessar de
 outro aparelho:

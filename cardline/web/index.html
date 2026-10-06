@@ -10,13 +10,21 @@
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <a class="logo" href="#/colecao" aria-label="Início">C</a>
+      <a class="logo" href="#/resumo" aria-label="Início">C</a>
       <div><h1>Cardline</h1><p>Coleção Disney Lorcana</p></div>
       <span class="spacer"></span>
       <div class="seg" id="currency" role="group" aria-label="Moeda"></div>
       <button class="iconbtn" id="theme" title="Alternar tema claro/escuro">Tema</button>
       <a class="btn" href="#/nova">+ Nova pipeline</a>
     </div>
+    <nav class="tabs">
+      <a href="#/resumo" data-tab="resumo">Resumo</a>
+      <a href="#/colecao" data-tab="colecao">Coleção</a>
+      <a href="#/pipelines" data-tab="pipelines">Pipelines <span id="active-badge" class="badge" hidden></span></a>
+    </nav>
+  </header>
+
+  <section id="view-resumo" class="view" hidden>
     <div class="stats" id="stats"></div>
     <section class="panel chartcard" aria-labelledby="chart-title">
       <div class="charthead">
@@ -30,13 +38,9 @@
     <div class="updated"><span id="updated"></span>
       <button class="linkbtn" id="refresh-prices">Atualizar preços</button>
       <span id="refresh-status" role="status"></span></div>
-    <nav class="tabs">
-      <a href="#/colecao" data-tab="colecao">Coleção</a>
-      <a href="#/pipelines" data-tab="pipelines">Pipelines <span id="active-badge" class="badge" hidden></span></a>
-    </nav>
-  </header>
+  </section>
 
-  <section id="view-colecao" class="view">
+  <section id="view-colecao" class="view" hidden>
     <div class="filters">
       <input type="search" id="q" placeholder="Buscar nome, subtítulo ou número (ex.: 1/169)" aria-label="Buscar">
       <select id="set" aria-label="Set"></select>

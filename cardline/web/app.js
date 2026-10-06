@@ -711,15 +711,16 @@ $('#refresh-prices').onclick = async () => {
 
 // ---- rotas, carga e polling ----
 function currentView() {
-  const h = location.hash || '#/colecao';
+  const h = location.hash || '#/resumo';  // a página abre no Resumo
   if (/^#\/pipelines\/\d+/.test(h)) return 'run';
   if (h.startsWith('#/pipelines')) return 'pipelines';
   if (h.startsWith('#/nova')) return 'nova';
-  return 'colecao';
+  if (h.startsWith('#/colecao')) return 'colecao';
+  return 'resumo';
 }
 async function route() {
   const view = currentView();
-  for (const v of ['colecao', 'pipelines', 'run', 'nova']) $('#view-' + v).hidden = v !== view;
+  for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova']) $('#view-' + v).hidden = v !== view;
   document.querySelectorAll('nav.tabs a').forEach(a => {
     const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
