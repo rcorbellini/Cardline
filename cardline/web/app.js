@@ -991,6 +991,98 @@ async function reloadIcons() {
   renderAll();
 }
 
+// ---- gráfico: valor médio do booster por coleção (pelas cartas, não pelo preço de compra) ----
+const SET_SERIES = [  // mesmas cores do gráfico de gasto: a cor segue a medida
+  { key: 'open', label: 'Na abertura', color: 'var(--s-open)' },
+  { key: 'now', label: 'Hoje', color: 'var(--s-now)' },
+];
+let setWidth = 0;
+function setAverages() {  // cada pacote é um booster; a coleção dele vem da maioria das cartas
+  const by = {};
+  for (const r of S.runs) for (const p of r.pack_values || []) {
+    const g = by[p.set] ||= { set: p.set, packs: [], runs: new Set() };
+    g.packs.push(p); g.runs.add(r.id);
+  }
+  const order = S.meta.sets.map(s => s.code);  // ordem de lançamento
+  const avg = (ps, k) => ps.reduce((a, p) => a + p[k], 0) / ps.length;
+  return Object.values(by).map(g => ({ ...g, n: g.packs.length, open: avg(g.packs, 'value_open'), now: avg(g.packs, 'value_now'),
+    best: Math.max(...g.packs.map(p => p.value_now)) })).sort((a, b) => order.indexOf(a.set) - order.indexOf(b.set));
+}
+function renderSetChart() {
+  const groups = setAverages(), rate = S.meta.rates[S.cur] ?? 1;
+  patch($('#set-legend'), groups.length ? SET_SERIES.map(s => `<li><i style="--c:${s.color}"></i>${s.label}</li>`).join('') : '');
+  $('#set-tabledetails').hidden = !groups.length;
+  if (!groups.length) {
+    patch($('#set-chart'), '<p class="muted chartempty">Abra boosters (pipeline de abertura) para ver o valor médio por coleção.</p>');
+    patch($('#set-table'), '');
+    return;
+  }
+  if (!setWidth) return;  // ainda sem layout: o ResizeObserver chama de novo
+  const W = setWidth, H = 230, m = { l: 66, r: 8, t: 22, b: 46 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const max = Math.max(...groups.flatMap(g => [g.open, g.now])) * rate || 1;
+  const st = niceStep(max), top = Math.ceil(max / st) * st;
+  const digits = st < 1 ? 2 : Number.isInteger(st) ? 0 : 1;
+  const tickFmt = v => `${sym(S.cur)} ${v.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  const y = v => m.t + ph - v / top * ph;
+  const slot = pw / groups.length, bw = Math.min(48, (slot * 0.7 - 2) / 2);
+  let svg = '';
+  for (let v = 0; v <= top + 1e-9; v += st) {
+    svg += `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="tick" x="${m.l - 8}" y="${y(v).toFixed(1)}" text-anchor="end" dominant-baseline="middle">${tickFmt(v)}</text>`;
+  }
+  groups.forEach((g, i) => {
+    const cx = m.l + slot * (i + 0.5);
+    SET_SERIES.forEach((s, k) => {
+      const v = g[s.key] * rate, x0 = cx - (2 * bw + 2) / 2 + k * (bw + 2), y0 = y(v), h = m.t + ph - y0, rr = Math.min(4, h, bw / 2);
+      if (h > 0) svg += `<path d="M${x0.toFixed(1)},${(m.t + ph).toFixed(1)}V${(y0 + rr).toFixed(1)}Q${x0.toFixed(1)},${y0.toFixed(1)} ${(x0 + rr).toFixed(1)},${y0.toFixed(1)}H${(x0 + bw - rr).toFixed(1)}Q${(x0 + bw).toFixed(1)},${y0.toFixed(1)} ${(x0 + bw).toFixed(1)},${(y0 + rr).toFixed(1)}V${(m.t + ph).toFixed(1)}Z" fill="${s.color}"/>`;
+      if (bw >= 34) svg += `<text class="barlabel" x="${(x0 + bw / 2).toFixed(1)}" y="${(y0 - 6).toFixed(1)}" text-anchor="middle">${nf.format(v)}</text>`;
+    });
+    const name = setTitle(g.set), room = Math.max(4, Math.floor(slot / 7));
+    svg += `<text class="tick" x="${cx.toFixed(1)}" y="${H - 26}" text-anchor="middle">${esc(name.length > room ? name.slice(0, room - 1) + '…' : name)}</text>
+      <text class="tick" x="${cx.toFixed(1)}" y="${H - 10}" text-anchor="middle">${g.n} ${g.n === 1 ? 'booster' : 'boosters'}</text>
+      <rect class="hit" data-i="${i}" x="${(cx - slot / 2).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${H}" fill="transparent"/>`;
+  });
+  const summary = groups.map(g => `${setTitle(g.set)}: ${money(g.open)} na abertura, ${money(g.now)} hoje (${g.n} ${g.n === 1 ? 'booster' : 'boosters'})`).join('; ');
+  const changed = patch($('#set-chart'), `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Valor médio do booster por coleção. ${esc(summary)}">${svg}</svg>
+    <div class="tip" id="set-tip" hidden></div>`);
+  patch($('#set-table'), `<table><thead><tr><th>Coleção</th><th class="r">Boosters</th><th class="r">Média na abertura</th><th class="r">Média hoje</th><th class="r">Melhor booster (hoje)</th></tr></thead>
+    <tbody>${groups.map(g => `<tr><td><span class="setref">${setIcon(g.set, 'seticon small')}${esc(setTitle(g.set))}</span></td><td class="r">${g.n}</td>
+      <td class="r">${money(g.open)}</td><td class="r">${money(g.now)} <small class="${cls(g.now - g.open)}">${pctTxt(g.now, g.open)}</small></td><td class="r">${money(g.best)}</td></tr>`).join('')}</tbody></table>`);
+  if (!changed) return;
+  const tip = $('#set-tip'), wrap = $('#set-chart');
+  wrap.querySelectorAll('.hit').forEach(hit => {
+    const show = () => {
+      const g = groups[+hit.dataset.i];
+      tip.replaceChildren();
+      const head = document.createElement('div'); head.className = 't-head';
+      head.textContent = `${setTitle(g.set)} · ${g.n} ${g.n === 1 ? 'booster' : 'boosters'} em ${g.runs.size} ${g.runs.size === 1 ? 'pipeline' : 'pipelines'}`;
+      tip.append(head);
+      for (const s of SET_SERIES) {
+        const row = document.createElement('div'); row.className = 't-row';
+        const key = document.createElement('i'); key.style.setProperty('--c', s.color);
+        const val = document.createElement('b'); val.textContent = money(g[s.key]);
+        const name = document.createElement('span'); name.textContent = `média ${s.label.toLowerCase()}`;
+        row.append(key, val, name); tip.append(row);
+      }
+      const foot = document.createElement('div'); foot.className = 't-row t-foot';
+      const val = document.createElement('b'); val.textContent = money(g.best);
+      const name = document.createElement('span'); name.textContent = 'melhor booster, hoje';
+      foot.append(val, name); tip.append(foot);
+      tip.hidden = false;
+      const box = hit.getBoundingClientRect(), host = wrap.getBoundingClientRect();
+      const x = box.left - host.left + box.width / 2, tw = tip.offsetWidth;
+      tip.style.left = `${Math.max(0, Math.min(host.width - tw, x - tw / 2))}px`;
+      tip.style.top = '8px';
+    };
+    hit.addEventListener('pointerenter', show);
+    hit.addEventListener('pointerdown', show);
+    hit.addEventListener('pointerleave', () => { tip.hidden = true; });
+  });
+}
+new ResizeObserver(([entry]) => {
+  const w = Math.round(entry.contentRect.width);
+  if (Math.abs(w - setWidth) > 2) { setWidth = w; if (S.meta) renderSetChart(); }
+}).observe($('#set-chart'));
+
 // ---- redes: postar (YouTube, Instagram, TikTok), vincular e acompanhar os números ----
 const PRIVACY = { public: 'Público', unlisted: 'Não listado', private: 'Privado' };
 const NETS = [  // cor segue a rede (slots validados da paleta); uma escala por gráfico
@@ -1349,7 +1441,7 @@ window.addEventListener('hashchange', route);
 
 function renderAll() {
   buildEntries();
-  renderCurrency(); renderStats(); renderChart(); renderSocialChart();
+  renderCurrency(); renderStats(); renderChart(); renderSetChart(); renderSocialChart();
   const view = currentView();
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();

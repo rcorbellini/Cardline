@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.request
 import uuid
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -290,6 +291,16 @@ def create_app(settings: Settings) -> FastAPI:
             ollama["checked"] = time.monotonic()
         return ollama["available"]
 
+    def pack_values(cards: list[dict], rows: dict) -> list[dict]:
+        """Valor de cada booster do vídeo pelas cartas (na abertura e hoje); a coleção é a da maioria das cartas."""
+        packs: dict[int, list[dict]] = {}
+        for x in cards:
+            packs.setdefault(x.get("pack") or 1, []).append(x)
+        return [{"pack": p, "set": Counter(x.get("set") or rows[x["card_id"]]["set_code"] for x in xs).most_common(1)[0][0],
+                 "cards": len(xs), "value_open": sum(x.get("price_usd") or 0 for x in xs),
+                 "value_now": sum(db.price_usd(rows[x["card_id"]], x["foil"]) or 0 for x in xs)}
+                for p, xs in sorted(packs.items())]
+
     def run_json(c, run, detail: bool = False) -> dict:
         folder = settings.root / run["dir"]
         url = f"/runs/{folder.name}"
@@ -311,6 +322,7 @@ def create_app(settings: Settings) -> FastAPI:
             "n_cards": len(cards), "packs": max((x["pack"] or 0 for x in cards), default=0),  # cadastro: sem booster
             "value_open": sum(x.get("price_usd") or 0 for x in cards) if priced else None,
             "value_now": sum(db.price_usd(rows[x["card_id"]], x["foil"]) or 0 for x in cards) if cards else None,
+            "pack_values": pack_values(cards, rows) if run["kind"] == "abertura" and priced else [],
             "thumbs": [f"{url}/{x['crop']}" for x in cards if x.get("crop")][:24],
             "overlay": f"{url}/overlay.mp4" if (folder / "overlay.mp4").exists() else None,
             "narrated": f"{url}/narrado.mp4" if json.loads(run["options"]).get("narration")

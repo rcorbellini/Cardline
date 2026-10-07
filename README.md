@@ -79,7 +79,11 @@ o total investido em boosters e o resultado das aberturas. O gráfico **Gasto vs
 abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e valem hoje. Ele tem tooltip
 (também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
 
-Cadastros de coleção **não entram** no investido, no resultado nem no gráfico: são cartas que você já tinha,
+O gráfico **Valor médio do booster por coleção** mostra, para cada set, quanto vale em média um booster aberto
+pelo valor das suas cartas (não pelo preço de compra), na abertura e hoje. Cada pacote do vídeo conta como um
+booster, e a coleção dele é a da maioria das cartas; embaixo de cada set aparece quantos boosters entraram na média.
+
+Cadastros de coleção **não entram** no investido, no resultado nem nesses gráficos: são cartas que você já tinha,
 sem custo, e entrariam como valor sem gasto, inflando o resultado das aberturas.
 
 **Atualizar preços**, ao lado da data dos preços, busca os preços de mercado de hoje das cartas da
