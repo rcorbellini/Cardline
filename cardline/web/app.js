@@ -998,6 +998,14 @@ async function ytPollLogin() {
   renderAll();
   if (ytLogin?.status === 'waiting') ytLoginTimer = setTimeout(ytPollLogin, 3000);
 }
+async function ytSync() {  // a situação do YouTube muda fora da página (cliente salvo, servidor reiniciado)
+  try {
+    const st = await api('/api/youtube');
+    const now = { configured: st.configured, connected: st.connected, channel: st.channel };
+    if (JSON.stringify(now) !== JSON.stringify(S.meta.youtube)) { S.meta.youtube = now; yt.key = null; renderAll(); }
+    if (st.login?.status === 'waiting' && !ytLoginTimer) { ytLogin = st.login; ytPollLogin(); }
+  } catch (e) { console.warn(e); }
+}
 async function refreshYtStats(maxAge) {
   if (!S.meta?.youtube?.connected || !S.runs.some(r => r.youtube)) return;
   try {
@@ -1245,6 +1253,7 @@ async function route() {
   const view = currentView();
   for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
   if (view === 'sets') loadSets();
+  ytSync();
   if (view === 'resumo') refreshYtStats(1800);
   document.querySelectorAll('nav.tabs a').forEach(a => {
     const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
