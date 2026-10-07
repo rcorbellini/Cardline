@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -100,24 +100,32 @@ CREATE TABLE IF NOT EXISTS collection (
 );
 CREATE INDEX IF NOT EXISTS collection_run ON collection(run_id);
 
-CREATE TABLE IF NOT EXISTS youtube_posts (
-    run_id       INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
-    video_id     TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS posts (  -- o vídeo de uma abertura numa rede
+    run_id       INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    network      TEXT NOT NULL,   -- youtube | instagram | tiktok
+    post_id      TEXT,            -- ID na rede (vídeo do YouTube, mídia do Instagram, vídeo do TikTok)
+    url          TEXT NOT NULL,
     title        TEXT,
-    via          TEXT NOT NULL,   -- api (enviado pelo cardline) | link (postado pelo app e vinculado)
-    variant      TEXT,            -- narrado | overlay: a versão que foi enviada
-    privacy      TEXT,            -- public | unlisted | private, como o YouTube informa
+    via          TEXT NOT NULL,   -- api (postado pelo cardline) | link (postado pelo app e vinculado)
+    variant      TEXT,            -- narrado | overlay: a versão que foi postada
+    privacy      TEXT,            -- public | unlisted | private, quando a rede informa
     posted_at    TEXT NOT NULL,
-    published_at TEXT
+    published_at TEXT,
+    PRIMARY KEY (run_id, network)
 );
 
-CREATE TABLE IF NOT EXISTS youtube_stats (  -- uma linha por leitura: dá para ver a evolução depois
-    run_id     INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS post_stats (  -- uma linha por leitura: dá para ver a evolução depois
+    run_id     INTEGER NOT NULL,
+    network    TEXT NOT NULL,
     fetched_at TEXT NOT NULL,
     views      INTEGER,
     likes      INTEGER,
     comments   INTEGER,
-    PRIMARY KEY (run_id, fetched_at)
+    shares     INTEGER,
+    saves      INTEGER,
+    manual     INTEGER NOT NULL DEFAULT 0,  -- números informados à mão (rede sem API, como o TikTok)
+    PRIMARY KEY (run_id, network, fetched_at),
+    FOREIGN KEY (run_id, network) REFERENCES posts(run_id, network) ON DELETE CASCADE
 );
 """
 
@@ -156,10 +164,26 @@ def _narrate_steps(con: sqlite3.Connection) -> None:
                 " SELECT id, 'narrate', 'skipped', 'desligada' FROM runs WHERE kind = 'abertura'")
 
 
+def _posts_per_network(con: sqlite3.Connection) -> None:
+    """Os vídeos do YouTube passam para a tabela de posts por rede (YouTube, Instagram, TikTok)."""
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "youtube_posts" in tables:
+        con.execute("INSERT OR IGNORE INTO posts(run_id, network, post_id, url, title, via, variant, privacy, posted_at,"
+                    " published_at) SELECT run_id, 'youtube', video_id, 'https://youtu.be/' || video_id, title, via,"
+                    " variant, privacy, posted_at, published_at FROM youtube_posts")
+    if "youtube_stats" in tables:
+        con.execute("INSERT OR IGNORE INTO post_stats(run_id, network, fetched_at, views, likes, comments)"
+                    " SELECT run_id, 'youtube', fetched_at, views, likes, comments FROM youtube_stats"
+                    " WHERE run_id IN (SELECT run_id FROM posts WHERE network = 'youtube')")
+    con.execute("DROP TABLE IF EXISTS youtube_stats")
+    con.execute("DROP TABLE IF EXISTS youtube_posts")
+
+
 MIGRATIONS = {
     3: lambda con: _add_column(con, "runs", "kind", "TEXT NOT NULL DEFAULT 'abertura'"),
     4: _set_icon_columns,
     5: _narrate_steps,
+    6: _posts_per_network,
 }
 
 

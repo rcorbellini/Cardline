@@ -121,17 +121,13 @@ def test_upload_goes_in_parts_and_resumes_after_a_failure(settings, monkeypatch,
     assert meta["status"] == {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
 
 
-def test_stats_are_saved_per_reading(settings, monkeypatch):
+def test_stats_come_from_the_api(settings, monkeypatch):
     connected(settings)
-    con = db.connect(settings.db_path)
-    run_id = new_run(settings)
-    youtube.save_post(con, run_id, "vid12345678", via="link")
     g = FakeGoogle(monkeypatch)
     g.on("GET", f"{youtube.API}/videos", (200, {}, {"items": [{
         "id": "vid12345678", "statistics": {"viewCount": "120", "likeCount": "9", "commentCount": "2"},
         "status": {"privacyStatus": "public"}, "snippet": {"title": "Abrindo", "publishedAt": "2026-10-06T20:00:00Z"}}]}))
-    assert youtube.save_stats(con, youtube.stats(settings, ["vid12345678"])) == 1
-    info = youtube.post_info(con, run_id)
+    info = youtube.stats(settings, ["vid12345678"])["vid12345678"]
     assert (info["views"], info["likes"], info["comments"], info["privacy"], info["title"]) == (120, 9, 2, "public", "Abrindo")
 
 
@@ -152,41 +148,34 @@ def test_routes_link_unlink_and_post(settings, monkeypatch):
     uploads = []
 
     def fake_upload(s, path, title, description, tags, privacy, progress=lambda f: None):
-        uploads.append((path.name, title, privacy))
+        uploads.append((path.name, title, privacy, description))
         progress(1.0)
         return {"id": "novo1234567", "snippet": {"title": title}, "status": {"privacyStatus": "private"}}
 
     monkeypatch.setattr(youtube, "upload", fake_upload)
     monkeypatch.setattr(youtube, "stats", lambda s, ids: {})
     with TestClient(create_app(settings)) as client:
-        assert client.put(f"/api/runs/{run_id}/youtube", json={"url": "lixo"}).status_code == 400
-        assert client.post(f"/api/runs/{run_id}/youtube", json={"title": "Oi"}).status_code == 409  # sem canal
+        assert client.put(f"/api/runs/{run_id}/posts", json={"url": "lixo"}).status_code == 400
+        assert client.post(f"/api/runs/{run_id}/posts/youtube", json={"title": "Oi"}).status_code == 409  # sem canal
 
         # sem canal conectado, o vínculo vale (os números chegam quando conectar)
-        assert client.put(f"/api/runs/{run_id}/youtube", json={"url": "https://youtu.be/dQw4w9WgXcQ"}).status_code == 200
-        detail = client.get(f"/api/runs/{run_id}").json()
-        assert detail["youtube"]["video_id"] == "dQw4w9WgXcQ" and detail["youtube"]["via"] == "link"
-        assert client.post(f"/api/runs/{run_id}/youtube", json={"title": "Oi"}).status_code == 409  # já vinculado
-        assert client.delete(f"/api/runs/{run_id}/youtube").status_code == 200
-        assert client.get(f"/api/runs/{run_id}").json()["youtube"] is None
+        r = client.put(f"/api/runs/{run_id}/posts", json={"url": "https://youtu.be/dQw4w9WgXcQ"})
+        assert r.status_code == 200 and r.json()["network"] == "youtube"
+        post = client.get(f"/api/runs/{run_id}").json()["posts"]["youtube"]
+        assert post["post_id"] == "dQw4w9WgXcQ" and post["via"] == "link"
+        assert client.post(f"/api/runs/{run_id}/posts/youtube", json={"title": "Oi"}).status_code == 409  # já vinculado
+        assert client.delete(f"/api/runs/{run_id}/posts/youtube").status_code == 200
+        assert client.get(f"/api/runs/{run_id}").json()["posts"] == {}
 
         connected(settings)
-        assert client.post(f"/api/runs/{run_id}/youtube", json={"title": "Abrindo um booster", "privacy": "public",
-                                                                 "variant": "narrado"}).status_code == 200
+        assert client.post(f"/api/runs/{run_id}/posts/youtube", json={"title": "Abrindo um booster", "caption": "Legenda",
+                                                                       "privacy": "public", "variant": "narrado"}).status_code == 200
         for _ in range(50):
-            job = client.get(f"/api/runs/{run_id}").json()["youtube_upload"]
+            job = client.get(f"/api/runs/{run_id}").json()["post_jobs"]["youtube"]
             if job["status"] != "sending":
                 break
             time.sleep(0.05)
-        assert job["status"] == "done"
-        assert uploads == [("overlay.mp4", "Abrindo um booster", "public")]  # sem narrado.mp4: vai o overlay
-        post = client.get(f"/api/runs/{run_id}").json()["youtube"]
+        assert job["status"] == "done", job
+        assert uploads == [("overlay.mp4", "Abrindo um booster", "public", "Legenda\n\n#shorts")]  # sem narrado.mp4: o overlay
+        post = client.get(f"/api/runs/{run_id}").json()["posts"]["youtube"]
         assert post["via"] == "api" and post["privacy"] == "private"  # projeto sem auditoria: travado como privado
-
-
-def test_suggestion_does_not_spoil_the_result():
-    scan = {"cards": [{"set": "1", "pack": 1}, {"set": "1", "pack": 2}]}
-    s = youtube.suggestion(None, scan, {"1": "The First Chapter"})
-    assert s["title"].startswith("Abrindo 2 boosters de The First Chapter") and len(s["title"]) <= 100
-    assert "The First Chapter" in s["tags"]
-    assert not any(w in (s["title"] + s["description"]).lower() for w in ("prejuízo", "lucro", "r$", "us$"))

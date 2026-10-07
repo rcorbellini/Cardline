@@ -22,6 +22,7 @@ class Settings:
     verify_model: str = ""  # modelo de visão do Ollama para conferir cada carta (ex.: "qwen3.5:4b"); vazio = desligado
     narration_voice: str = "Damien Black"  # voz do XTTS-v2 na narração (lista: cardline voz)
     narration_writer: str = "gemma3:4b"  # modelo do Ollama que escreve as piadas do roteiro; vazio = roteiro padrão
+    public_url: str = ""  # endereço público do cardline (o Instagram baixa o vídeo dele); vazio = o do túnel ngrok
 
     @property
     def data_dir(self) -> Path:

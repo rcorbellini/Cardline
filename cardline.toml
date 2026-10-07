@@ -37,3 +37,8 @@ narration_voice = "Damien Black"
 # Modelo do Ollama que escreve as piadas das cartas no roteiro (o resto do roteiro tem estrutura fixa).
 # Vazio = roteiro padrão, sem piadas por carta.
 narration_writer = "gemma3:4b"
+
+# Endereço público do cardline, de onde o Instagram baixa o vídeo ao publicar um Reel pela API
+# (ex.: "https://meu-tunel.ngrok-free.app"). Vazio = o endereço do túnel pelo qual a página foi aberta,
+# ou o que o ngrok informa na API local dele (http://127.0.0.1:4040).
+public_url = ""

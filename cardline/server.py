@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -24,7 +25,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, narration, pipeline, rarity, youtube
+from . import db, instagram, narration, pipeline, rarity, social, youtube
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, restore_card, set_card_foil
 from .config import Settings
@@ -137,26 +138,36 @@ class ClientBody(BaseModel):
 
 
 class PostBody(BaseModel):
-    title: str
-    description: str = ""
-    privacy: str = "public"
+    title: str = ""  # título (YouTube)
+    caption: str = ""  # legenda (Instagram) ou descrição (YouTube)
+    privacy: str = "public"  # só o YouTube tem visibilidade
     variant: str = "narrado"  # narrado | overlay
 
 
 class LinkBody(BaseModel):
-    url: str  # link do vídeo (ou só o ID)
+    url: str  # link do post (YouTube, Instagram ou TikTok)
 
 
-class YouTubeJobs:
-    """Conexão do canal (o fluxo de dispositivo espera o usuário digitar o código) e envios, em segundo plano."""
+class StatsBody(BaseModel):
+    views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+    saves: int | None = None
+
+
+class TokenBody(BaseModel):
+    token: str
+
+
+class YouTubeLogin:
+    """Conexão do canal do YouTube: o fluxo de dispositivo espera o usuário digitar o código em google.com/device."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.login: dict | None = None  # código mostrado na página e situação da espera
-        self.uploads: dict[int, dict] = {}  # run_id → situação do envio
-        self.lock = threading.Lock()
 
-    def start_login(self) -> dict:
+    def start(self) -> dict:
         info = youtube.start_device_login(self.settings)
         state = {"user_code": info["user_code"], "verification_url": info.get("verification_url") or info.get("verification_uri"),
                  "expires_at": time.time() + float(info.get("expires_in", 1800)), "status": "waiting", "error": None}
@@ -181,39 +192,60 @@ class YouTubeJobs:
         if state["status"] == "waiting":
             state.update(status="error", error=f"O código expirou sem a autorização do Google. {youtube.ACCESS_HINT}")
 
-    def busy(self) -> bool:
-        return any(job["status"] == "sending" for job in self.uploads.values())
 
-    def start_upload(self, run_id: int, video: Path, body: PostBody, variant: str) -> None:
+class PostJobs:
+    """Publicações pela API em segundo plano (envio do YouTube, processamento do Instagram); uma por vez."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.jobs: dict[tuple[int, str], dict] = {}  # (run_id, rede) → situação
+        self.lock = threading.Lock()
+
+    def of(self, run_id: int) -> dict[str, dict]:
+        return {net: job for (rid, net), job in self.jobs.items() if rid == run_id}
+
+    def start(self, run_id: int, network: str, work) -> None:
         with self.lock:
-            if self.busy():
-                raise RuntimeError("Já há um vídeo sendo enviado; espere terminar.")
-            job = {"status": "sending", "progress": 0.0, "error": None, "started_at": db.now()}
-            self.uploads[run_id] = job
-        threading.Thread(target=self._upload, args=(run_id, video, body, variant, job), daemon=True).start()
+            if any(job["status"] == "sending" for job in self.jobs.values()):
+                raise RuntimeError("Já há um vídeo sendo publicado; espere terminar.")
+            job = {"status": "sending", "progress": 0.0, "message": "Começando", "error": None, "started_at": db.now()}
+            self.jobs[(run_id, network)] = job
+        threading.Thread(target=self._run, args=(work, job), daemon=True).start()
 
-    def _upload(self, run_id: int, video: Path, body: PostBody, variant: str, job: dict) -> None:
+    @staticmethod
+    def _run(work, job: dict) -> None:
         try:
-            created = youtube.upload(self.settings, video, body.title, body.description,
-                                     ["lorcana", "disney lorcana", "booster", "tcg"], body.privacy,
-                                     progress=lambda f: job.update(progress=round(f, 3)))
-            con = db.connect(self.settings.db_path)
-            youtube.save_post(con, run_id, created["id"], via="api", title=created.get("snippet", {}).get("title"),
-                              variant=variant, privacy=created.get("status", {}).get("privacyStatus"),
-                              published_at=created.get("snippet", {}).get("publishedAt"))
-            try:  # a visibilidade de verdade (projeto sem auditoria: travado como privado)
-                youtube.save_stats(con, youtube.stats(self.settings, [created["id"]]))
-            except (youtube.YouTubeError, OSError):
-                pass
+            work(lambda fraction, message=None: job.update(progress=round(fraction, 3),
+                                                           **({"message": message} if message else {})))
             job.update(status="done", progress=1.0)
         except Exception as e:  # noqa: BLE001 - qualquer falha vira mensagem na página
             job.update(status="failed", error=str(e))
 
 
+def public_base(settings: Settings, request: Request) -> str | None:
+    """Endereço público do cardline (para o Instagram baixar o vídeo): o configurado, o do túnel pelo qual a
+    página foi aberta ou o que o ngrok informa na API local dele."""
+    if settings.public_url:
+        return settings.public_url.rstrip("/")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    if host and not re.match(r"^(localhost|127\.|0\.0\.0\.0|\[::1\])", host):
+        return f"{request.headers.get('x-forwarded-proto', 'https')}://{host}"
+    try:
+        tunnels = json.loads(urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=3).read())["tunnels"]
+    except (OSError, ValueError, KeyError):
+        return None
+    port = str(request.url.port or 8000)
+    for t in tunnels:
+        if t.get("public_url", "").startswith("https://") and t.get("config", {}).get("addr", "").endswith(f":{port}"):
+            return t["public_url"]
+    return None
+
+
 def create_app(settings: Settings) -> FastAPI:
     runner = Runner(settings)
     sync_job = SyncJob(settings)
-    yt = YouTubeJobs(settings)
+    yt = YouTubeLogin(settings)
+    jobs = PostJobs(settings)
     edit_lock = threading.Lock()  # edições do scan.json não podem se intercalar
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     ollama = {"checked": 0.0, "available": False}
@@ -284,7 +316,7 @@ def create_app(settings: Settings) -> FastAPI:
             "narrated": f"{url}/narrado.mp4" if json.loads(run["options"]).get("narration")
                         and (folder / "narrado.mp4").exists() else None,
             "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
-            "youtube": youtube.post_info(c, run["id"]), "youtube_upload": yt.uploads.get(run["id"]),
+            "posts": social.posts(c, run["id"]), "post_jobs": jobs.of(run["id"]),
             "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
         }
@@ -311,7 +343,7 @@ def create_app(settings: Settings) -> FastAPI:
                                 "writer": script.get("writer"), "voz": script.get("voz") or settings.narration_voice}
             if scan and run["kind"] == "abertura":
                 names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
-                out["youtube_suggestion"] = youtube.suggestion(run, scan, names)
+                out["post_suggestion"] = social.suggestion(scan, names)
             log = folder / "pipeline.log"
             lines = log.read_text(errors="replace").splitlines()[-120:] if log.exists() else []
             out["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in lines)
@@ -335,7 +367,7 @@ def create_app(settings: Settings) -> FastAPI:
             "rarities": [[k, label, color] for k, (label, color) in rarity.RARITIES.items()],
             "inks": [[k, label, color] for k, (label, color) in rarity.INKS.items()],
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
-            "youtube": youtube.status(settings),
+            "youtube": youtube.status(settings), "instagram": instagram.status(settings),
             "narration": {"unavailable": narration.unavailable(), "voice": settings.narration_voice,
                           "voices": [{**v, "sample": f"/vozes/{v['file']}" if v.get("file") else None}
                                      for v in narration.voices(settings)],
@@ -515,18 +547,18 @@ def create_app(settings: Settings) -> FastAPI:
         pipeline.mark_stale(settings, run_id, "narrate")
         return {"ok": True}
 
-    # --- YouTube ---------------------------------------------------------------------------------
+    # --- redes: YouTube, Instagram, TikTok ------------------------------------------------------
 
-    def yt_call(fn, *args, **kwargs):
-        """Chama a API do YouTube traduzindo os erros para a página."""
+    def net_call(fn, *args, **kwargs):
+        """Chama a API de uma rede traduzindo os erros para a página."""
         try:
             return fn(*args, **kwargs)
-        except youtube.NotConnected as e:
+        except (youtube.NotConnected, instagram.NotConnected) as e:
             raise HTTPException(409, str(e)) from e
-        except youtube.YouTubeError as e:
+        except (youtube.YouTubeError, instagram.InstagramError) as e:
             raise HTTPException(502, str(e)) from e
         except OSError as e:
-            raise HTTPException(502, f"Sem conexão com o YouTube ({e}).") from e
+            raise HTTPException(502, f"Sem conexão com a rede ({e}).") from e
 
     @app.get("/api/youtube")
     def youtube_status():
@@ -546,7 +578,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.post("/api/youtube/connect")
     def youtube_connect():
         """Pede um código ao Google; a página mostra o código e espera o usuário autorizar."""
-        state = yt_call(yt.start_login)
+        state = net_call(yt.start)
         return {k: state[k] for k in ("user_code", "verification_url", "expires_at", "status")}
 
     @app.post("/api/youtube/disconnect")
@@ -558,19 +590,61 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/youtube/recent")
     def youtube_recent():
         """Os últimos vídeos do canal, para vincular o que foi postado pelo app."""
-        return yt_call(youtube.recent_uploads, settings)
+        return net_call(youtube.recent_uploads, settings)
 
-    @app.post("/api/youtube/stats")
-    def youtube_stats(max_age: float = 0):
-        """Atualiza os números de todos os vídeos vinculados (se a última leitura tiver mais de `max_age` s)."""
+    @app.get("/api/instagram")
+    def instagram_status():
+        return instagram.status(settings)
+
+    @app.post("/api/instagram/token")
+    def instagram_token(body: TokenBody):
+        """Token gerado no painel da Meta (conta profissional testadora do app)."""
+        try:
+            return net_call(instagram.save_token, settings, body.token)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/instagram/disconnect")
+    def instagram_disconnect():
+        instagram.disconnect(settings)
+        return instagram.status(settings)
+
+    def refresh_numbers(c, only_run: int | None = None) -> int:
+        """Lê os números de cada post pela API da rede (YouTube e Instagram conectados); devolve quantos leu."""
+        n = 0
+        if youtube.status(settings)["connected"]:
+            posts = [(r, v) for r, v in social.linked(c, "youtube") if only_run in (None, r)]
+            if posts:
+                found = net_call(youtube.stats, settings, [v for _, v in posts])
+                for run_id, vid in posts:
+                    if info := found.get(vid):
+                        social.save_stats(c, run_id, "youtube", info)
+                        social.update_post(c, run_id, "youtube", title=info["title"], privacy=info["privacy"],
+                                           published_at=info["published_at"])
+                        n += 1
+        if instagram.status(settings)["connected"]:
+            posts = [(r, m) for r, m in social.linked(c, "instagram") if only_run in (None, r)]
+            if posts:
+                try:
+                    instagram.refresh(settings)  # renova o token de 60 dias com folga
+                except (instagram.InstagramError, OSError):
+                    pass
+                found = net_call(instagram.stats, settings, [m for _, m in posts])
+                for run_id, media in posts:
+                    if info := found.get(media):
+                        social.save_stats(c, run_id, "instagram", info)
+                        social.update_post(c, run_id, "instagram", published_at=info["published_at"])
+                        n += 1
+        return n
+
+    @app.post("/api/social/stats")
+    def social_stats(max_age: float = 0, run: int | None = None):
+        """Atualiza os números dos posts (se a última leitura automática tiver mais de `max_age` s)."""
         c = con()
-        ids = [r[0] for r in c.execute("SELECT video_id FROM youtube_posts")]
-        if not ids:
-            return {"updated": 0}
-        last = c.execute("SELECT MAX(fetched_at) FROM youtube_stats").fetchone()[0]
+        last = c.execute("SELECT MAX(fetched_at) FROM post_stats WHERE manual = 0").fetchone()[0]
         if max_age and last and time.time() - datetime.fromisoformat(last).timestamp() < max_age:
             return {"updated": 0, "fresh": True}
-        return {"updated": youtube.save_stats(c, yt_call(youtube.stats, settings, ids))}
+        return {"updated": refresh_numbers(c, run)}
 
     def opening(run_id: int):
         run = con().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -580,57 +654,117 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(400, "Só aberturas de booster têm vídeo para postar.")
         return run
 
-    @app.post("/api/runs/{run_id}/youtube")
-    def youtube_post(run_id: int, body: PostBody):
-        """Envia o vídeo da abertura pela API (o YouTube trava como privado se o projeto não foi auditado)."""
-        run = opening(run_id)
-        if body.privacy not in youtube.PRIVACY:
-            raise HTTPException(400, "Visibilidade deve ser public, unlisted ou private.")
-        if not body.title.strip():
-            raise HTTPException(400, "O vídeo precisa de um título.")
-        if youtube.post_info(con(), run_id):
-            raise HTTPException(409, "Esta pipeline já tem um vídeo no YouTube; desvincule para postar de novo.")
+    def video_of(run, variant: str) -> tuple[Path, str]:
         folder = settings.root / run["dir"]
         narrated = folder / "narrado.mp4"
-        variant = "narrado" if body.variant == "narrado" and narrated.exists() else "overlay"
-        video = narrated if variant == "narrado" else folder / "overlay.mp4"
-        if not video.exists():
+        if variant == "narrado" and narrated.exists() and json.loads(run["options"]).get("narration"):
+            return narrated, "narrado"
+        if not (folder / "overlay.mp4").exists():
             raise HTTPException(409, "Gere o vídeo com overlay antes de postar.")
-        if not youtube.status(settings)["connected"]:
-            raise HTTPException(409, "Conecte o canal do YouTube.")
+        return folder / "overlay.mp4", "overlay"
+
+    @app.post("/api/runs/{run_id}/posts/{network}")
+    def post_video(run_id: int, network: str, body: PostBody, request: Request):
+        """Publica pela API da rede, em segundo plano (YouTube: envio do arquivo; Instagram: o Reel pelo túnel)."""
+        run = opening(run_id)
+        if network not in ("youtube", "instagram"):
+            raise HTTPException(400, "Pela API, só YouTube e Instagram; o TikTok é pelo app (e depois vincule o link).")
+        if network in social.posts(con(), run_id):
+            raise HTTPException(409, f"Esta pipeline já tem um post no {social.NETWORKS[network]}; desvincule para postar de novo.")
+        video, variant = video_of(run, body.variant)
+        if network == "youtube":
+            if body.privacy not in youtube.PRIVACY:
+                raise HTTPException(400, "Visibilidade deve ser public, unlisted ou private.")
+            if not body.title.strip():
+                raise HTTPException(400, "O vídeo precisa de um título.")
+            if not youtube.status(settings)["connected"]:
+                raise HTTPException(409, "Conecte o canal do YouTube.")
+            caption = f"{body.caption}\n\n{social.HASHTAGS['youtube']}".strip()
+
+            def work(progress):
+                created = youtube.upload(settings, video, body.title, caption, ["lorcana", "disney lorcana", "booster", "tcg"],
+                                         body.privacy, progress=lambda f: progress(f, "Enviando o vídeo"))
+                c = db.connect(settings.db_path)
+                social.save_post(c, run_id, "youtube", created["id"], youtube.url(created["id"]), via="api", variant=variant,
+                                 title=created.get("snippet", {}).get("title"),
+                                 privacy=created.get("status", {}).get("privacyStatus"),
+                                 published_at=created.get("snippet", {}).get("publishedAt"))
+                try:  # a visibilidade de verdade (projeto sem auditoria: travado como privado)
+                    refresh_numbers(c, run_id)
+                except HTTPException:
+                    pass
+        else:
+            if not instagram.status(settings)["connected"]:
+                raise HTTPException(409, "Conecte o Instagram (cole o token gerado no painel da Meta).")
+            base = public_base(settings, request)
+            if not base:
+                raise HTTPException(409, "O Instagram baixa o vídeo de um endereço público: abra a página pelo túnel "
+                                         "(ngrok) ou configure public_url no cardline.toml.")
+            video_url = f"{base}/runs/{video.parent.name}/{video.name}?v={int(video.stat().st_mtime)}"
+            caption = f"{body.caption}\n\n{social.HASHTAGS['instagram']}".strip()
+
+            def work(progress):
+                media = instagram.publish_reel(settings, video_url, caption, progress)
+                c = db.connect(settings.db_path)
+                social.save_post(c, run_id, "instagram", media["id"], media.get("permalink") or "https://www.instagram.com/",
+                                 via="api", variant=variant, title=(media.get("caption") or "")[:120] or None,
+                                 privacy="public", published_at=media.get("timestamp"))
+                try:
+                    refresh_numbers(c, run_id)
+                except HTTPException:
+                    pass
         try:
-            yt.start_upload(run_id, video, body, variant)
+            jobs.start(run_id, network, work)
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
         return {"ok": True}
 
-    @app.put("/api/runs/{run_id}/youtube")
-    def youtube_link(run_id: int, body: LinkBody):
-        """Vincula um vídeo já postado (pelo app ou pelo Studio) a esta abertura, para acompanhar os números."""
+    @app.put("/api/runs/{run_id}/posts")
+    def link_post(run_id: int, body: LinkBody):
+        """Vincula um post já feito (YouTube, Instagram ou TikTok) a esta abertura, pelo link."""
         opening(run_id)
-        vid = youtube.video_id(body.url)
-        if not vid:
-            raise HTTPException(400, "Não reconheci o link do YouTube.")
-        info = None
-        if youtube.status(settings)["connected"]:
-            info = yt_call(youtube.stats, settings, [vid]).get(vid)
+        found = social.detect(body.url)
+        if not found:
+            raise HTTPException(400, "Não reconheci o link: use o link do vídeo no YouTube, do Reel ou do TikTok.")
+        network, post_id, url = found
+        c = con()
+        if network == "youtube" and youtube.status(settings)["connected"]:
+            info = net_call(youtube.stats, settings, [post_id]).get(post_id)
             if info is None:
                 raise HTTPException(404, "O YouTube não encontrou esse vídeo (ou ele é privado de outra conta).")
+            social.save_post(c, run_id, network, post_id, url, via="link", title=info["title"], privacy=info["privacy"],
+                             published_at=info["published_at"])
+            social.save_stats(c, run_id, network, info)
+        elif network == "instagram" and instagram.status(settings)["connected"]:
+            media = net_call(instagram.find_media, settings, post_id)  # o link traz o código; a API usa o ID da mídia
+            social.save_post(c, run_id, network, media["id"] if media else None, url, via="link",
+                             title=((media or {}).get("caption") or "")[:120] or None,
+                             published_at=(media or {}).get("timestamp"))
+            if media:
+                refresh_numbers(c, run_id)
+        else:
+            social.save_post(c, run_id, network, None if network == "instagram" else post_id, url, via="link")
+        return {"ok": True, "network": network}
+
+    @app.patch("/api/runs/{run_id}/posts/{network}")
+    def post_numbers(run_id: int, network: str, body: StatsBody):
+        """Números informados à mão (o TikTok não dá os números sem a aprovação do app)."""
         c = con()
-        youtube.save_post(c, run_id, vid, via="link", title=info and info["title"], privacy=info and info["privacy"],
-                          published_at=info and info["published_at"])
-        if info:
-            youtube.save_stats(c, {vid: info})
+        if network not in social.posts(c, run_id):
+            raise HTTPException(404, "Vincule o post antes de informar os números.")
+        numbers = body.model_dump()
+        if all(v is None for v in numbers.values()) or any(v is not None and v < 0 for v in numbers.values()):
+            raise HTTPException(400, "Informe os números (não negativos).")
+        social.save_stats(c, run_id, network, numbers, manual=True)
         return {"ok": True}
 
-    @app.delete("/api/runs/{run_id}/youtube")
-    def youtube_unlink(run_id: int):
-        """Desvincula o vídeo da abertura (o vídeo continua no YouTube)."""
+    @app.delete("/api/runs/{run_id}/posts/{network}")
+    def unlink_post(run_id: int, network: str):
+        """Desvincula o post desta abertura (ele continua na rede)."""
         c = con()
         with c:
-            c.execute("DELETE FROM youtube_posts WHERE run_id = ?", (run_id,))
-            c.execute("DELETE FROM youtube_stats WHERE run_id = ?", (run_id,))
-        yt.uploads.pop(run_id, None)
+            c.execute("DELETE FROM posts WHERE run_id = ? AND network = ?", (run_id, network))
+        jobs.jobs.pop((run_id, network), None)
         return {"ok": True}
 
     @app.post("/api/prices/refresh")

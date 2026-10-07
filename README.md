@@ -10,7 +10,7 @@ Começando por **Disney Lorcana**: você envia o vídeo abrindo o booster e o ca
 5. renderiza o vídeo de volta com overlay: uma capa com o booster e o valor pago, o preço de cada carta quando
    ela aparece e o total do booster somando, num painel com o ícone do set;
 6. (opcional) narra o vídeo: um narrador de trailer comenta a abertura sem dar spoiler, com voz em português;
-7. (opcional) posta no YouTube e acompanha visualizações e reações de cada abertura.
+7. (opcional) posta no YouTube, Instagram e TikTok e acompanha visualizações e reações de cada abertura.
 
 Também dá para **cadastrar cartas que você já tem**: grave as cartas uma por uma e o cardline identifica,
 precifica e registra na coleção, sem valor pago e sem vídeo de saída.
@@ -174,37 +174,53 @@ O ícone aparece na capa e no painel do vídeo que vai somando o booster, na lis
 detalhe de cada carta. A foto é guardada em resolução cheia (até 1000 px) para a capa, e a página usa uma
 miniatura leve; ícones guardados pela versão anterior, menores, são baixados de novo na próxima sincronização.
 
-### YouTube
+### Redes: YouTube, Instagram e TikTok
 
-O vídeo de uma abertura pode ir para o seu canal, e o **Resumo** ganha o gráfico **visualizações e reações
-por abertura**: visualizações num gráfico, curtidas e comentários no outro, e embaixo de cada abertura o
-resultado do booster, para ver se booster ruim rende mais (ou menos) views.
+O painel **Postar nas redes**, no detalhe de uma abertura, posta o vídeo e vincula cada post à pipeline. O
+**Resumo** ganha o gráfico **visualizações e reações por abertura**: as visualizações num gráfico e as reações
+(curtidas + comentários) no outro, uma barra por rede, com o resultado do booster embaixo de cada abertura.
 
-**Configuração (uma vez):**
+- **Compartilhar o vídeo** funciona com qualquer rede e sem configurar nada. No celular, copia a legenda e abre
+  o compartilhamento com o vídeo (escolha YouTube, Instagram ou TikTok); no computador, baixa o vídeo.
+- **Já postou?** Cole o link do vídeo no YouTube, do Reel ou do TikTok: o cardline reconhece a rede e vincula.
+  Com o YouTube conectado, a lista dos últimos vídeos do canal já aparece para vincular com um toque.
+- **Números:** YouTube e Instagram conectados são lidos pela API ao abrir o Resumo (no máximo a cada 30 min) ou
+  em **Atualizar números**. No TikTok, sem API, use **Informar números**. Cada leitura fica guardada.
+
+**YouTube (postar pela API e ler os números):**
 
 1. No [Google Cloud](https://console.cloud.google.com), crie um projeto e ative a **YouTube Data API v3**.
 2. Configure a **tela de consentimento OAuth** (tipo externo). Em **Público-alvo**, adicione a conta do canal
    como **usuário de teste**: sem isso, o Google bloqueia a conexão com "Erro 403: access_denied" (o app está em
    teste). Com o app em "Teste", a autorização vence a cada 7 dias; publicar o app (mesmo sem verificação)
    evita as duas coisas, com um aviso de "app não verificado" na hora de autorizar.
-3. Em **Credenciais**, crie um **ID do cliente OAuth** do tipo **"TVs e dispositivos de entrada limitada"**.
-4. Cole o ID e a chave secreta na página (card do YouTube no Resumo ou na pipeline). Eles ficam em
-   `data/youtube/`, fora do git.
-5. **Conectar o canal do YouTube**: a página mostra um código; abra google.com/device (no celular ou no
-   computador), entre na conta do canal e digite o código.
+3. Em **Credenciais**, crie um **ID do cliente OAuth** do tipo **"TVs e dispositivos de entrada limitada"** e cole
+   o ID e a chave na página (ficam em `data/youtube/`, fora do git).
+4. **Conectar o canal do YouTube**: abra google.com/device (no celular ou no computador) e digite o código.
 
-**Postar:** no detalhe da pipeline, o painel YouTube sugere título e descrição (sem spoiler) e tem dois caminhos:
+Atenção: o YouTube trava como **privado** todo vídeo enviado por um projeto de API que não passou pela
+[auditoria do Google](https://support.google.com/youtube/answer/7300965), e não dá para mudar depois. Até lá,
+poste pelo app e vincule o link.
 
-- **Postar no YouTube** envia pela API, com barra de progresso. Atenção: o YouTube trava como **privado**
-  todo vídeo enviado por um projeto de API que não passou pela
-  [auditoria do Google](https://support.google.com/youtube/answer/7300965), e não dá para mudar depois.
-  Para publicar pela API, peça a auditoria do seu projeto.
-- **Postar pelo app** publica normalmente: no celular, copia título e descrição e abre o compartilhamento com o
-  vídeo (escolha o YouTube); no computador, baixa o vídeo e abre o YouTube Studio. Depois, em **Já postou?**,
-  escolha o vídeo na lista dos últimos uploads do canal (ou cole o link) para vincular.
+**Instagram (Reels pela API e os números):**
 
-Os números são atualizados ao abrir o Resumo (no máximo a cada 30 min) ou em **Atualizar números**, e cada
-leitura fica guardada. Quem acessa a página pode postar no seu canal: com o YouTube conectado, use senha no túnel.
+1. A conta do Instagram precisa ser **profissional** (Criador de conteúdo ou Comercial).
+2. Em [Meta for Developers](https://developers.facebook.com/apps), crie um app com o caso de uso **"Gerenciar
+   mensagens e conteúdo no Instagram"**. Em Funções do app → **Testadores do Instagram**, adicione a conta e aceite
+   o convite no Instagram (Configurações → Apps e sites).
+3. Em **Configuração da API com login do Instagram**, gere o token de acesso da conta com as permissões
+   `instagram_business_basic`, `instagram_business_content_publish` e `instagram_business_manage_insights`, e cole
+   na página (**Conectar o Instagram**). O token vale 60 dias e o cardline renova antes de vencer.
+
+Publicar na própria conta não precisa de revisão da Meta, e o Reel sai público. O Instagram baixa o vídeo de um
+endereço público: o cardline oferece o arquivo pelo túnel (ngrok) durante a publicação, então abra a página pelo
+túnel ou configure `public_url`.
+
+**TikTok:** a API do TikTok só publica em modo privado até o app passar pela auditoria deles (2 a 6 semanas), e
+até para mandar aos rascunhos ou ler os números o app precisa ser aprovado. Por isso o TikTok vai pelo
+compartilhamento, e os números são informados à mão.
+
+Quem acessa a página pode postar nas suas redes: com alguma rede conectada, use senha no túnel.
 
 ### No celular e acesso remoto
 
@@ -241,9 +257,11 @@ no túnel, ou só redes de confiança.
 | POST | `/api/youtube/client` | `{"client_id": "…", "client_secret": "…"}`: salva o cliente OAuth |
 | POST | `/api/youtube/connect` | pede o código para google.com/device; `/api/youtube/disconnect` revoga e esquece o canal |
 | GET | `/api/youtube/recent` | últimos vídeos do canal (para vincular o que foi postado pelo app) |
-| POST | `/api/youtube/stats?max_age=1800` | atualiza visualizações, curtidas e comentários dos vídeos vinculados |
-| POST | `/api/runs/{id}/youtube` | `{"title", "description", "privacy", "variant"}`: posta pela API (em segundo plano) |
-| PUT / DELETE | `/api/runs/{id}/youtube` | `{"url": "https://youtu.be/…"}` vincula um vídeo já postado; DELETE desvincula |
+| GET / POST | `/api/instagram`, `/api/instagram/token` | situação do Instagram; `{"token": "IG…"}` conecta (`/api/instagram/disconnect` esquece) |
+| POST | `/api/social/stats?max_age=1800` | atualiza os números dos posts no YouTube e no Instagram |
+| POST | `/api/runs/{id}/posts/{rede}` | `{"title", "caption", "privacy", "variant"}`: posta pela API (`youtube` ou `instagram`, em segundo plano) |
+| PUT | `/api/runs/{id}/posts` | `{"url": "…"}`: vincula um post já feito (YouTube, Instagram ou TikTok, reconhecido pelo link) |
+| PATCH / DELETE | `/api/runs/{id}/posts/{rede}` | `{"views": 1500, "likes": 120, …}` informa os números à mão; DELETE desvincula |
 | GET | `/api/sets` | sets com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo |
 | POST | `/api/sets/sync` | inicia o `cardline sync` em segundo plano (um por vez); `GET` na mesma rota mostra o andamento e o log |
 | POST | `/api/sets/{code}/icon` | troca o ícone do set; o corpo da requisição é a imagem |
@@ -337,7 +355,7 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
   público e o banco muda a cada atualização de preço), então faça backup desse arquivo.
 - `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg` e tempos `overlay.json`),
   `narrado.mp4` (+ o roteiro e as falas gravadas em `narracao/`) e `pipeline.log` de cada pipeline.
-- `data/youtube/`: o cliente OAuth e o token do canal (só o seu usuário lê; fora do git).
+- `data/youtube/` e `data/instagram/`: cliente OAuth e tokens das redes (só o seu usuário lê; fora do git).
 - `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
   que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 

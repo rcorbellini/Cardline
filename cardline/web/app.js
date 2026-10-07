@@ -352,7 +352,7 @@ function renderRun() {
          ${r.poster ? `poster="${esc(r.poster)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"` : ''}></video>
        <p class="muted" style="font-size:13px"><a href="${esc(vsrc)}" download="pipeline-${r.id}-${mode === 'narrated' ? 'narrado' : 'overlay'}.mp4">Baixar ${mode === 'narrated' ? 'vídeo narrado' : 'vídeo com overlay'}</a></p>` : ''));
   renderNarration(r);
-  renderYouTube(r);
+  renderSocial(r);
 
   const cards = r.cards || [];
   const editable = !active(r);
@@ -991,13 +991,18 @@ async function reloadIcons() {
   renderAll();
 }
 
-// ---- YouTube: conectar o canal, postar, vincular e acompanhar os números ----
+// ---- redes: postar (YouTube, Instagram, TikTok), vincular e acompanhar os números ----
 const PRIVACY = { public: 'Público', unlisted: 'Não listado', private: 'Privado' };
+const NETS = [  // cor segue a rede (slots validados da paleta); uma escala por gráfico
+  { key: 'youtube', label: 'YouTube', color: 'var(--net-youtube)' },
+  { key: 'instagram', label: 'Instagram', color: 'var(--net-instagram)' },
+  { key: 'tiktok', label: 'TikTok', color: 'var(--net-tiktok)' },
+];
 const fmtInt = n => n == null ? '—' : n.toLocaleString('pt-BR');
 let ytLogin = null, ytLoginTimer = null;
-const yt = { key: null, recent: null, recentLoading: false, share: null };  // estado local do painel da pipeline
+const sp = { key: null, recent: null, recentLoading: false, share: null, editing: {} };  // estado local do painel
 
-function ytConnectBox() {  // configuração e conexão do canal (na pipeline e no Resumo)
+function ytConnectBox() {  // configuração e conexão do canal do YouTube (no painel e no Resumo)
   const m = S.meta.youtube || {};
   if (m.connected) return '';
   if (!m.configured) return `<div class="ytbox"><p>Para postar e acompanhar os números, cole o cliente OAuth do Google
@@ -1021,175 +1026,218 @@ async function ytPollLogin() {
     const st = await api('/api/youtube');
     ytLogin = st.login;
     S.meta.youtube = { configured: st.configured, connected: st.connected, channel: st.channel };
-    if (st.connected) { ytLogin = null; renderAll(); refreshYtStats(0); return; }
+    if (st.connected) { ytLogin = null; renderAll(); refreshSocialStats(0); return; }
   } catch (e) { console.warn(e); }
   renderAll();
   if (ytLogin?.status === 'waiting') ytLoginTimer = setTimeout(ytPollLogin, 3000);
 }
-async function ytSync() {  // a situação do YouTube muda fora da página (cliente salvo, servidor reiniciado)
+async function ytSync() {  // a situação das redes muda fora da página (token salvo, servidor reiniciado)
   try {
-    const st = await api('/api/youtube');
+    const [st, ig] = await Promise.all([api('/api/youtube'), api('/api/instagram')]);
     const now = { configured: st.configured, connected: st.connected, channel: st.channel };
-    if (JSON.stringify(now) !== JSON.stringify(S.meta.youtube)) { S.meta.youtube = now; yt.key = null; renderAll(); }
+    if (JSON.stringify([now, ig]) !== JSON.stringify([S.meta.youtube, S.meta.instagram])) {
+      S.meta.youtube = now; S.meta.instagram = ig; renderAll();
+    }
     if (st.login?.status === 'waiting' && !ytLoginTimer) { ytLogin = st.login; ytPollLogin(); }
   } catch (e) { console.warn(e); }
 }
-async function refreshYtStats(maxAge) {
-  if (!S.meta?.youtube?.connected || !S.runs.some(r => r.youtube)) return;
+async function refreshSocialStats(maxAge) {
+  if (!S.runs.some(r => Object.keys(r.posts || {}).length)) return;
+  if (!S.meta?.youtube?.connected && !S.meta?.instagram?.connected) return;
   try {
-    const r = await api(`/api/youtube/stats?max_age=${maxAge}`, { method: 'POST' });
+    const r = await api(`/api/social/stats?max_age=${maxAge}`, { method: 'POST' });
     if (r.updated) await refresh();
   } catch (e) { console.warn(e); }
 }
 
-function renderYouTube(r) {
-  const box = $('#r-yt');
-  if (r.kind !== 'abertura' || !r.overlay) { patch(box, ''); yt.key = null; return; }
-  const m = S.meta.youtube || {}, up = r.youtube_upload, post = r.youtube;
-  if (up?.status === 'sending') {
-    yt.key = null;
-    patch(box, `<div class="panel ytpanel"><h3>YouTube</h3><p>Enviando o vídeo… ${Math.round((up.progress || 0) * 100)}%</p>
-      <div class="bar"><i style="width:${((up.progress || 0) * 100).toFixed(1)}%"></i></div></div>`);
-    return;
+function numbersLine(p) {
+  const parts = [[p.views, 'visualizações'], [p.likes, 'curtidas'], [p.comments, 'comentários'], [p.shares, 'compartilhamentos'], [p.saves, 'salvamentos']]
+    .filter(([v], i) => v != null || i < 3).map(([v, label]) => `<span><b>${fmtInt(v)}</b> ${label}</span>`);
+  const when = p.fetched_at ? `${p.manual ? 'informado' : 'lido'} em ${dt(p.fetched_at)}` : 'sem números ainda';
+  return `<div class="netnums">${parts.join('')}</div><p class="muted small">${when}</p>`;
+}
+function netRowHtml(r, n) {
+  const post = r.posts?.[n.key], job = r.post_jobs?.[n.key];
+  const ytm = S.meta.youtube || {}, ig = S.meta.instagram || {};
+  const head = (extra = '') => `<div class="nethead"><i class="netdot" style="--c:${n.color}"></i><b>${n.label}</b>${extra}`;
+  const editing = sp.editing[n.key];
+  if (job?.status === 'sending') {
+    const pct = Math.round((job.progress || 0) * 100);
+    return `${head(`<span class="muted small">${esc(job.message || 'Publicando')}… ${pct}%</span></div>`)}<div class="bar"><i style="width:${pct}%"></i></div>`;
   }
+  if (editing === 'numbers') return `${head('</div>')}<div class="netform">
+      ${['views:Visualizações', 'likes:Curtidas', 'comments:Comentários', 'shares:Compartilhamentos'].map(x => { const [k, label] = x.split(':');
+        return `<label>${label}<input type="number" min="0" inputmode="numeric" data-num="${k}" value="${post?.[k] ?? ''}"></label>`; }).join('')}
+      <div class="ytactions"><button class="btn small" data-sp="save-numbers" data-net="${n.key}">Salvar números</button>
+        <button class="linkbtn" data-sp="cancel" data-net="${n.key}">Cancelar</button></div></div>`;
+  if (editing === 'token') return `${head('</div>')}<div class="netform">
+      <p class="muted small">Gere o token no painel do app na Meta (Instagram → Configuração da API com login do Instagram),
+        com as permissões instagram_business_basic, instagram_business_content_publish e instagram_business_manage_insights.</p>
+      <textarea id="ig-token" rows="3" placeholder="Token do Instagram (IG…)" autocomplete="off"></textarea>
+      <div class="ytactions"><button class="btn small" data-sp="save-token">Salvar token</button>
+        <button class="linkbtn" data-sp="cancel" data-net="instagram">Cancelar</button></div></div>`;
   if (post) {
-    yt.key = null;
-    const locked = post.via === 'api' && post.privacy === 'private';
-    patch(box, `<div class="panel ytpanel"><div class="ythead"><h3>YouTube</h3><span class="chip">${esc(PRIVACY[post.privacy] || 'vinculado')}</span>
-        <span class="spacer"></span><a href="${esc(post.url)}" target="_blank" rel="noopener">Abrir ↗</a></div>
-      ${post.title ? `<p class="yttitle">${esc(post.title)}</p>` : ''}
-      <div class="ytnums"><span><b>${fmtInt(post.views)}</b><small>visualizações</small></span>
-        <span><b>${fmtInt(post.likes)}</b><small>curtidas</small></span><span><b>${fmtInt(post.comments)}</b><small>comentários</small></span></div>
-      ${locked ? '<p class="warnbox">O YouTube travou este vídeo como privado: ele foi enviado por um projeto da API que ainda não passou pela auditoria do Google. Para publicar, poste pelo app do YouTube e vincule o vídeo novo aqui (desvinculando este).</p>' : ''}
-      <p class="muted small">${post.fetched_at ? `Números de ${dt(post.fetched_at)}` : m.connected ? 'Ainda sem números.' : 'Conecte o canal para ver os números.'}
-        ${post.via === 'link' ? ' · vinculado' : ' · enviado pelo cardline'}</p>
-      <div class="ytactions">${m.connected ? '<button class="btn ghost small" data-yt="stats">Atualizar números</button>' : ''}
-        <span class="spacer"></span><button class="linkbtn" data-yt="unlink">Desvincular</button></div>
-      ${m.connected ? '' : ytConnectBox()}</div>`);
-    return;
+    const locked = n.key === 'youtube' && post.via === 'api' && post.privacy === 'private';
+    const auto = (n.key === 'youtube' && ytm.connected) || (n.key === 'instagram' && ig.connected && post.post_id);
+    return `${head(`${n.key === 'youtube' && post.privacy ? `<span class="chip">${esc(PRIVACY[post.privacy] || post.privacy)}</span>` : ''}
+        <span class="spacer"></span><a href="${esc(post.url)}" target="_blank" rel="noopener">Abrir ↗</a></div>`)}
+      ${numbersLine(post)}
+      ${locked ? '<p class="warnbox">O YouTube travou este vídeo como privado: ele foi enviado por um projeto da API que ainda não passou pela auditoria do Google. Para publicar, poste pelo app e vincule o novo link (desvinculando este).</p>' : ''}
+      <div class="ytactions">${auto ? `<button class="linkbtn" data-sp="stats" data-net="${n.key}">Atualizar números</button>`
+        : `<button class="linkbtn" data-sp="numbers" data-net="${n.key}">Informar números</button>`}
+        <span class="spacer"></span><button class="linkbtn" data-sp="unlink" data-net="${n.key}">Desvincular</button></div>`;
   }
-  // formulário: montado uma vez por pipeline e estado da conexão (não apaga o que foi digitado)
-  const key = `${r.id}:${m.configured}:${m.connected}:${ytLogin?.status === 'waiting' ? ytLogin.user_code : ''}:${up?.status || ''}`;
-  if (yt.key !== key) {
-    const sug = r.youtube_suggestion || {}, keep = yt.key?.split(':')[0] === String(r.id);
-    const title = keep ? $('#yt-title-in')?.value : sug.title, desc = keep ? $('#yt-desc-in')?.value : sug.description;
-    yt.key = key;
-    if (!keep) { yt.recent = null; yt.share = null; }
-    patch(box, `<div class="panel ytpanel"><div class="ythead"><h3>YouTube</h3>
-        ${m.connected ? `<span class="muted small">${esc(m.channel?.title || 'canal conectado')}</span><span class="spacer"></span><button class="linkbtn" data-yt="disconnect">Desconectar</button>` : ''}</div>
-      ${ytConnectBox()}
-      ${up?.status === 'failed' ? `<p class="error">O envio falhou: ${esc(up.error)}</p>` : ''}
-      <label class="ytfield">Título<input id="yt-title-in" maxlength="100" value="${esc(title || '')}"></label>
-      <label class="ytfield">Descrição<textarea id="yt-desc-in" rows="4" maxlength="5000">${esc(desc || '')}</textarea></label>
-      <div class="ytrow"><label class="ytfield">Visibilidade<select id="yt-privacy">${Object.entries(PRIVACY).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-        ${r.narrated ? `<label class="ytfield">Versão<select id="yt-variant"><option value="narrado">com narração</option><option value="overlay">sem narração</option></select></label>` : ''}</div>
-      <div class="ytactions"><button class="btn" data-yt="post" ${m.connected ? '' : 'disabled'}>Postar no YouTube</button>
-        <button class="btn ghost" data-yt="share" id="yt-share">Postar pelo app</button></div>
-      <p class="muted small">Pela API, o YouTube deixa o vídeo privado até o seu projeto no Google passar pela auditoria.
-        Pelo app, ele sai público: o botão copia o título e a descrição e abre o compartilhamento com o vídeo (no computador, baixa o vídeo e abre o YouTube Studio).</p>
-      <div class="ytlink"><b>Já postou?</b> Vincule o vídeo para acompanhar os números.
-        ${m.connected ? '<div id="yt-recent"></div>' : ''}
-        <div class="ytrow"><input id="yt-url" placeholder="Link do vídeo (youtu.be/… ou /shorts/…)"><button class="btn ghost small" data-yt="link">Vincular</button></div></div>
-    </div>`);
-    if (m.connected && !yt.recent && !yt.recentLoading) loadYtRecent();
+  const failed = job?.status === 'failed' ? `<p class="error">${esc(job.error)}</p>` : '';
+  if (n.key === 'youtube') return `${head(`<span class="spacer"></span>${ytm.connected ? '<button class="btn small" data-sp="post" data-net="youtube">Postar no YouTube</button>' : ''}</div>`)}
+    ${failed}${ytm.connected ? `<p class="muted small">${esc(ytm.channel?.title || 'canal conectado')} · pela API, o YouTube deixa o vídeo privado até o seu projeto passar pela auditoria do Google · <button class="linkbtn" data-yt="disconnect">desconectar</button></p>` : ytConnectBox()}`;
+  if (n.key === 'instagram') return `${head(`<span class="spacer"></span>${ig.connected ? '<button class="btn small" data-sp="post" data-net="instagram">Postar no Instagram</button>' : '<button class="btn ghost small" data-sp="token">Conectar o Instagram</button>'}</div>`)}
+    ${failed}${ig.connected ? `<p class="muted small">@${esc(ig.username || '')} · o Reel sai público; o Instagram baixa o vídeo pelo túnel · <button class="linkbtn" data-sp="ig-disconnect">desconectar</button></p>` : ''}`;
+  return `${head('<span class="spacer"></span></div>')}<p class="muted small">Sem API (o TikTok exige aprovar o app): compartilhe o vídeo, poste pelo app e vincule o link; os números você informa aqui.</p>`;
+}
+function renderSocial(r) {
+  const box = $('#r-yt');
+  if (r.kind !== 'abertura' || !r.overlay) { patch(box, ''); sp.key = null; return; }
+  if (sp.key !== r.id) {  // o formulário é montado uma vez por pipeline: as atualizações não apagam o que foi digitado
+    sp.key = r.id; sp.recent = null; sp.share = null; sp.editing = {};
+    const sug = r.post_suggestion || {};
+    box.innerHTML = `<div class="panel ytpanel"><h3>Postar nas redes</h3>
+      <label class="ytfield">Título (YouTube)<input id="sp-title" maxlength="100" value="${esc(sug.title || '')}"></label>
+      <label class="ytfield">Legenda<textarea id="sp-caption" rows="4" maxlength="2200">${esc(sug.caption || '')}</textarea></label>
+      <div class="ytrow"><label class="ytfield" id="sp-variant-box">Versão<select id="sp-variant"><option value="narrado">com narração</option><option value="overlay">sem narração</option></select></label>
+        <label class="ytfield">Visibilidade no YouTube<select id="sp-privacy">${Object.entries(PRIVACY).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label></div>
+      <div class="netrows">${NETS.map(n => `<div class="netrow" id="net-${n.key}"></div>`).join('')}</div>
+      <div class="ytactions"><button class="btn ghost" data-sp="share" id="sp-share">Compartilhar o vídeo</button></div>
+      <p class="muted small">No celular, abre o compartilhamento com o vídeo (escolha YouTube, Instagram ou TikTok) e copia a legenda;
+        no computador, baixa o vídeo. Depois de postar pelo app, vincule o link aqui.</p>
+      <div class="ytlink"><b>Já postou?</b> Cole o link do vídeo no YouTube, do Reel ou do TikTok.
+        <div class="ytrow"><input id="sp-url" placeholder="https://…"><button class="btn ghost small" data-sp="link">Vincular</button></div>
+        <div id="sp-recent"></div></div></div>`;
+    box._html = null;
   }
-  renderYtRecent();
-  const share = $('#yt-share');
-  if (share) share.textContent = yt.share?.file ? 'Abrir no app do YouTube' : yt.share?.loading ? 'Preparando o vídeo…' : 'Postar pelo app';
+  $('#sp-variant-box').hidden = !r.narrated;
+  for (const n of NETS) {
+    const el = $(`#net-${n.key}`);
+    if (el && !(sp.editing[n.key] && el.querySelector('.netform'))) patch(el, netRowHtml(r, n));
+  }
+  const share = $('#sp-share');
+  if (share) share.textContent = sp.share?.file ? 'Abrir o compartilhamento' : sp.share?.loading ? 'Preparando o vídeo…' : 'Compartilhar o vídeo';
+  if (S.meta.youtube?.connected && !r.posts?.youtube && !sp.recent && !sp.recentLoading) loadRecent();
+  renderRecent(r);
 }
-async function loadYtRecent() {
-  yt.recentLoading = true;
-  try { yt.recent = await api('/api/youtube/recent'); } catch (e) { yt.recent = { error: e.message }; }
-  yt.recentLoading = false;
-  renderYtRecent();
+async function loadRecent() {
+  sp.recentLoading = true;
+  try { sp.recent = await api('/api/youtube/recent'); } catch (e) { sp.recent = { error: e.message }; }
+  sp.recentLoading = false;
+  if (S.run) renderRecent(S.run);
 }
-function renderYtRecent() {
-  const el = $('#yt-recent');
+function renderRecent(r) {
+  const el = $('#sp-recent');
   if (!el) return;
-  if (!yt.recent) { patch(el, '<p class="muted small">Buscando os últimos vídeos do canal…</p>'); return; }
-  if (yt.recent.error) { patch(el, `<p class="muted small">${esc(yt.recent.error)}</p>`); return; }
-  patch(el, yt.recent.length ? `<ul class="ytrecent">${yt.recent.slice(0, 5).map(v => `<li>
+  if (!S.meta.youtube?.connected || r.posts?.youtube || !sp.recent) { patch(el, ''); return; }
+  if (sp.recent.error) { patch(el, `<p class="muted small">${esc(sp.recent.error)}</p>`); return; }
+  patch(el, sp.recent.length ? `<p class="muted small">Últimos vídeos do seu canal:</p><ul class="ytrecent">${sp.recent.slice(0, 5).map(v => `<li>
       ${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" loading="lazy">` : '<span class="noimg"></span>'}
       <span><b>${esc(v.title)}</b><small class="muted">${dt(v.published_at)}</small></span>
-      <button class="btn ghost small" data-yt="link-id" data-vid="${esc(v.id)}">Vincular</button></li>`).join('')}</ul>`
-    : '<p class="muted small">O canal ainda não tem vídeos.</p>');
+      <button class="btn ghost small" data-sp="link-id" data-vid="${esc(v.id)}">Vincular</button></li>`).join('')}</ul>` : '');
 }
-async function ytShare(r) {  // postar pelo app: o app do YouTube publica normalmente (não tem a trava da API)
-  const title = $('#yt-title-in').value.trim(), desc = $('#yt-desc-in').value.trim();
-  const variant = $('#yt-variant')?.value || 'narrado';
+function captionFor(network) {
+  const caption = $('#sp-caption').value.trim(), tags = network ? S.run.post_suggestion?.hashtags?.[network] : '#shorts #reels #fyp';
+  return tags ? `${caption}\n\n${tags}` : caption;
+}
+async function spShare(r) {  // pelo app: YouTube, Instagram e TikTok publicam normalmente (sem a trava das APIs)
+  const variant = $('#sp-variant').value;
   const src = variant === 'narrado' && r.narrated ? r.narrated : r.overlay;
-  try { await navigator.clipboard.writeText(`${title}\n\n${desc}`); } catch { /* sem permissão: o usuário copia à mão */ }
-  if (yt.share?.file) {  // segundo toque: o arquivo já está pronto e o compartilhamento abre na hora
-    try { await navigator.share({ files: [yt.share.file], title, text: desc }); }
+  const text = captionFor(null);
+  try { await navigator.clipboard.writeText(text); } catch { /* sem permissão: o usuário copia à mão */ }
+  if (sp.share?.file) {  // segundo toque: o arquivo já está pronto e o compartilhamento abre na hora
+    try { await navigator.share({ files: [sp.share.file], title: $('#sp-title').value, text }); }
     catch (e) { if (e.name !== 'AbortError') alert(`Não consegui abrir o compartilhamento: ${e.message}`); }
     return;
   }
   const probe = new File([''], 'video.mp4', { type: 'video/mp4' });
   if (navigator.canShare?.({ files: [probe] })) {  // celular: baixa primeiro (o compartilhamento precisa do toque)
-    yt.share = { loading: true };
-    renderYouTube(r);
+    sp.share = { loading: true };
+    renderSocial(r);
     try {
       const blob = await (await fetch(src)).blob();
-      yt.share = { file: new File([blob], `cardline-${r.id}.mp4`, { type: 'video/mp4' }) };
-    } catch (e) { yt.share = null; alert(`Não consegui baixar o vídeo: ${e.message}`); }
-    renderYouTube(r);
+      sp.share = { file: new File([blob], `cardline-${r.id}.mp4`, { type: 'video/mp4' }) };
+    } catch (e) { sp.share = null; alert(`Não consegui baixar o vídeo: ${e.message}`); }
+    renderSocial(r);
     return;
   }
-  const a = document.createElement('a');  // computador: baixa o vídeo e abre o Studio
+  const a = document.createElement('a');  // computador: baixa o vídeo
   a.href = src; a.download = `cardline-${r.id}.mp4`; document.body.append(a); a.click(); a.remove();
-  window.open('https://studio.youtube.com', '_blank', 'noopener');
-  alert('O vídeo está sendo baixado e o título e a descrição foram copiados. Poste pelo YouTube Studio e depois vincule o vídeo aqui.');
+  alert('O vídeo está sendo baixado e a legenda foi copiada. Poste pelo YouTube Studio, Instagram ou TikTok e depois vincule o link aqui.');
 }
 document.addEventListener('click', async ev => {
-  const b = ev.target.closest('[data-yt]');
+  const b = ev.target.closest('[data-yt], [data-sp]');
   if (!b) return;
-  const action = b.dataset.yt, r = S.run, id = S.runId;
+  const action = b.dataset.yt || b.dataset.sp, net = b.dataset.net, r = S.run, id = S.runId;
   try {
-    if (action === 'client') {
-      S.meta.youtube = await api('/api/youtube/client', json({ client_id: $('#yt-client-id').value, client_secret: $('#yt-client-secret').value }));
-      renderAll(); return;
+    if (b.dataset.yt) {  // conexão do YouTube (painel e Resumo)
+      if (action === 'client') {
+        S.meta.youtube = await api('/api/youtube/client', json({ client_id: $('#yt-client-id').value, client_secret: $('#yt-client-secret').value }));
+        renderAll(); return;
+      }
+      if (action === 'connect') { b.disabled = true; ytLogin = await api('/api/youtube/connect', { method: 'POST' }); renderAll(); ytPollLogin(); return; }
+      if (action === 'copy-code') { try { await navigator.clipboard.writeText(ytLogin.user_code); b.textContent = 'Copiado'; } catch {} return; }
+      if (action === 'disconnect') {
+        if (!confirm('Desconectar o canal do YouTube? Os vídeos vinculados continuam, mas os números param de atualizar.')) return;
+        S.meta.youtube = await api('/api/youtube/disconnect', { method: 'POST' }); sp.recent = null; renderAll(); return;
+      }
+      return;
     }
-    if (action === 'connect') { b.disabled = true; ytLogin = await api('/api/youtube/connect', { method: 'POST' }); renderAll(); ytPollLogin(); return; }
-    if (action === 'copy-code') { try { await navigator.clipboard.writeText(ytLogin.user_code); b.textContent = 'Copiado'; } catch {} return; }
-    if (action === 'disconnect') {
-      if (!confirm('Desconectar o canal do YouTube? Os vídeos vinculados continuam, mas os números param de atualizar.')) return;
-      S.meta.youtube = await api('/api/youtube/disconnect', { method: 'POST' }); yt.key = null; renderAll(); return;
-    }
-    if (action === 'stats') { b.disabled = true; await api('/api/youtube/stats', { method: 'POST' }); }
-    if (action === 'post') {
-      const body = { title: $('#yt-title-in').value, description: $('#yt-desc-in').value, privacy: $('#yt-privacy').value,
-                     variant: $('#yt-variant')?.value || 'overlay' };
+    if (action === 'share') { await spShare(r); return; }
+    if (action === 'token') { sp.editing.instagram = 'token'; renderSocial(r); $('#ig-token')?.focus(); return; }
+    if (action === 'numbers') { sp.editing[net] = 'numbers'; renderSocial(r); return; }
+    if (action === 'cancel') { delete sp.editing[net]; renderSocial(r); return; }
+    if (action === 'save-token') {
       b.disabled = true;
-      await api(`/api/runs/${id}/youtube`, json(body));
+      S.meta.instagram = await api('/api/instagram/token', json({ token: $('#ig-token').value }));
+      delete sp.editing.instagram; renderAll(); return;
     }
-    if (action === 'share') { await ytShare(r); return; }
+    if (action === 'ig-disconnect') {
+      if (!confirm('Desconectar o Instagram? Os Reels vinculados continuam, mas os números param de atualizar.')) return;
+      S.meta.instagram = await api('/api/instagram/disconnect', { method: 'POST' }); renderAll(); return;
+    }
+    if (action === 'save-numbers') {
+      const body = {};
+      document.querySelectorAll(`#net-${net} [data-num]`).forEach(i => { if (i.value !== '') body[i.dataset.num] = Number(i.value); });
+      b.disabled = true;
+      await api(`/api/runs/${id}/posts/${net}`, json(body, 'PATCH'));
+      delete sp.editing[net];
+    }
+    if (action === 'stats') { b.disabled = true; await api(`/api/social/stats?run=${id}`, { method: 'POST' }); }
+    if (action === 'post') {
+      b.disabled = true;
+      await api(`/api/runs/${id}/posts/${net}`, json({ title: $('#sp-title').value, caption: $('#sp-caption').value,
+        privacy: $('#sp-privacy').value, variant: $('#sp-variant').value }));
+    }
     if (action === 'link' || action === 'link-id') {
-      const url = action === 'link' ? $('#yt-url').value : b.dataset.vid;
+      const url = action === 'link' ? $('#sp-url').value : `https://youtu.be/${b.dataset.vid}`;
       if (!url.trim()) return;
       b.disabled = true;
-      await api(`/api/runs/${id}/youtube`, json({ url }, 'PUT'));
+      await api(`/api/runs/${id}/posts`, json({ url }, 'PUT'));
+      if (action === 'link') $('#sp-url').value = '';
     }
     if (action === 'unlink') {
-      if (!confirm('Desvincular o vídeo desta abertura? Ele continua no YouTube.')) return;
-      await api(`/api/runs/${id}/youtube`, { method: 'DELETE' });
+      if (!confirm(`Desvincular o post do ${NETS.find(n => n.key === net).label} desta abertura? Ele continua na rede.`)) return;
+      await api(`/api/runs/${id}/posts/${net}`, { method: 'DELETE' });
+      sp.recent = null;
     }
     await refresh();
   } catch (e) { alert(e.message); b.disabled = false; }
 });
 
-// ---- gráfico: abertura vs visualizações e reações no YouTube ----
-const YT_SERIES = [  // cor segue a métrica (mesmos slots validados do outro gráfico); uma escala por gráfico
-  { key: 'views', label: 'Visualizações', color: 'var(--yt-views)' },
-  { key: 'likes', label: 'Curtidas', color: 'var(--yt-likes)' },
-  { key: 'comments', label: 'Comentários', color: 'var(--yt-comments)' },
-];
+// ---- gráfico: abertura vs visualizações e reações nas redes ----
 let ytWidth = 0;
-function renderYtChart() {
+function renderSocialChart() {
   const card = $('#yt-card');
   if (!card) return;
-  const runs = S.runs.filter(r => r.youtube).sort((a, b) => runTime(a) - runTime(b));
-  patch($('#yt-connect-resumo'), S.meta.youtube?.connected ? '' : ytConnectBox());
-  patch($('#yt-legend'), runs.length ? YT_SERIES.map(s => `<li><i style="--c:${s.color}"></i>${s.label}</li>`).join('') : '');
+  const runs = S.runs.filter(r => Object.keys(r.posts || {}).length).sort((a, b) => runTime(a) - runTime(b));
+  const nets = NETS.filter(n => runs.some(r => r.posts[n.key]));
+  patch($('#yt-connect-resumo'), S.meta.youtube?.connected || !S.meta.youtube?.configured ? '' : ytConnectBox());
+  patch($('#yt-legend'), nets.length ? nets.map(n => `<li><i style="--c:${n.color}"></i>${n.label}</li>`).join('') : '');
   $('#yt-tabledetails').hidden = !runs.length;
   if (!runs.length) {
     patch($('#yt-charts'), '<p class="muted chartempty">Poste ou vincule o vídeo de uma abertura (na página da pipeline) para acompanhar as visualizações e reações aqui.</p>');
@@ -1197,37 +1245,38 @@ function renderYtChart() {
     return;
   }
   if (!ytWidth) return;
-  const multiples = [{ title: 'Visualizações', series: [YT_SERIES[0]] }, { title: 'Reações', series: YT_SERIES.slice(1) }];
+  const react = p => p ? (p.likes ?? 0) + (p.comments ?? 0) : null;
+  const multiples = [{ title: 'Visualizações', value: p => p?.views }, { title: 'Reações (curtidas + comentários)', value: react }];
   const wide = ytWidth >= 640, W = wide ? Math.floor((ytWidth - 24) / 2) : ytWidth, H = 200;
   const m = { l: 44, r: 8, t: 10, b: 44 }, pw = W - m.l - m.r, ph = H - m.t - m.b;
   const result = r => r.paid_usd ? (r.value_now - r.paid_usd) / r.paid_usd : null;
   const html = multiples.map(mp => {
-    const max = Math.max(1, ...runs.flatMap(r => mp.series.map(s => r.youtube[s.key] ?? 0)));
+    const max = Math.max(1, ...runs.flatMap(r => nets.map(n => mp.value(r.posts[n.key]) ?? 0)));
     const st = Math.max(1, Math.ceil(niceStep(max))), top = Math.ceil(max / st) * st;
-    const slot = pw / runs.length, bw = Math.min(46, (slot * 0.7 - 2 * (mp.series.length - 1)) / mp.series.length);
+    const slot = pw / runs.length, bw = Math.min(40, (slot * 0.75 - 2 * (nets.length - 1)) / nets.length);
     const y = v => m.t + ph - v / top * ph;
     let svg = '';
     for (let v = 0; v <= top; v += st) svg += `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="tick" x="${m.l - 6}" y="${y(v).toFixed(1)}" text-anchor="end" dominant-baseline="middle">${fmtInt(v)}</text>`;
     runs.forEach((r, i) => {
-      const cx = m.l + slot * (i + 0.5), group = bw * mp.series.length + 2 * (mp.series.length - 1);
-      mp.series.forEach((s, k) => {
-        const v = r.youtube[s.key] ?? 0, x0 = cx - group / 2 + k * (bw + 2), y0 = y(v), h = m.t + ph - y0, rr = Math.min(4, h, bw / 2);
-        if (h > 0) svg += `<path d="M${x0.toFixed(1)},${(m.t + ph).toFixed(1)}V${(y0 + rr).toFixed(1)}Q${x0.toFixed(1)},${y0.toFixed(1)} ${(x0 + rr).toFixed(1)},${y0.toFixed(1)}H${(x0 + bw - rr).toFixed(1)}Q${(x0 + bw).toFixed(1)},${y0.toFixed(1)} ${(x0 + bw).toFixed(1)},${(y0 + rr).toFixed(1)}V${(m.t + ph).toFixed(1)}Z" fill="${s.color}"/>`;
+      const cx = m.l + slot * (i + 0.5), group = bw * nets.length + 2 * (nets.length - 1);
+      nets.forEach((n, k) => {
+        const v = mp.value(r.posts[n.key]) ?? 0, x0 = cx - group / 2 + k * (bw + 2), y0 = y(v), h = m.t + ph - y0, rr = Math.min(4, h, bw / 2);
+        if (h > 0) svg += `<path d="M${x0.toFixed(1)},${(m.t + ph).toFixed(1)}V${(y0 + rr).toFixed(1)}Q${x0.toFixed(1)},${y0.toFixed(1)} ${(x0 + rr).toFixed(1)},${y0.toFixed(1)}H${(x0 + bw - rr).toFixed(1)}Q${(x0 + bw).toFixed(1)},${y0.toFixed(1)} ${(x0 + bw).toFixed(1)},${(y0 + rr).toFixed(1)}V${(m.t + ph).toFixed(1)}Z" fill="${n.color}"/>`;
       });
       const res = result(r);
       svg += `<text class="tick" x="${cx.toFixed(1)}" y="${H - 26}" text-anchor="middle">#${r.id}</text>`;
       if (res != null) svg += `<text class="tick ${cls(res)}" x="${cx.toFixed(1)}" y="${H - 10}" text-anchor="middle">${res >= 0 ? '+' : '−'}${Math.abs(res * 100).toFixed(0)}%</text>`;
       svg += `<rect class="hit" data-i="${i}" x="${(cx - slot / 2).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${H}" fill="transparent"/>`;
     });
-    const label = `${mp.title} por abertura: ${runs.map(r => `#${r.id}: ${mp.series.map(s => `${fmtInt(r.youtube[s.key])} ${s.label.toLowerCase()}`).join(', ')}`).join('; ')}`;
+    const label = `${mp.title} por abertura: ${runs.map(r => `#${r.id}: ${nets.map(n => `${n.label} ${fmtInt(mp.value(r.posts[n.key]))}`).join(', ')}`).join('; ')}`;
     return `<figure class="ytmultiple"><figcaption>${mp.title}</figcaption><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">${svg}</svg></figure>`;
   }).join('');
   const changed = patch($('#yt-charts'), html + '<div class="tip" id="yt-tip" hidden></div>');
-  patch($('#yt-table'), `<table><thead><tr><th>Abertura</th><th>Vídeo</th><th class="r">Resultado</th><th class="r">Visualizações</th><th class="r">Curtidas</th><th class="r">Comentários</th></tr></thead>
-    <tbody>${runs.map(r => { const res = result(r); return `<tr><td><a href="#/pipelines/${r.id}">#${r.id}</a></td>
-      <td><a href="${esc(r.youtube.url)}" target="_blank" rel="noopener">${esc(r.youtube.title || r.youtube.video_id)}</a></td>
+  patch($('#yt-table'), `<table><thead><tr><th>Abertura</th><th>Rede</th><th class="r">Resultado</th><th class="r">Visualizações</th><th class="r">Curtidas</th><th class="r">Comentários</th><th class="r">Compart.</th></tr></thead>
+    <tbody>${runs.flatMap(r => NETS.filter(n => r.posts[n.key]).map(n => { const p = r.posts[n.key], res = result(r); return `<tr>
+      <td><a href="#/pipelines/${r.id}">#${r.id}</a></td><td><a href="${esc(p.url)}" target="_blank" rel="noopener">${n.label}</a>${p.manual ? ' <small class="muted">(informado)</small>' : ''}</td>
       <td class="r ${res == null ? '' : cls(res)}">${res == null ? '—' : `${res >= 0 ? '+' : '−'}${Math.abs(res * 100).toFixed(0)}%`}</td>
-      <td class="r">${fmtInt(r.youtube.views)}</td><td class="r">${fmtInt(r.youtube.likes)}</td><td class="r">${fmtInt(r.youtube.comments)}</td></tr>`; }).join('')}</tbody></table>`);
+      <td class="r">${fmtInt(p.views)}</td><td class="r">${fmtInt(p.likes)}</td><td class="r">${fmtInt(p.comments)}</td><td class="r">${fmtInt(p.shares)}</td></tr>`; })).join('')}</tbody></table>`);
   if (!changed) return;
   const tip = $('#yt-tip'), wrap = $('#yt-charts');
   wrap.querySelectorAll('.hit').forEach(hit => {
@@ -1237,11 +1286,13 @@ function renderYtChart() {
       const head = document.createElement('div'); head.className = 't-head';
       head.textContent = `Pipeline #${r.id} · ${dt(r.recorded_at || r.created_at)}`;
       tip.append(head);
-      for (const s of YT_SERIES) {
+      for (const n of nets) {
+        const p = r.posts[n.key];
         const row = document.createElement('div'); row.className = 't-row';
-        const key = document.createElement('i'); key.style.setProperty('--c', s.color);
-        const val = document.createElement('b'); val.textContent = fmtInt(r.youtube[s.key]);
-        const name = document.createElement('span'); name.textContent = s.label.toLowerCase();
+        const key = document.createElement('i'); key.style.setProperty('--c', n.color);
+        const val = document.createElement('b'); val.textContent = p ? fmtInt(p.views) : '—';
+        const name = document.createElement('span');
+        name.textContent = p ? `${n.label}: visualizações · ${fmtInt(p.likes)} curtidas · ${fmtInt(p.comments)} coment.` : `${n.label}: sem post`;
         row.append(key, val, name); tip.append(row);
       }
       if (res != null) {
@@ -1264,7 +1315,7 @@ function renderYtChart() {
 }
 new ResizeObserver(([entry]) => {
   const w = Math.round(entry.contentRect.width);
-  if (Math.abs(w - ytWidth) > 2) { ytWidth = w; if (S.meta) renderYtChart(); }
+  if (Math.abs(w - ytWidth) > 2) { ytWidth = w; if (S.meta) renderSocialChart(); }
 }).observe($('#yt-charts'));
 
 // ---- rotas, carga e polling ----
@@ -1282,7 +1333,7 @@ async function route() {
   for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
   if (view === 'sets') loadSets();
   ytSync();
-  if (view === 'resumo') refreshYtStats(1800);
+  if (view === 'resumo') refreshSocialStats(1800);
   document.querySelectorAll('nav.tabs a').forEach(a => {
     const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -1298,7 +1349,7 @@ window.addEventListener('hashchange', route);
 
 function renderAll() {
   buildEntries();
-  renderCurrency(); renderStats(); renderChart(); renderYtChart();
+  renderCurrency(); renderStats(); renderChart(); renderSocialChart();
   const view = currentView();
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();
