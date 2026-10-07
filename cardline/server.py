@@ -148,8 +148,13 @@ def create_app(settings: Settings) -> FastAPI:
         return db.connect(settings.db_path)
 
     def icon_url(r) -> str | None:
+        """A miniatura (leve) do ícone, ou o próprio ícone se ela ainda não existir."""
         path = settings.root / r["icon"] if r["icon"] else None
-        return f"/set-icons/{path.name}?v={int(path.stat().st_mtime)}" if path and path.exists() else None
+        if not path or not path.exists():
+            return None
+        thumb = path.with_suffix(".thumb.webp")
+        shown = thumb if thumb.exists() else path
+        return f"/set-icons/{shown.name}?v={int(path.stat().st_mtime)}"
 
     def card_json(r) -> dict:
         local = image_path(settings, r["set_code"], r["id"])

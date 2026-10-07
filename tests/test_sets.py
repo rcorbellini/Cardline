@@ -105,6 +105,17 @@ def test_manual_icon_survives_sync_and_reset_brings_back_the_booster(settings, t
     assert icon_row(settings, "P1")["icon"] is None
 
 
+def test_icons_saved_by_the_old_version_are_downloaded_again_in_full_size(settings, tcgcsv):
+    con = db.connect(settings.db_path)
+    catalog.sync_set_icons(settings, con)
+    old = catalog.icon_path(settings, "1")
+    Image.new("RGBA", (345, catalog.LEGACY_MAX), (255, 0, 0, 255)).save(old)  # como a versão antiga guardava
+    catalog.thumb_path(settings, "1").unlink()
+    tcgcsv.clear()
+    assert catalog.sync_set_icons(settings, con) == 1
+    assert max(Image.open(old).size) != catalog.LEGACY_MAX and catalog.thumb_path(settings, "1").exists()
+
+
 def test_sync_replaces_a_manual_icon_whose_file_is_gone(settings, tcgcsv):
     catalog.save_manual_icon(settings, "1", png((10, 200, 10)))
     catalog.icon_path(settings, "1").unlink()  # ex.: apagaram data/cache
@@ -176,9 +187,9 @@ def test_sets_api_lists_sets_and_serves_uploaded_icons(client):
 
     assert client.post("/api/sets/1/icon", content=png()).status_code == 200
     one = next(s for s in client.get("/api/sets").json() if s["code"] == "1")
-    assert one["icon"].startswith("/set-icons/1.png?v=") and one["icon_source"] == "manual"
-    image = client.get(one["icon"])
-    assert image.status_code == 200 and image.headers["content-type"] == "image/png"
+    assert one["icon"].startswith("/set-icons/1.thumb.webp?v=") and one["icon_source"] == "manual"
+    image = client.get(one["icon"])  # a página recebe a miniatura; o vídeo usa o ícone em resolução cheia
+    assert image.status_code == 200 and image.headers["content-type"] == "image/webp"
     meta = {s["code"]: s for s in client.get("/api/meta").json()["sets"]}
     assert meta["1"]["icon"] == one["icon"] and meta["P1"]["icon"] is None
 

@@ -15,6 +15,10 @@ output_short_side = 1080
 # Segundos do resumo no fim do vídeo com overlay.
 outro_seconds = 4.0
 
+# Segundos da capa no começo do vídeo com overlay: o primeiro frame parado, com o booster e o valor pago
+# entrando animados; na saída, o booster voa para o painel do topo. 0 = sem capa.
+intro_seconds = 3.0
+
 # Modelo de visão do Ollama que confere cada carta lendo nome e número de coleção (ex.: "qwen3.5:4b").
 # Preenchido, a conferência já vem marcada no upload.
 # Só sinaliza divergências, nunca troca a carta sozinho. Vazio = desmarcada (marcando, usa qwen3.5:4b).

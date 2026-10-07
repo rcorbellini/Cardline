@@ -118,13 +118,16 @@ def read_frame_at(info: VideoInfo, t: float, short_side: int) -> np.ndarray:
 class VideoWriter:
     """Recebe frames RGB e codifica H.264 (SDR BT.709), copiando o áudio do vídeo original."""
 
-    def __init__(self, out: Path, size: tuple[int, int], fps: float, audio_from: Path | None = None, crf: int = 18):
+    def __init__(self, out: Path, size: tuple[int, int], fps: float, audio_from: Path | None = None, crf: int = 18,
+                 audio_delay: float = 0.0):
         w, h = size
         cmd = [ffmpeg_exe(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
                "-r", str(fps), "-i", "pipe:0"]
         if audio_from:
-            # apad + shortest: o áudio original é estendido com silêncio durante o resumo final
-            cmd += ["-i", str(audio_from), "-map", "0:v:0", "-map", "1:a:0?", "-af", "apad", "-shortest",
+            # apad + shortest: o áudio original é estendido com silêncio durante o resumo final;
+            # adelay: começa depois da capa (o vídeo original só entra quando ela sai)
+            delay = f"adelay={round(audio_delay * 1000)}:all=1," if audio_delay > 0 else ""
+            cmd += ["-i", str(audio_from), "-map", "0:v:0", "-map", "1:a:0?", "-af", f"{delay}apad", "-shortest",
                     "-c:a", "aac", "-b:a", "192k"]
         cmd += ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
                 "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),

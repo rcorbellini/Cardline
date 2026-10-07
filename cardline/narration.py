@@ -109,13 +109,14 @@ def tts_text(text: str) -> str:
 
 def sound(word: str) -> str:
     """Chave de pronúncia de uma palavra, para o Whisper não ser cobrado pela grafia: "atiçar" = "atissar",
-    "Hakuna" = "Acuna", "chamas" = "xamas"."""
+    "Hakuna" = "Acuna", "chamas" = "xamas", "mau" = "mal"."""
     w = plain(word.lower().replace("ç", "s")).strip()
     for a, b in (("ch", "x"), ("sh", "x"), ("lh", "li"), ("nh", "ni"), ("qu", "k"), ("ss", "s"), ("oo", "u"), ("y", "i"),
                  ("w", "u")):
         w = w.replace(a, b)
     w = re.sub(r"c(?=[ei])", "s", w).replace("c", "k")
     w = re.sub(r"^h|(?<=[^aeiou])h", "", w)
+    w = re.sub(r"l$", "u", w)  # L final soa como U no Brasil: "mal" = "mau", "sinal" = "sinau"
     return re.sub(r"(.)\1+", r"\1", w)
 
 
@@ -194,6 +195,7 @@ class Timeline:
     paid: float | None  # valor pago, na moeda em que foi pago
     paid_currency: str | None
     result: float | None  # (valor das cartas - pago) / pago
+    intro: float = 0.0  # segundos de capa antes do vídeo (os instantes das cartas já contam com ela)
 
     @property
     def outcome(self) -> str:
@@ -203,20 +205,26 @@ class Timeline:
 
 
 def timeline(settings: Settings, run, folder: Path) -> Timeline:
+    """As cartas e os tempos no vídeo com overlay: a capa vem antes, então cada carta aparece `intro` depois."""
+    from .overlay import timing
+
     scan = load_scan(folder)
-    end = probe(folder / "overlay.mp4").duration
+    meta = timing(folder / "overlay.mp4")
+    intro = meta.get("intro", 0.0)
+    end = meta.get("end") or probe(folder / "overlay.mp4").duration
     total = sum(c.get("price_usd") or 0 for c in scan["cards"])
     return Timeline(
-        cards=scan["cards"], summary=max(0.0, end - settings.outro_seconds), end=end,
-        packs=max((c["pack"] or 1 for c in scan["cards"]), default=1), paid=run["paid"], paid_currency=run["paid_currency"],
-        result=(total - run["paid_usd"]) / run["paid_usd"] if run["paid_usd"] else None,
+        cards=[{**c, "t": c["t"] + intro} for c in scan["cards"]], summary=meta.get("summary") or max(0.0, end - settings.outro_seconds),
+        end=end, packs=max((c["pack"] or 1 for c in scan["cards"]), default=1), paid=run["paid"],
+        paid_currency=run["paid_currency"], result=(total - run["paid_usd"]) / run["paid_usd"] if run["paid_usd"] else None,
+        intro=intro,
     )
 
 
 def fingerprint(tl: Timeline) -> str:
     """Muda quando muda o que o roteiro automático usa: as cartas, os instantes, o valor pago e o resultado."""
     data = [[c["card_id"], round(c["t"], 1), c["foil"], c["rarity"]] for c in tl.cards]
-    data += [tl.paid, tl.paid_currency, tl.outcome, round(tl.summary, 1)]
+    data += [tl.paid, tl.paid_currency, tl.outcome, round(tl.summary, 1), round(tl.intro, 2)]
     return hashlib.sha1(json.dumps(data).encode()).hexdigest()[:12]
 
 
@@ -364,7 +372,7 @@ def write_script(settings: Settings, tl: Timeline, seed: int, progress) -> dict:
     approved = {curated(tl.cards[i], i == len(tl.cards) - 1) for i in jokes}
     wrote = any(line["tipo"] == "piada" and line["texto"] not in approved for line in lines)  # o modelo entrou no roteiro?
     return {"source": "auto", "writer": settings.narration_writer if wrote else None, "seed": seed,
-            "fingerprint": fingerprint(tl), "lines": lines}
+            "fingerprint": fingerprint(tl), "intro": tl.intro, "lines": lines}
 
 
 def script_path(folder: Path) -> Path:
@@ -610,12 +618,25 @@ def mix(overlay: Path, out: Path, clips: list[tuple[Path, float]], segments: lis
     return extra
 
 
+def follow_intro(folder: Path, script: dict, intro: float) -> dict:
+    """A capa mudou depois que o roteiro foi editado: as falas andam junto, para cada uma continuar na mesma carta."""
+    if script["source"] != "editado" or script.get("intro", 0.0) == intro:
+        return script
+    delta = intro - script.get("intro", 0.0)
+    script = {**script, "intro": intro,
+              "lines": [{**line, "t": round(max(0.0, line["t"] + delta), 2)} for line in script["lines"]]}
+    save_script(folder, script)
+    return script
+
+
 def narrate(settings: Settings, run, folder: Path, progress) -> str:
     """Passo "narrar": roteiro (escreve se precisar), voz de cada fala e o vídeo narrado (narrado.mp4)."""
     if reason := unavailable():
         raise RuntimeError(f"Narração indisponível: {reason}")
     tl = timeline(settings, run, folder)
     script = load_script(folder)
+    if script:
+        script = follow_intro(folder, script, tl.intro)
     if script is None or (script["source"] == "auto" and script.get("fingerprint") != fingerprint(tl)):
         progress(0.01, "Escrevendo o roteiro")
         script = write_script(settings, tl, script["seed"] if script else run["id"], progress)

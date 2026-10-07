@@ -4,6 +4,7 @@ Elementos (desenhados com Pillow e mesclados no frame com numpy):
   * HUD no topo: booster atual, cartas reveladas, total animado e um slot por carta com a cor da raridade;
   * etiqueta da carta (raridade, foil, nome, preço) ancorada logo abaixo da carta, com pop-in;
   * "+US$ x" voando da etiqueta até o total;
+  * capa no começo (primeiro frame congelado): o booster e o valor pago entram, e o booster voa para o painel;
   * resumo no fim (frame congelado): cartas ordenadas por valor e o total.
 """
 
@@ -11,6 +12,8 @@ from __future__ import annotations
 
 import colorsys
 import math
+import itertools
+import json
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
@@ -39,6 +42,9 @@ FADE_OUT = 0.25
 FLY = 0.75
 COUNT_UP = 0.5
 PULSE = 0.3
+INTRO_IN = 0.6  # entrada da capa
+INTRO_OUT = 0.6  # saída da capa: o booster voa até o lugar do ícone no painel
+HUD_IN = 0.35  # sem capa, o painel entra deslizando
 
 
 @lru_cache(maxsize=None)
@@ -68,6 +74,10 @@ def ease_out_back(x: float) -> float:
 
 def ease_in_out(x: float) -> float:
     return 3 * x * x - 2 * x * x * x
+
+
+def ease_out(x: float) -> float:
+    return 1 - (1 - x) ** 3
 
 
 def clamp01(x: float) -> float:
@@ -149,14 +159,46 @@ def blend_scaled(dst: np.ndarray, img: Image.Image, cx: float, cy: float, scale:
     blend(dst, np.asarray(img), round(cx - img.width / 2), round(cy - img.height / 2), opacity)
 
 
+def blend_posed(dst: np.ndarray, img: Image.Image, cx: float, cy: float, scale: float, angle: float, opacity: float) -> None:
+    """Mescla o sprite centrado em (cx, cy), com escala e rotação (graus, anti-horário)."""
+    if opacity <= 0 or scale <= 0:
+        return
+    if abs(scale - 1) > 1e-3:
+        img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+    if abs(angle) > 0.05:
+        img = img.rotate(angle, resample=Image.BICUBIC, expand=True)
+    blend(dst, np.asarray(img), round(cx - img.width / 2), round(cy - img.height / 2), opacity)
+
+
+@lru_cache(maxsize=8)
+def _diagonal(w: int, h: int) -> np.ndarray:
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    return (xx / w + 0.6 * yy / h) / 1.6
+
+
+def shine(img: Image.Image, p: float, width: float = 0.09) -> Image.Image:
+    """Faixa de brilho diagonal atravessando o booster (p de 0 a 1), como o reflexo do plástico."""
+    a = np.asarray(img).astype(np.float32)
+    band = np.exp(-(((_diagonal(img.width, img.height) - (p * 1.3 - 0.15)) / width) ** 2)) * 0.6
+    a[..., :3] += (255 - a[..., :3]) * band[..., None]
+    return Image.fromarray(a.clip(0, 255).astype(np.uint8), "RGBA")
+
+
 class Overlay:
     def __init__(self, scan: dict, money: Money, size: tuple[int, int], pack_size: int, paid_usd: float | None = None,
-                 icons: dict[str, Image.Image] | None = None):
+                 icons: dict[str, Image.Image] | None = None, names: dict[str, str] | None = None,
+                 paid: tuple[float, str] | None = None, intro: float = 0.0):
         self.cards = scan["cards"]
         self.money = money
         self.paid_usd = paid_usd
+        self.paid = paid  # (valor, moeda) como foi informado, para a capa
         self.icons = icons or {}  # ícone (foto do booster) de cada set
+        self.names = names or {}  # nome de cada set
+        self.intro = intro  # segundos de capa antes do vídeo (0 = sem capa)
+        k = min(1.0, intro / (INTRO_IN + INTRO_OUT + 0.4)) if intro else 1.0
+        self.intro_in, self.intro_out = INTRO_IN * k, INTRO_OUT * k  # capa curta: animações proporcionais
         self._icon_cache: dict = {}
+        self._cover: dict | None = None
         # o set de cada booster é o mais comum entre as cartas dele
         self.pack_set = {p: Counter(c["set"] for c in self.cards if c["pack"] == p).most_common(1)[0][0]
                          for p in {c["pack"] for c in self.cards}}
@@ -316,8 +358,8 @@ class Overlay:
             total += p * clamp01((t - self.arrive[k]) / COUNT_UP)
         return total
 
-    def draw(self, frame: np.ndarray, t: float) -> None:
-        u = self.u
+    def _hud_at(self, t: float) -> tuple[Image.Image, float, float, float, list[int]]:
+        """O painel no instante t do vídeo: sprite, centro, escala do pulso e as cartas do booster atual."""
         current = max((k for k, c in enumerate(self.cards) if c["t"] <= t), default=None)
         pack = self.cards[current]["pack"] if current is not None else 1
         in_pack = [k for k, c in enumerate(self.cards) if c["pack"] == pack]
@@ -336,8 +378,16 @@ class Overlay:
             x = (t - self.arrive[k]) / PULSE
             if 0 <= x <= 1 and self.cards[k].get("price_usd"):
                 pulse = 1 + 0.06 * math.sin(math.pi * x)
-        hud_cx, hud_cy = self.W / 2, 56 * u + hud.height / 2 - 18 * u
-        blend_scaled(frame, hud, hud_cx, hud_cy, pulse, 1.0)
+        return hud, self.W / 2, 56 * self.u + hud.height / 2 - 18 * self.u, pulse, in_pack
+
+    def draw(self, frame: np.ndarray, t: float) -> None:
+        u = self.u
+        hud, hud_cx, hud_cy, pulse, _ = self._hud_at(t)
+        if not self.intro and t < HUD_IN:  # sem capa, o painel desce do topo; com capa, ele já está no lugar
+            e = ease_out(clamp01(t / HUD_IN))
+            blend_scaled(frame, hud, hud_cx, hud_cy - (1 - e) * 40 * u, pulse, e)
+        else:
+            blend_scaled(frame, hud, hud_cx, hud_cy, pulse, 1.0)
 
         for k, c in enumerate(self.cards):
             start = c["t"]
@@ -358,6 +408,113 @@ class Overlay:
                 tx, ty = hud_cx + hud.width / 2 - 178 * u, hud_cy - 10 * u  # centro do total no painel
                 px, py = sx + (tx - sx) * e, sy + (ty - sy) * e - math.sin(math.pi * e) * 120 * u
                 blend_scaled(frame, flyer, px, py, 1.1 - 0.35 * e, 1 - 0.6 * e ** 3)
+
+    # ---- capa ------------------------------------------------------------------------------
+
+    def _cover_sprites(self) -> dict:
+        """Booster(s) em tamanho de capa, painel com o set e o valor pago, e o brilho atrás."""
+        if self._cover is not None:
+            return self._cover
+        u, W, H = self.u, self.W, self.H
+        packs = sorted(self.pack_set)
+        codes = [self.pack_set[p] for p in packs]
+        title = "BOOSTER" if len(packs) == 1 else f"{len(packs)} BOOSTERS"
+        names = " + ".join(dict.fromkeys(self.names.get(c, f"Set {c}") for c in codes))
+        lines = [(title, "SemiBold", 30 * u, GOLD), (names, "SemiBold", 42 * u, WHITE)]
+        if self.paid:
+            value, currency = self.paid
+            lines.append((Money(currency).fmt(value), "ExtraBold", 108 * u, WHITE))
+        m = Sprite(1, 1)
+        max_w = W * 0.88 - 96 * u
+        fitted = []
+        for text, weight, size, color in lines:  # nome de set longo encolhe para caber
+            while m.textlen(text, weight, size) > max_w and size > 22 * u:
+                size *= 0.94
+            fitted.append((text, weight, size, color))
+        gaps = [16 * u, 22 * u]
+        pad = 48 * u
+        w = min(W * 0.88, max(560 * u, max(m.textlen(t, wt, sz) for t, wt, sz, _ in fitted) + 2 * pad))
+        h = 2 * pad + sum(sz for _, _, sz, _ in fitted) + sum(gaps[: len(fitted) - 1])
+        shadow = 24 * u
+        s = Sprite(w + 2 * shadow, h + 2 * shadow)
+        s.rrect([shadow, shadow, shadow + w, shadow + h], 36 * u, fill=(10, 14, 32, 236), outline=(242, 193, 78, 150),
+                width=2 * u)
+        y = shadow + pad
+        for i, (text, weight, size, color) in enumerate(fitted):
+            s.text((shadow + w / 2, y + size / 2), text, weight, size, color, anchor="mm")
+            y += size + (gaps[i] if i < len(gaps) else 0)
+        panel = s.done(shadow=16 * u)
+
+        gap = 36 * u
+        ph = min(0.44 * H, 0.9 * H - gap - panel.height, 900 * u) * (0.86 if len(packs) > 1 else 1)
+        images = []
+        for code in codes[:3]:
+            src = self.icons.get(code)
+            if src is not None:
+                img = src.copy()
+                img.thumbnail((round(ph), round(ph)), Image.LANCZOS)
+            else:
+                img = self._set_icon(code, ph)  # sem foto: o selo com o código do set
+            images.append(img)
+        main = images[0]
+        top = (H - (main.height + gap + panel.height)) / 2
+        cy = top + main.height / 2
+        glow = Image.new("RGBA", (round(main.width * 2.2), round(main.height * 1.6)), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse([glow.width * 0.2, glow.height * 0.15, glow.width * 0.8, glow.height * 0.85], fill=(242, 193, 78, 120))
+        glow = glow.filter(ImageFilter.GaussianBlur(70 * u))
+        self._cover = {"images": images, "panel": panel, "glow": glow, "cx": W / 2, "cy": cy,
+                       "panel_cy": top + main.height + gap + panel.height / 2}
+        return self._cover
+
+    def _hud_icon(self) -> tuple[float, float, float]:
+        """Centro e altura do ícone do set no painel do instante 0: é onde o booster da capa pousa."""
+        u = self.u
+        hud, cx, cy, _, _ = self._hud_at(0.0)
+        h = (176 if self.n_packs > 1 else 150) * u
+        icon = self._set_icon(self.pack_set[1] if 1 in self.pack_set else next(iter(self.pack_set.values())), h - 26 * u)
+        shadow = 18 * u
+        return cx - hud.width / 2 + shadow + 20 * u + icon.width / 2, cy - hud.height / 2 + shadow + h / 2, icon.height
+
+    def intro_frame(self, first: np.ndarray, dim: np.ndarray, t: float) -> np.ndarray:
+        """Quadro da capa no instante t (0 até self.intro): `first` é o primeiro frame, `dim` ele escurecido e desfocado."""
+        u, cov = self.u, self._cover_sprites()
+        t_out = self.intro - self.intro_out
+        x_in = clamp01(t / self.intro_in)
+        x_out = clamp01((t - t_out) / self.intro_out) if self.intro_out else 0.0
+        k_bg = ease_in_out(clamp01(t / (0.75 * self.intro_in))) * (1 - ease_in_out(x_out))
+        frame = (first * (1 - k_bg) + dim * k_bg).astype(np.uint8)
+        cx, cy = cov["cx"], cov["cy"]
+        blend_scaled(frame, cov["glow"], cx, cy, 1.0, 0.9 * k_bg)
+        hud_op = clamp01((x_out - 0.45) / 0.55)  # o painel do topo aparece enquanto o booster chega
+        if hud_op > 0:
+            hud, hcx, hcy, _, _ = self._hud_at(0.0)
+            blend_scaled(frame, hud, hcx, hcy, 1.0, hud_op)
+        x_txt = clamp01((t - 0.35 * self.intro_in) / (0.75 * self.intro_in))
+        txt_op = ease_in_out(x_txt) * (1 - clamp01(x_out * 2.5))
+        if txt_op > 0:
+            blend_scaled(frame, cov["panel"], cx, cov["panel_cy"] + (1 - ease_out(x_txt)) * 60 * u, 1.0, txt_op)
+
+        images = cov["images"]
+        floating = math.sin(2 * math.pi * max(0.0, t - self.intro_in) / 2.4) * 7 * u * (1 - x_out)
+        rise = (1 - ease_out(x_in)) * 150 * u
+        pop = 0.6 + 0.4 * ease_out_back(x_in)
+        hx, hy, hh = self._hud_icon()
+        e = ease_in_out(x_out)
+        side = [(-1, 1), (1, 2)] if len(images) == 3 else [(1, 1)] if len(images) == 2 else []
+        for offset, i in side:  # os outros boosters, em leque atrás do primeiro
+            img = images[i]
+            angle = -3 + 9 * offset
+            ox = offset * 0.42 * images[0].width * pop
+            blend_posed(frame, img, cx + ox, cy + rise + floating, pop, angle, clamp01(x_in * 2.2) * (1 - clamp01(x_out * 2)))
+        main = images[0]
+        sweep = (t - (self.intro_in + 0.15)) / 0.8
+        if 0 <= sweep <= 1:
+            main = shine(main, sweep)
+        scale = pop + (hh / main.height - pop) * e
+        px, py = cx + (hx - cx) * e, cy + rise + floating + (hy - cy) * e
+        blend_posed(frame, main, px, py, scale, (-10 + 7 * ease_out(x_in)) * (1 - e), clamp01(x_in * 2.2))
+        return frame
 
     # ---- resumo final ----------------------------------------------------------------------
 
@@ -417,8 +574,10 @@ class Overlay:
 
 
 def render(
-    settings: Settings, scan: dict, out: Path, money: Money, progress: Progress, paid_usd: float | None = None
+    settings: Settings, scan: dict, out: Path, money: Money, progress: Progress, paid_usd: float | None = None,
+    paid: float | None = None, paid_currency: str | None = None,
 ) -> Path:
+    """Gera o vídeo com overlay e, ao lado, a capa (`.jpg`) e os tempos (`.json`: capa, resumo e fim)."""
     if not scan["cards"]:
         raise RuntimeError("Nenhuma carta identificada; nada para sobrepor.")
     video = settings.root / scan["video"]
@@ -426,19 +585,36 @@ def render(
     size = info.scaled(settings.output_short_side)
     con = db.connect(settings.db_path)
     codes = sorted({c["set"] for c in scan["cards"]})
-    icons = {}
-    for r in con.execute(f"SELECT code, icon FROM sets WHERE code IN ({','.join('?' * len(codes))})", codes):
+    icons, names = {}, {}
+    for r in con.execute(f"SELECT code, name, icon FROM sets WHERE code IN ({','.join('?' * len(codes))})", codes):
+        names[r["code"]] = r["name"]
         if r["icon"] and (settings.root / r["icon"]).exists():
             icons[r["code"]] = Image.open(settings.root / r["icon"]).convert("RGBA")
-    ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons)
+    intro = max(0.0, settings.intro_seconds)
+    ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons, names,
+                 (paid, paid_currency or "BRL") if paid else None, intro)
     tmp = out.with_suffix(".part.mp4")  # o vídeo anterior continua válido até o novo ficar pronto
-    writer = VideoWriter(tmp, size, FPS, audio_from=video if info.has_audio else None)
-    total_frames = int(info.duration * FPS)
-    for i, frame in enumerate(read_frames(info, settings.output_short_side, fps=FPS)):
+    writer = VideoWriter(tmp, size, FPS, audio_from=video if info.has_audio else None, audio_delay=intro)
+    frames = read_frames(info, settings.output_short_side, fps=FPS)
+    first = next(frames)
+    n_intro = round(intro * FPS)
+    total_frames = int(info.duration * FPS) + n_intro
+    poster = None
+    if n_intro:  # capa: o primeiro frame parado, com o booster e o valor pago
+        sharp = first.astype(np.float32)
+        dim = np.asarray(Image.fromarray(first).filter(ImageFilter.GaussianBlur(10 * ov.u))).astype(np.float32) * 0.5
+        poster_at = min(n_intro - 1, round((ov.intro_in + 0.5) * FPS))
+        for j in range(n_intro):
+            canvas = ov.intro_frame(sharp, dim, j / FPS)
+            writer.write(canvas)
+            if j == poster_at:
+                poster = canvas
+            progress(0.95 * j / total_frames, f"Renderizando a capa ({j}/{n_intro} frames)")
+    for i, frame in enumerate(itertools.chain([first], frames)):
         canvas = frame.copy()
         ov.draw(canvas, i / FPS)
         writer.write(canvas)
-        progress(0.95 * i / total_frames, f"Renderizando vídeo ({i}/{total_frames} frames)")
+        progress(0.95 * (n_intro + i) / total_frames, f"Renderizando vídeo ({n_intro + i}/{total_frames} frames)")
     # segura o último frame até a soma da última carta terminar de animar
     t = (i + 1) / FPS
     while t < max(ov.arrive) + COUNT_UP + 0.4:
@@ -446,6 +622,7 @@ def render(
         ov.draw(canvas, t)
         writer.write(canvas)
         t += 1 / FPS
+    summary_at = intro + t
     # resumo: crossfade do último frame (com overlay) para ele mesmo desfocado e escurecido,
     # e o painel entrando por cima
     last = canvas.astype(np.float32)
@@ -461,8 +638,17 @@ def render(
         writer.write(out_frame)
     writer.close()
     tmp.replace(out)
-    # capa do vídeo na página: o resumo final
-    poster = Image.fromarray(out_frame)
-    poster.thumbnail((720, 720))
-    poster.save(out.with_suffix(".jpg"), quality=85)
+    # capa do vídeo na página: a capa do começo (sem spoiler); sem capa, o resumo final
+    image = Image.fromarray(poster if poster is not None else out_frame)
+    image.thumbnail((720, 720))
+    image.save(out.with_suffix(".jpg"), quality=85)
+    timing = {"intro": intro, "summary": round(summary_at, 3),
+              "end": round(summary_at + int(settings.outro_seconds * FPS) / FPS, 3)}
+    out.with_suffix(".json").write_text(json.dumps(timing))
     return out
+
+
+def timing(video: Path) -> dict:
+    """Tempos do vídeo com overlay (capa, resumo, fim); vídeos de antes da capa não têm o .json."""
+    path = video.with_suffix(".json")
+    return json.loads(path.read_text()) if path.exists() else {"intro": 0.0}

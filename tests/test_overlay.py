@@ -1,0 +1,90 @@
+import json
+import subprocess
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from cardline import db, narration
+from cardline.collection import save_scan
+from cardline.config import Settings
+from cardline.money import Money
+from cardline.overlay import Overlay, render, timing
+from cardline.video import ffmpeg_exe, probe
+
+
+def card(t, name, rarity="Common", price=0.1, pack=1):
+    return {"card_id": f"crd_{name}", "t": t, "name": name, "version": None, "rarity": rarity, "foil": False,
+            "pack": pack, "set": "1", "price_usd": price, "quad": None}
+
+
+def booster():
+    img = Image.new("RGBA", (300, 520), (0, 0, 0, 0))
+    img.paste((200, 40, 60, 255), (20, 20, 280, 500))
+    return img
+
+
+@pytest.fixture
+def overlay():
+    scan = {"cards": [card(1.0, "Mickey"), card(1.6, "Stitch", "Rare", 0.9)]}
+    return Overlay(scan, Money("BRL", 5.0), (360, 640), 12, paid_usd=8.0, icons={"1": booster()},
+                   names={"1": "The First Chapter"}, paid=(40.0, "BRL"), intro=3.0)
+
+
+def test_cover_starts_on_the_first_frame_and_lands_on_the_video_with_the_panel(overlay):
+    first = np.random.default_rng(1).integers(0, 255, (640, 360, 3), dtype=np.uint8)
+    dim = first.astype(np.float32) * 0.5
+    assert np.array_equal(overlay.intro_frame(first.astype(np.float32), dim, 0.0), first)  # nada por cima ainda
+    middle = overlay.intro_frame(first.astype(np.float32), dim, 1.5)
+    assert np.abs(middle.astype(int) - first).mean() > 20  # booster, painel e fundo escurecido
+    # no fim, o booster pousou no ícone do painel: igual ao primeiro quadro do vídeo com o painel desenhado
+    video_start = first.copy()
+    overlay.draw(video_start, 0.0)
+    end = overlay.intro_frame(first.astype(np.float32), dim, 3.0)
+    assert np.abs(end.astype(int) - video_start).mean() < 1.5
+
+
+def test_cover_shows_the_value_as_informed(overlay):
+    sprites = overlay._cover_sprites()
+    assert sprites["images"][0].height > 0.35 * 640  # o booster é o destaque
+    no_paid = Overlay({"cards": [card(1.0, "Mickey")]}, Money("BRL", 5.0), (360, 640), 12, icons={}, intro=3.0)
+    assert no_paid._cover_sprites()["panel"].height < sprites["panel"].height  # sem valor, só o set
+
+
+def test_render_puts_the_cover_before_the_video_and_delays_the_sound(tmp_path):
+    settings = Settings(root=tmp_path, output_short_side=360, intro_seconds=1.0, outro_seconds=1.0)
+    source = tmp_path / "abertura.mp4"
+    subprocess.run([ffmpeg_exe(), "-v", "error", "-f", "lavfi", "-i", "testsrc=size=360x640:rate=30:duration=2",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(source)], check=True)
+    con = db.connect(settings.db_path)
+    db.upsert_set(con, {"code": "1", "id": "set_1", "name": "The First Chapter", "released_at": "2023-08-18"})
+    con.commit()
+    scan = {"video": "abertura.mp4", "cards": [card(0.5, "Mickey"), card(1.2, "Stitch", "Rare", 0.9)]}
+    out = tmp_path / "overlay.mp4"
+    render(settings, scan, out, Money("BRL", 5.0), lambda *a: None, paid_usd=8.0, paid=40.0, paid_currency="BRL")
+
+    meta = timing(out)
+    assert meta["intro"] == 1.0 and meta["end"] == pytest.approx(meta["summary"] + 1.0)
+    assert probe(out).duration == pytest.approx(meta["end"], abs=0.15)
+    assert out.with_suffix(".jpg").exists()  # a capa vira a imagem do vídeo na página
+    pcm = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(out), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    audio = np.frombuffer(pcm, np.float32)
+    rms = lambda a, b: float(np.sqrt(np.mean(audio[int(a * 16000):int(b * 16000)] ** 2)))  # noqa: E731
+    assert rms(0.0, 0.9) < 0.01  # silêncio durante a capa
+    assert rms(1.3, 2.7) > 0.05  # o som original começa junto com o vídeo
+
+
+def test_narration_counts_the_cover_and_edited_scripts_follow_it(tmp_path):
+    save_scan(tmp_path, {"video": "v.mp4", "cards": [card(1.1, "Mickey"), card(3.4, "Stitch", "Rare")]})
+    (tmp_path / "overlay.json").write_text(json.dumps({"intro": 3.0, "summary": 29.1, "end": 33.1}))
+    run = {"paid": 40.0, "paid_currency": "BRL", "paid_usd": 8.0}
+    tl = narration.timeline(Settings(root=tmp_path), run, tmp_path)
+    assert [c["t"] for c in tl.cards] == pytest.approx([4.1, 6.4]) and tl.intro == 3.0 and tl.summary == 29.1
+
+    narration.edit_script(tmp_path, [{"t": 0.2, "texto": "Abertura"}, {"t": 3.6, "texto": "Uma rara!"}])
+    script = narration.follow_intro(tmp_path, narration.load_script(tmp_path), 3.0)  # editado antes da capa existir
+    assert [line["t"] for line in script["lines"]] == [3.2, 6.6]
+    assert narration.load_script(tmp_path)["intro"] == 3.0
+    assert narration.follow_intro(tmp_path, script, 3.0) == script  # já está em dia

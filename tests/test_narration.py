@@ -143,6 +143,7 @@ def test_whisper_is_checked_by_sound_not_by_spelling():
     assert narration.similarity("Hakuna matata... sei.", "Acuna matata, sei.") == 1
     assert narration.similarity("E a última se chama... Atiçar as Chamas.", "E a última se chama Atissar as Chamas.") == 1
     assert narration.similarity("Quarenta reais. Um booster lacrado.", "40 reais, um búster lacrado") == 1
+    assert narration.similarity("Logo de cara, o usurpador. Mau sinal.", "Logo de cara, o usurpador, mal sinal.") == 1
     assert narration.similarity("Uma rara!", "Um rádio.") < 0.5
 
 

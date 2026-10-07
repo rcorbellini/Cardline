@@ -20,7 +20,9 @@ from .index import build_set_index, image_path, index_is_fresh
 # Ícones dos sets: Lorcana não tem símbolo de expansão nas cartas (o símbolo do rodapé é a raridade),
 # então o ícone de cada set é a foto oficial do booster no TCGplayer, via tcgcsv.com (espelho público).
 TCGCSV = "https://tcgcsv.com/tcgplayer/71"  # 71 = Disney Lorcana
-ICON_MAX = 600
+ICON_MAX = 1000  # resolução cheia: o vídeo mostra o booster grande na capa
+THUMB_MAX = 320  # miniatura leve para a página
+LEGACY_MAX = 600  # tamanho em que as fotos eram guardadas antes; essas são baixadas de novo
 
 
 def is_booster_set(code: str) -> bool:
@@ -96,10 +98,21 @@ def cutout(data: bytes) -> Image.Image:
     return img
 
 
+def thumb_path(settings: Settings, code: str) -> Path:
+    return icon_path(settings, code).with_suffix(".thumb.webp")
+
+
+def _thumb(settings: Settings, code: str, img: Image.Image) -> None:
+    small = img.copy()
+    small.thumbnail((THUMB_MAX, THUMB_MAX), Image.LANCZOS)
+    small.save(thumb_path(settings, code), quality=88, method=6)
+
+
 def _store_icon(settings: Settings, con, code: str, img: Image.Image, source: str) -> None:
     dest = icon_path(settings, code)
     dest.parent.mkdir(parents=True, exist_ok=True)
     img.save(dest)
+    _thumb(settings, code, img)
     with con:
         con.execute("UPDATE sets SET icon = ?, icon_source = ? WHERE code = ?",
                     (os.path.relpath(dest, settings.root), source, code))
@@ -117,6 +130,10 @@ def sync_set_icons(settings: Settings, con, only: list[str] | None = None, force
         with con:
             con.execute("UPDATE sets SET tcg_group_id = ? WHERE code = ?", (group["groupId"], s["code"]))
         has_icon = s["icon"] and (settings.root / s["icon"]).exists()
+        if has_icon and not thumb_path(settings, s["code"]).exists():
+            _thumb(settings, s["code"], Image.open(settings.root / s["icon"]))  # ícones de antes da miniatura
+        if has_icon and s["icon_source"] == "tcgplayer" and max(Image.open(settings.root / s["icon"]).size) == LEGACY_MAX:
+            has_icon = False  # foto guardada reduzida (versão antiga): baixa de novo em resolução cheia
         if has_icon and (s["icon_source"] == "manual" or not force):
             continue  # ícone enviado à mão só sai pelo "usar a foto do booster" (ou se o arquivo sumir)
         try:
@@ -154,6 +171,7 @@ def reset_icon(settings: Settings, code: str) -> None:
     """Volta ao ícone automático (a foto do booster), se o set tiver um."""
     con = db.connect(settings.db_path)
     icon_path(settings, code).unlink(missing_ok=True)
+    thumb_path(settings, code).unlink(missing_ok=True)
     with con:
         con.execute("UPDATE sets SET icon = NULL, icon_source = NULL WHERE code = ?", (code,))
     sync_set_icons(settings, con, only=[code], force=True)

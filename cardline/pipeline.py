@@ -273,8 +273,10 @@ def _overlay(ctx: RunContext) -> str:
     if not ctx.options.get("overlay", True):
         raise Skip("desligado")
     money = money_for(ctx.settings, ctx.options.get("currency"))
-    render(ctx.settings, load_scan(ctx.dir), ctx.dir / "overlay.mp4", money, ctx.progress, ctx.run["paid_usd"])
-    return "overlay.mp4 pronto"
+    run = ctx.run
+    render(ctx.settings, load_scan(ctx.dir), ctx.dir / "overlay.mp4", money, ctx.progress, run["paid_usd"],
+           run["paid"], run["paid_currency"])
+    return "overlay.mp4 pronto" + (f" · capa de {ctx.settings.intro_seconds:g}s" if ctx.settings.intro_seconds > 0 else "")
 
 
 def _narrate(ctx: RunContext) -> str:

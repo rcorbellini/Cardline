@@ -7,17 +7,17 @@ Começando por **Disney Lorcana**: você envia o vídeo abrindo o booster e o ca
 2. busca o preço de mercado atual (TCGplayer, via [Lorcast](https://lorcast.com));
 3. registra as cartas na sua coleção, vinculadas à pipeline que as abriu;
 4. compara com o valor pago pelo booster (resultado da abertura);
-5. renderiza o vídeo de volta com overlay: preço de cada carta quando ela aparece e o total do booster somando,
-   num painel com o ícone do set;
+5. renderiza o vídeo de volta com overlay: uma capa com o booster e o valor pago, o preço de cada carta quando
+   ela aparece e o total do booster somando, num painel com o ícone do set;
 6. (opcional) narra o vídeo: um narrador de trailer comenta a abertura sem dar spoiler, com voz em português.
 
 Também dá para **cadastrar cartas que você já tem**: grave as cartas uma por uma e o cardline identifica,
 precifica e registra na coleção, sem valor pago e sem vídeo de saída.
 
 <p align="center">
-  <img src="docs/demo.gif" width="360" alt="Abertura de um booster com o overlay do cardline: etiqueta com raridade e preço em cada carta revelada, total do booster somando no topo e resumo final com todas as cartas">
+  <img src="docs/demo.gif" width="360" alt="Abertura de um booster com o overlay do cardline: capa com o booster e o valor pago, o booster voando para o painel do topo, etiqueta com raridade e preço em cada carta revelada, total do booster somando e resumo final com todas as cartas">
 </p>
-<p align="center"><sub>Vídeo de exemplo processado pelo cardline (acelerado; o valor pago no resumo é ilustrativo).</sub></p>
+<p align="center"><sub>Vídeo de exemplo processado pelo cardline (as cartas aceleradas; o valor pago é ilustrativo).</sub></p>
 
 ## Instalação
 
@@ -167,8 +167,9 @@ ficam com um selo hexagonal com o código do set.
 - **Trocar ícone** põe uma imagem sua (o logo do set, por exemplo) no lugar da foto do booster. A
   sincronização não troca um ícone escolhido por você, e **Usar a foto do booster** desfaz a troca.
 
-O ícone aparece no painel do vídeo que vai somando o booster, na lista e no detalhe das pipelines e no
-detalhe de cada carta.
+O ícone aparece na capa e no painel do vídeo que vai somando o booster, na lista e no detalhe das pipelines e no
+detalhe de cada carta. A foto é guardada em resolução cheia (até 1000 px) para a capa, e a página usa uma
+miniatura leve; ícones guardados pela versão anterior, menores, são baixados de novo na próxima sincronização.
 
 ### No celular e acesso remoto
 
@@ -216,7 +217,7 @@ no túnel, ou só redes de confiança.
 | Conferir com IA local | (opcional) um modelo de visão do Ollama lê nome e número de cada recorte | `scan.json` |
 | Atualizar preços | busca os preços de hoje do set e fixa o preço da abertura de cada carta (foil ou não); ao reprocessar, o preço da abertura é mantido, e uma carta nova recebe o preço do dia da abertura | `scan.json` |
 | Registrar na coleção | substitui as cartas que esta pipeline tinha registrado | banco |
-| Gerar vídeo com overlay | vídeo 1080×1920 com etiquetas, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` |
+| Gerar vídeo com overlay | vídeo 1080×1920: capa (o primeiro frame parado, com o booster e o valor pago), etiquetas, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` (a capa), `overlay.json` (tempos) |
 | Narrar o vídeo | (opcional) escreve o roteiro, grava cada fala com a voz e mistura com o som do vídeo | `narrado.mp4`, `narracao/` |
 
 Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo).
@@ -248,6 +249,7 @@ Cartas obtidas fora de vídeo: `uv run cardline add 1/169 --foil --qty 2`.
 (`USD` ou `BRL`), cartas por booster, fps da análise, resolução de saída, duração do resumo, e o modelo do
 Ollama para conferência. Com `verify_model` preenchido, a opção já vem marcada no upload. Para a narração,
 `narration_voice` (a voz do XTTS-v2) e `narration_writer` (o modelo do Ollama que escreve as piadas).
+`intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa).
 
 ## Como funciona
 
@@ -265,7 +267,11 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
   O servidor (`server.py`, FastAPI) roda uma pipeline por vez, cada uma num processo próprio
   (`cardline run ID`), e a página acompanha o progresso por polling.
 - **Overlay** (`overlay.py`): o ffmpeg decodifica (com tone mapping HDR→SDR para os vídeos HLG do Pixel), o
-  Pillow desenha e o x264 codifica mantendo o áudio original.
+  Pillow desenha e o x264 codifica mantendo o áudio original. A capa congela o primeiro frame, escurecido e
+  desfocado. O booster entra com um pop e um reflexo passando pelo pacote, e o painel com o set e o valor pago
+  sobe logo depois. Na saída, o booster voa até o lugar do ícone no painel do topo, o frame volta ao normal e o
+  vídeo começa sem corte. O som original entra atrasado pelo tempo da capa, e a capa vira a imagem do vídeo
+  na página, sem spoiler.
 - **Ícones dos sets** (`catalog.py`): o [tcgcsv](https://tcgcsv.com) espelha o catálogo do TCGplayer, e o
   grupo de cada set de Lorcana lá tem a mesma sigla do código do set no Lorcast. Do grupo sai o produto
   "Booster Pack" avulso (não o sleeved nem a caixa). Na foto em 1000×1000 só sai o branco ligado à borda (o
@@ -284,8 +290,8 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
 
 - `data/cardline.db`: catálogo, preços, pipelines e **a sua coleção**. Fica fora do git (o repositório é
   público e o banco muda a cada atualização de preço), então faça backup desse arquivo.
-- `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg`), `narrado.mp4` (+ o roteiro
-  e as falas gravadas em `narracao/`) e `pipeline.log` de cada pipeline.
+- `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg` e tempos `overlay.json`),
+  `narrado.mp4` (+ o roteiro e as falas gravadas em `narracao/`) e `pipeline.log` de cada pipeline.
 - `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
   que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 
