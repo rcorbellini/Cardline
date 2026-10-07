@@ -303,8 +303,8 @@ def recent_uploads(settings: Settings, n: int = 8) -> list[dict]:
 
 def suggestion(run, scan: dict, set_names: dict[str, str]) -> dict:
     """Título, descrição e tags sugeridos para o vídeo da abertura (sem spoiler do resultado)."""
-    packs = max((c["pack"] or 1 for c in scan["cards"]), default=1)
-    sets = list(dict.fromkeys(set_names.get(c["set"], f"set {c['set']}") for c in scan["cards"]))
+    packs = max((c.get("pack") or 1 for c in scan["cards"]), default=1)
+    sets = list(dict.fromkeys(set_names.get(c["set"], f"set {c['set']}") for c in scan["cards"] if c.get("set"))) or ["Lorcana"]
     what = "um booster" if packs == 1 else f"{packs} boosters"
     title = f"Abrindo {what} de {' + '.join(sets)} | Disney Lorcana #shorts"
     description = (f"Abertura de {what} de Disney Lorcana: {', '.join(sets)}.\n"

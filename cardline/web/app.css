@@ -4,6 +4,7 @@
   --shadow: 0 1px 2px rgb(40 30 0 / .06), 0 6px 20px rgb(40 30 0 / .07);
   --radius: 14px;
   --s-now: #2a78d6; --s-spent: #eb6834; --s-open: #1baf7a;  /* séries do gráfico */
+  --yt-views: var(--s-now); --yt-likes: var(--s-spent); --yt-comments: var(--s-open);  /* mesmos slots validados */
   --danger: #c0392b;  /* fundo de ação destrutiva, texto branco */
   color-scheme: light;
 }
@@ -410,3 +411,44 @@ dialog.dlg.narrow { width: min(460px, calc(100vw - 32px)); }
 .script .seek:hover, .script .del:hover { background: var(--panel-2); color: var(--text); }
 .narractions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .scriptset:disabled { opacity: .6; }
+
+/* YouTube */
+.ytpanel { display: grid; gap: 10px; padding: 14px 16px; margin-top: 16px; }
+.ytpanel h3 { margin: 0; font-size: 15px; }
+.ytpanel p { margin: 0; font-size: 13px; }
+.ythead, .ytactions, .ytrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ythead .spacer, .ytactions .spacer { flex: 1; }
+.ytfield { display: grid; gap: 4px; font-size: 13px; color: var(--muted); flex: 1; min-width: 0; }
+.ytfield input, .ytfield textarea, .ytfield select, .ytlink input, .ytclient input {
+  font: inherit; font-size: 14px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); color: var(--text); min-width: 0; width: 100%;
+}
+.ytfield textarea { resize: vertical; line-height: 1.35; }
+.ytlink { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+.ytlink .ytrow input { flex: 1; }
+.ytbox { display: grid; gap: 8px; padding: 12px; border-radius: 10px; background: var(--panel-2); font-size: 13px; }
+.ytbox p { margin: 0; }
+.ytclient { display: grid; gap: 8px; }
+.coderow { display: flex; align-items: center; gap: 10px; }
+.ytcode .code { font: 800 26px/1 ui-monospace, monospace; letter-spacing: .08em; color: var(--accent); }
+.ytrecent { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ytrecent li { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.ytrecent img, .ytrecent .noimg { width: 64px; height: 36px; object-fit: cover; border-radius: 6px; background: var(--panel-2); }
+.ytrecent b { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ytrecent small { font-size: 11px; }
+.yttitle { font-weight: 600; }
+.ytnums { display: flex; gap: 18px; }
+.ytnums span { display: grid; }
+.ytnums b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.ytnums small { color: var(--muted); font-size: 12px; }
+.ytpanel .bar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+.ytpanel .bar i { display: block; height: 100%; background: var(--accent); }
+.warnbox { padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--text); }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+.ytcharts { position: relative; display: flex; flex-wrap: wrap; gap: 24px; }
+.ytmultiple { margin: 0; }
+.ytmultiple figcaption { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+#yt-connect-resumo:not(:empty) { margin-bottom: 12px; }
+svg .tick.up { fill: var(--up); }
+svg .tick.down { fill: var(--down); }
+.ytbox .btn { justify-self: start; }

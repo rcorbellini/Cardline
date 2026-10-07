@@ -17,13 +17,14 @@ import time
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, narration, pipeline, rarity
+from . import db, narration, pipeline, rarity, youtube
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, restore_card, set_card_foil
 from .config import Settings
@@ -129,9 +130,89 @@ class ScriptBody(BaseModel):
     lines: list[dict]  # [{"t": segundos, "texto": "..."}]
 
 
+class ClientBody(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+class PostBody(BaseModel):
+    title: str
+    description: str = ""
+    privacy: str = "public"
+    variant: str = "narrado"  # narrado | overlay
+
+
+class LinkBody(BaseModel):
+    url: str  # link do vídeo (ou só o ID)
+
+
+class YouTubeJobs:
+    """Conexão do canal (o fluxo de dispositivo espera o usuário digitar o código) e envios, em segundo plano."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.login: dict | None = None  # código mostrado na página e situação da espera
+        self.uploads: dict[int, dict] = {}  # run_id → situação do envio
+        self.lock = threading.Lock()
+
+    def start_login(self) -> dict:
+        info = youtube.start_device_login(self.settings)
+        state = {"user_code": info["user_code"], "verification_url": info.get("verification_url") or info.get("verification_uri"),
+                 "expires_at": time.time() + float(info.get("expires_in", 1800)), "status": "waiting", "error": None}
+        self.login = state
+        threading.Thread(target=self._poll, args=(info["device_code"], float(info.get("interval", 5)), state),
+                         daemon=True).start()
+        return state
+
+    def _poll(self, device_code: str, interval: float, state: dict) -> None:
+        while self.login is state and time.time() < state["expires_at"]:
+            time.sleep(interval)
+            try:
+                result = youtube.poll_device_login(self.settings, device_code)
+            except (youtube.YouTubeError, youtube.NotConnected, OSError) as e:
+                state.update(status="error", error=str(e))
+                return
+            if result == "done":
+                state["status"] = "done"
+                return
+            if result == "slow_down":
+                interval += 5
+        if state["status"] == "waiting":
+            state.update(status="error", error="O código expirou. Peça outro.")
+
+    def busy(self) -> bool:
+        return any(job["status"] == "sending" for job in self.uploads.values())
+
+    def start_upload(self, run_id: int, video: Path, body: PostBody, variant: str) -> None:
+        with self.lock:
+            if self.busy():
+                raise RuntimeError("Já há um vídeo sendo enviado; espere terminar.")
+            job = {"status": "sending", "progress": 0.0, "error": None, "started_at": db.now()}
+            self.uploads[run_id] = job
+        threading.Thread(target=self._upload, args=(run_id, video, body, variant, job), daemon=True).start()
+
+    def _upload(self, run_id: int, video: Path, body: PostBody, variant: str, job: dict) -> None:
+        try:
+            created = youtube.upload(self.settings, video, body.title, body.description,
+                                     ["lorcana", "disney lorcana", "booster", "tcg"], body.privacy,
+                                     progress=lambda f: job.update(progress=round(f, 3)))
+            con = db.connect(self.settings.db_path)
+            youtube.save_post(con, run_id, created["id"], via="api", title=created.get("snippet", {}).get("title"),
+                              variant=variant, privacy=created.get("status", {}).get("privacyStatus"),
+                              published_at=created.get("snippet", {}).get("publishedAt"))
+            try:  # a visibilidade de verdade (projeto sem auditoria: travado como privado)
+                youtube.save_stats(con, youtube.stats(self.settings, [created["id"]]))
+            except (youtube.YouTubeError, OSError):
+                pass
+            job.update(status="done", progress=1.0)
+        except Exception as e:  # noqa: BLE001 - qualquer falha vira mensagem na página
+            job.update(status="failed", error=str(e))
+
+
 def create_app(settings: Settings) -> FastAPI:
     runner = Runner(settings)
     sync_job = SyncJob(settings)
+    yt = YouTubeJobs(settings)
     edit_lock = threading.Lock()  # edições do scan.json não podem se intercalar
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     ollama = {"checked": 0.0, "available": False}
@@ -202,6 +283,7 @@ def create_app(settings: Settings) -> FastAPI:
             "narrated": f"{url}/narrado.mp4" if json.loads(run["options"]).get("narration")
                         and (folder / "narrado.mp4").exists() else None,
             "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
+            "youtube": youtube.post_info(c, run["id"]), "youtube_upload": yt.uploads.get(run["id"]),
             "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
         }
@@ -226,6 +308,9 @@ def create_app(settings: Settings) -> FastAPI:
             out["narration"] = {"enabled": bool(json.loads(run["options"]).get("narration")),
                                 "lines": script.get("lines", []), "source": script.get("source"),
                                 "writer": script.get("writer")}
+            if scan and run["kind"] == "abertura":
+                names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
+                out["youtube_suggestion"] = youtube.suggestion(run, scan, names)
             log = folder / "pipeline.log"
             lines = log.read_text(errors="replace").splitlines()[-120:] if log.exists() else []
             out["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in lines)
@@ -249,6 +334,7 @@ def create_app(settings: Settings) -> FastAPI:
             "rarities": [[k, label, color] for k, (label, color) in rarity.RARITIES.items()],
             "inks": [[k, label, color] for k, (label, color) in rarity.INKS.items()],
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
+            "youtube": youtube.status(settings),
             "narration": {"unavailable": narration.unavailable(), "voice": settings.narration_voice,
                           "writer": settings.narration_writer or None},
             "verify": {"default": bool(settings.verify_model),
@@ -424,6 +510,124 @@ def create_app(settings: Settings) -> FastAPI:
         """Descarta o roteiro: a próxima narração escreve outro."""
         narration.discard_script(narrated_run(run_id))
         pipeline.mark_stale(settings, run_id, "narrate")
+        return {"ok": True}
+
+    # --- YouTube ---------------------------------------------------------------------------------
+
+    def yt_call(fn, *args, **kwargs):
+        """Chama a API do YouTube traduzindo os erros para a página."""
+        try:
+            return fn(*args, **kwargs)
+        except youtube.NotConnected as e:
+            raise HTTPException(409, str(e)) from e
+        except youtube.YouTubeError as e:
+            raise HTTPException(502, str(e)) from e
+        except OSError as e:
+            raise HTTPException(502, f"Sem conexão com o YouTube ({e}).") from e
+
+    @app.get("/api/youtube")
+    def youtube_status():
+        login = yt.login
+        return {**youtube.status(settings),
+                "login": {k: login[k] for k in ("user_code", "verification_url", "expires_at", "status", "error")}
+                if login else None}
+
+    @app.post("/api/youtube/client")
+    def youtube_client(body: ClientBody):
+        try:
+            youtube.save_client(settings, body.client_id, body.client_secret)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return youtube.status(settings)
+
+    @app.post("/api/youtube/connect")
+    def youtube_connect():
+        """Pede um código ao Google; a página mostra o código e espera o usuário autorizar."""
+        state = yt_call(yt.start_login)
+        return {k: state[k] for k in ("user_code", "verification_url", "expires_at", "status")}
+
+    @app.post("/api/youtube/disconnect")
+    def youtube_disconnect():
+        yt.login = None
+        youtube.disconnect(settings)
+        return youtube.status(settings)
+
+    @app.get("/api/youtube/recent")
+    def youtube_recent():
+        """Os últimos vídeos do canal, para vincular o que foi postado pelo app."""
+        return yt_call(youtube.recent_uploads, settings)
+
+    @app.post("/api/youtube/stats")
+    def youtube_stats(max_age: float = 0):
+        """Atualiza os números de todos os vídeos vinculados (se a última leitura tiver mais de `max_age` s)."""
+        c = con()
+        ids = [r[0] for r in c.execute("SELECT video_id FROM youtube_posts")]
+        if not ids:
+            return {"updated": 0}
+        last = c.execute("SELECT MAX(fetched_at) FROM youtube_stats").fetchone()[0]
+        if max_age and last and time.time() - datetime.fromisoformat(last).timestamp() < max_age:
+            return {"updated": 0, "fresh": True}
+        return {"updated": youtube.save_stats(c, yt_call(youtube.stats, settings, ids))}
+
+    def opening(run_id: int):
+        run = con().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise HTTPException(404, "Pipeline não encontrada.")
+        if run["kind"] != "abertura":
+            raise HTTPException(400, "Só aberturas de booster têm vídeo para postar.")
+        return run
+
+    @app.post("/api/runs/{run_id}/youtube")
+    def youtube_post(run_id: int, body: PostBody):
+        """Envia o vídeo da abertura pela API (o YouTube trava como privado se o projeto não foi auditado)."""
+        run = opening(run_id)
+        if body.privacy not in youtube.PRIVACY:
+            raise HTTPException(400, "Visibilidade deve ser public, unlisted ou private.")
+        if not body.title.strip():
+            raise HTTPException(400, "O vídeo precisa de um título.")
+        if youtube.post_info(con(), run_id):
+            raise HTTPException(409, "Esta pipeline já tem um vídeo no YouTube; desvincule para postar de novo.")
+        folder = settings.root / run["dir"]
+        narrated = folder / "narrado.mp4"
+        variant = "narrado" if body.variant == "narrado" and narrated.exists() else "overlay"
+        video = narrated if variant == "narrado" else folder / "overlay.mp4"
+        if not video.exists():
+            raise HTTPException(409, "Gere o vídeo com overlay antes de postar.")
+        if not youtube.status(settings)["connected"]:
+            raise HTTPException(409, "Conecte o canal do YouTube.")
+        try:
+            yt.start_upload(run_id, video, body, variant)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+        return {"ok": True}
+
+    @app.put("/api/runs/{run_id}/youtube")
+    def youtube_link(run_id: int, body: LinkBody):
+        """Vincula um vídeo já postado (pelo app ou pelo Studio) a esta abertura, para acompanhar os números."""
+        opening(run_id)
+        vid = youtube.video_id(body.url)
+        if not vid:
+            raise HTTPException(400, "Não reconheci o link do YouTube.")
+        info = None
+        if youtube.status(settings)["connected"]:
+            info = yt_call(youtube.stats, settings, [vid]).get(vid)
+            if info is None:
+                raise HTTPException(404, "O YouTube não encontrou esse vídeo (ou ele é privado de outra conta).")
+        c = con()
+        youtube.save_post(c, run_id, vid, via="link", title=info and info["title"], privacy=info and info["privacy"],
+                          published_at=info and info["published_at"])
+        if info:
+            youtube.save_stats(c, {vid: info})
+        return {"ok": True}
+
+    @app.delete("/api/runs/{run_id}/youtube")
+    def youtube_unlink(run_id: int):
+        """Desvincula o vídeo da abertura (o vídeo continua no YouTube)."""
+        c = con()
+        with c:
+            c.execute("DELETE FROM youtube_posts WHERE run_id = ?", (run_id,))
+            c.execute("DELETE FROM youtube_stats WHERE run_id = ?", (run_id,))
+        yt.uploads.pop(run_id, None)
         return {"ok": True}
 
     @app.post("/api/prices/refresh")
