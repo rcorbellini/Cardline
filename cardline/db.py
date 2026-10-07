@@ -99,6 +99,26 @@ CREATE TABLE IF NOT EXISTS collection (
     added_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS collection_run ON collection(run_id);
+
+CREATE TABLE IF NOT EXISTS youtube_posts (
+    run_id       INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    video_id     TEXT NOT NULL,
+    title        TEXT,
+    via          TEXT NOT NULL,   -- api (enviado pelo cardline) | link (postado pelo app e vinculado)
+    variant      TEXT,            -- narrado | overlay: a versão que foi enviada
+    privacy      TEXT,            -- public | unlisted | private, como o YouTube informa
+    posted_at    TEXT NOT NULL,
+    published_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS youtube_stats (  -- uma linha por leitura: dá para ver a evolução depois
+    run_id     INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    fetched_at TEXT NOT NULL,
+    views      INTEGER,
+    likes      INTEGER,
+    comments   INTEGER,
+    PRIMARY KEY (run_id, fetched_at)
+);
 """
 
 
