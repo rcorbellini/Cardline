@@ -410,16 +410,26 @@ def clean_lines(lines: list[dict]) -> list[dict]:
     return sorted(out, key=lambda line: line["t"])
 
 
-def edit_script(folder: Path, lines: list[dict]) -> None:
+def edit_script(folder: Path, lines: list[dict], voice: str | None = None) -> None:
+    """Salva o roteiro editado na página. Só trocar a voz não faz dele um roteiro "editado": o automático
+    continua sendo reescrito quando as cartas mudam."""
     old = load_script(folder) or {}
-    save_script(folder, {**old, "source": "editado", "lines": clean_lines(lines)})
+    new = clean_lines(lines)
+    same = [(x["t"], x["texto"]) for x in new] == [(x["t"], x["texto"]) for x in old.get("lines", [])]
+    if voice is not None and voice not in VOICE_NAMES:
+        raise ValueError(f"A voz {voice!r} não existe no XTTS-v2.")
+    script = {**old, "lines": new if not same else old.get("lines", new),
+              "source": old.get("source", "auto") if same else "editado"}
+    if voice:
+        script["voz"] = voice
+    save_script(folder, script)
 
 
 def discard_script(folder: Path) -> None:
     """Pede um roteiro novo: a próxima narração escreve outro, com outra semente (piadas e frases diferentes)."""
     old = load_script(folder) or {}
     save_script(folder, {"source": "auto", "seed": random.randrange(1, 1 << 30), "fingerprint": None,
-                         "lines": [], "writer": old.get("writer")})
+                         "lines": [], "writer": old.get("writer"), **({"voz": old["voz"]} if old.get("voz") else {})})
 
 
 # --- voz ----------------------------------------------------------------------------------------
@@ -459,14 +469,14 @@ def load_xtts():
 class Voice:
     """XTTS-v2 para falar e Whisper para conferir; carregar leva ~20 s, então é uma vez por narração."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, speaker: str):
         import torch
         from faster_whisper import WhisperModel
 
         self.torch = torch
         self.tts = load_xtts()
         self.sr = self.tts.synthesizer.output_sample_rate
-        self.speaker = settings.narration_voice
+        self.speaker = speaker
         if self.speaker not in self.tts.speakers:
             raise RuntimeError(f"A voz {self.speaker!r} não existe no XTTS-v2 (veja as opções com: cardline voz).")
         self.whisper = WhisperModel("small", device="cpu", compute_type="int8")
@@ -480,6 +490,74 @@ class Voice:
     def hear(self, wav: np.ndarray) -> str:
         segments, _ = self.whisper.transcribe(resample(wav, self.sr, 16000), language="pt")
         return " ".join(s.text for s in segments).strip()
+
+
+SAMPLE_TEXT = "Quarenta reais. Um booster lacrado. E uma fé inabalável."
+VOICE_NAMES = [  # as vozes que vêm com o XTTS-v2 (a mesma lista do speakers_xtts.pth)
+    "Claribel Dervla", "Daisy Studious", "Gracie Wise", "Tammie Ema", "Alison Dietlinde", "Ana Florence",
+    "Annmarie Nele", "Asya Anara", "Brenda Stern", "Gitta Nikolina", "Henriette Usha", "Sofia Hellen", "Tammy Grit",
+    "Tanja Adelina", "Vjollca Johnnie", "Andrew Chipper", "Badr Odhiambo", "Dionisio Schuyler", "Royston Min",
+    "Viktor Eka", "Abrahan Mack", "Adde Michal", "Baldur Sanjin", "Craig Gutsy", "Damien Black", "Gilberto Mathias",
+    "Ilkin Urbano", "Kazuhiko Atallah", "Ludvig Milivoj", "Suad Qasim", "Torcull Diarmuid", "Viktor Menelaos",
+    "Zacharie Aimilios", "Nova Hogarth", "Maja Ruoho", "Uta Obando", "Lidiya Szekeres", "Chandra MacFarland",
+    "Szofi Granger", "Camilla Holmström", "Lilya Stainthorpe", "Zofija Kendrick", "Narelle Moon", "Barbora MacLean",
+    "Alexandra Hisakawa", "Alma María", "Rosemary Okafor", "Ige Behringer", "Filip Traverse", "Damjan Chapman",
+    "Wulf Carlevaro", "Aaron Dreschner", "Kumar Dahl", "Eugenio Mataracı", "Ferran Simen", "Xavier Hayasaka",
+    "Luis Moray", "Marcos Rudaski",
+]
+
+
+def samples_dir(settings: Settings) -> Path:
+    return settings.cache_dir / "vozes"
+
+
+def voices(settings: Settings) -> list[dict]:
+    """As vozes do XTTS-v2, com a amostra e o tom médio de cada uma quando `cardline voz --amostras` já rodou."""
+    path = samples_dir(settings) / "vozes.json"
+    measured = {v["name"]: v for v in json.loads(path.read_text())} if path.exists() else {}
+    return [measured.get(name, {"name": name}) for name in VOICE_NAMES]
+
+
+def make_samples(settings: Settings, progress=lambda done, total, name: None) -> list[dict]:
+    """Grava a mesma frase em cada voz (para ouvir antes de escolher) e mede o tom médio (grave ou aguda)."""
+    tts = load_xtts()
+    out_dir = samples_dir(settings)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    found = []
+    names = list(tts.speakers)
+    for n, name in enumerate(names):
+        progress(n, len(names), name)
+        slug = re.sub(r"[^a-z0-9]+", "-", plain(name)).strip("-")
+        dest = out_dir / f"{slug}.m4a"
+        import torch
+
+        torch.manual_seed(7)
+        wav = trim(np.asarray(tts.tts(text=tts_text(SAMPLE_TEXT), speaker=name, language="pt", split_sentences=False,
+                                      speed=SPEED), np.float32), tts.synthesizer.output_sample_rate)
+        sr = tts.synthesizer.output_sample_rate
+        tmp = dest.with_suffix(".wav")
+        write_wav(tmp, wav, sr)
+        subprocess.run([ffmpeg_exe(), "-v", "error", "-y", "-i", str(tmp), "-c:a", "aac", "-b:a", "64k", str(dest)], check=True)
+        tmp.unlink()
+        found.append({"name": name, "file": dest.name, "f0": round(median_pitch(wav, sr)), "seconds": round(len(wav) / sr, 2)})
+    (out_dir / "vozes.json").write_text(json.dumps(found, ensure_ascii=False, indent=1))
+    return found
+
+
+def median_pitch(wav: np.ndarray, sr: int) -> float:
+    """Tom médio (Hz) pela autocorrelação de trechos com voz: até ~160 Hz soa grave/masculina."""
+    frame, hop = int(0.04 * sr), int(0.01 * sr)
+    lo, hi = int(sr / 400), int(sr / 70)
+    pitches = []
+    for i in range(0, len(wav) - frame, hop):
+        x = wav[i:i + frame] - wav[i:i + frame].mean()
+        if np.sqrt(np.mean(x ** 2)) < 0.02:
+            continue
+        ac = np.correlate(x, x, "full")[frame - 1:]
+        lag = lo + int(np.argmax(ac[lo:hi]))
+        if ac[lag] > 0.3 * ac[0]:
+            pitches.append(sr / lag)
+    return float(np.median(pitches)) if pitches else 0.0
 
 
 def trim(wav: np.ndarray, sr: int, thresh: float = 0.012, pad: float = 0.06) -> np.ndarray:
@@ -511,11 +589,12 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
         return np.frombuffer(f.readframes(f.getnframes()), "<i2").astype(np.float32) / 32767, f.getframerate()
 
 
-def line_key(settings: Settings, text: str) -> str:
-    return hashlib.sha1(f"{XTTS}|{settings.narration_voice}|{SPEED}|{tts_text(text)}".encode()).hexdigest()[:16]
+def line_key(speaker: str, text: str) -> str:
+    return hashlib.sha1(f"{XTTS}|{speaker}|{SPEED}|{tts_text(text)}".encode()).hexdigest()[:16]
 
 
-def voice_lines(settings: Settings, folder: Path, lines: list[dict], progress) -> list[tuple[Path, float] | None]:
+def voice_lines(settings: Settings, folder: Path, lines: list[dict], progress,
+                speaker: str | None = None) -> list[tuple[Path, float] | None]:
     """Grava cada fala (ou reaproveita a do cache); devolve o arquivo e a duração da tomada escolhida.
 
     Piada ou presságio que a voz não conseguiu dizer direito em nenhuma tomada volta como None (sai do roteiro);
@@ -523,9 +602,10 @@ def voice_lines(settings: Settings, folder: Path, lines: list[dict], progress) -
     """
     cache = folder / "narracao" / "falas"
     cache.mkdir(parents=True, exist_ok=True)
+    speaker = speaker or settings.narration_voice
     voice, out = None, []
     for n, line in enumerate(lines):
-        key = line_key(settings, line["texto"])
+        key = line_key(speaker, line["texto"])
         meta = cache / f"{key}.json"
         best = json.loads(meta.read_text())["best"] if meta.exists() else None
         if best and (cache / best["file"]).exists():  # mesma fala, mesma voz: reaproveita
@@ -533,7 +613,7 @@ def voice_lines(settings: Settings, folder: Path, lines: list[dict], progress) -
             continue
         if voice is None:
             progress(0.1, "Carregando a voz")
-            voice = Voice(settings)
+            voice = Voice(speaker)
         slot = lines[n + 1]["t"] - line["t"] - GAP if n + 1 < len(lines) else math.inf
         takes = []
         for k in range(TAKES):
@@ -581,28 +661,36 @@ def ducking(n: int, segments: list[tuple[float, float]], sr: int = SR) -> np.nda
     return ((c[k:] - c[:-k]) / k).astype(np.float32)
 
 
-def mix(overlay: Path, out: Path, clips: list[tuple[Path, float]], segments: list[tuple[float, float]], end: float) -> float:
-    """Narração + som original (abaixado) sobre o vídeo; devolve quantos segundos o último quadro ganhou."""
-    raw = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(overlay), "-vn", "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"],
-                         capture_output=True, check=True).stdout
-    orig = np.frombuffer(raw, np.float32).reshape(-1, 2).copy() if raw else np.zeros((int(end * SR), 2), np.float32)
-    extra = max(0.0, segments[-1][1] + TAIL - len(orig) / SR) if segments else 0.0
-    orig = np.pad(orig, ((0, int(extra * SR)), (0, 0)))
-    voice = np.zeros(len(orig), np.float32)
+def mix(overlay: Path, out: Path, clips: list[tuple[Path, float]], segments: list[tuple[float, float]], end: float,
+        source: Path | None = None, meta: dict | None = None) -> float:
+    """Narração + som do vídeo (o original abaixa durante a fala); devolve quantos segundos o último quadro ganhou.
+
+    Vídeo com overlay que tem os "ka-chings" anotados (`meta["sounds"]`): o som é remontado a partir do vídeo
+    original, para abaixar só ele e deixar o "ka-ching" inteiro. Vídeos antigos: abaixa o som deles todo.
+    """
+    from . import audio
+
+    length = max(end, probe(overlay).duration)
+    extra = max(0.0, segments[-1][1] + TAIL - length) if segments else 0.0
+    n = int(round((length + extra) * SR))
+    gain = ducking(n, segments)
+    if meta is not None and "sounds" in meta:
+        orig = audio.soundtrack(source if source and source.exists() else None, meta.get("intro", 0.0), n / SR, [], 0)
+        orig = orig * gain[:, None] + audio.card_sounds(meta["sounds"], n, meta.get("sound_volume", 0))[:, None]
+    else:
+        raw = audio.decode(overlay)[:n]
+        orig = np.zeros((n, 2), np.float32)
+        orig[:len(raw)] = raw
+        orig *= gain[:, None]
+    voice = np.zeros(n, np.float32)
     for (path, _), (start, _) in zip(clips, segments):
         wav, sr = read_wav(path)
         wav = resample(wav, sr, SR)
         wav *= 0.1 / max(1e-6, float(np.sqrt(np.mean(wav ** 2))))  # ~ -20 dBFS: todas as falas no mesmo volume
         a = int(start * SR)
         voice[a:a + len(wav)] += wav[: max(0, len(voice) - a)]
-    mixed = orig * ducking(len(orig), segments)[:, None] + voice[:, None]
-    mixed *= min(1.0, 0.98 / max(1e-6, float(np.abs(mixed).max())))
     track = out.with_suffix(".wav")
-    with wave.open(str(track), "wb") as f:
-        f.setnchannels(2)
-        f.setsampwidth(2)
-        f.setframerate(SR)
-        f.writeframes((mixed * 32767).astype("<i2").tobytes())
+    audio.write_wav(track, orig + voice[:, None])
     video = (["-filter_complex", f"[0:v]tpad=stop_mode=clone:stop_duration={extra:.2f}[v]", "-map", "[v]",
               "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"] if extra
              else ["-map", "0:v", "-c:v", "copy"])  # sem extensão, a imagem nem é recodificada
@@ -641,7 +729,7 @@ def narrate(settings: Settings, run, folder: Path, progress) -> str:
         progress(0.01, "Escrevendo o roteiro")
         script = write_script(settings, tl, script["seed"] if script else run["id"], progress)
         save_script(folder, script)
-    clips = voice_lines(settings, folder, script["lines"], progress)
+    clips = voice_lines(settings, folder, script["lines"], progress, script.get("voz"))
     if None in clips:  # a voz não acertou alguma piada: ela sai do roteiro (a página mostra o que ficou)
         script["lines"] = [line for line, clip in zip(script["lines"], clips) if clip]
         save_script(folder, script)
@@ -649,7 +737,11 @@ def narrate(settings: Settings, run, folder: Path, progress) -> str:
     lines = script["lines"]
     segments = schedule(lines, [dur for _, dur in clips])
     progress(0.92, "Mixando a narração com o vídeo")
-    extra = mix(folder / "overlay.mp4", folder / "narrado.mp4", clips, segments, tl.end)
+    from .overlay import timing
+
+    scan_video = load_scan(folder).get("video")
+    extra = mix(folder / "overlay.mp4", folder / "narrado.mp4", clips, segments, tl.end,
+                settings.root / scan_video if scan_video else None, timing(folder / "overlay.mp4"))
     who = ("roteiro editado" if script["source"] == "editado"
            else f"roteiro com piadas do {script['writer']}" if script.get("writer") else "roteiro automático")
     late = max((start - line["t"] for line, (start, _) in zip(lines, segments)), default=0.0)

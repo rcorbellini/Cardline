@@ -452,3 +452,7 @@ dialog.dlg.narrow { width: min(460px, calc(100vw - 32px)); }
 svg .tick.up { fill: var(--up); }
 svg .tick.down { fill: var(--down); }
 .ytbox .btn { justify-self: start; }
+.voicepick { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.voicepick select { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel-2); color: var(--text); }
+.voicepick .btn { min-width: 36px; }

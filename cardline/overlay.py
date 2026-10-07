@@ -14,6 +14,7 @@ import colorsys
 import math
 import itertools
 import json
+import subprocess
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
@@ -21,11 +22,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import db, rarity
+from . import audio, db, rarity
 from .config import Settings
 from .money import Money
 from .scan import Progress
-from .video import VideoWriter, probe, read_frames
+from .video import VideoWriter, ffmpeg_exe, probe, read_frames
 
 FPS = 30
 FONTS = Path(__file__).parent / "assets" / "fonts"
@@ -593,8 +594,9 @@ def render(
     intro = max(0.0, settings.intro_seconds)
     ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons, names,
                  (paid, paid_currency or "BRL") if paid else None, intro)
-    tmp = out.with_suffix(".part.mp4")  # o vídeo anterior continua válido até o novo ficar pronto
-    writer = VideoWriter(tmp, size, FPS, audio_from=video if info.has_audio else None, audio_delay=intro)
+    tmp = out.with_name(out.stem + ".imagem.part.mp4")  # o vídeo anterior continua válido até o novo ficar pronto
+    writer = VideoWriter(tmp, size, FPS)  # o som entra depois, misturado com o "ka-ching" de cada carta
+    written = 0
     frames = read_frames(info, settings.output_short_side, fps=FPS)
     first = next(frames)
     n_intro = round(intro * FPS)
@@ -607,6 +609,7 @@ def render(
         for j in range(n_intro):
             canvas = ov.intro_frame(sharp, dim, j / FPS)
             writer.write(canvas)
+            written += 1
             if j == poster_at:
                 poster = canvas
             progress(0.95 * j / total_frames, f"Renderizando a capa ({j}/{n_intro} frames)")
@@ -614,6 +617,7 @@ def render(
         canvas = frame.copy()
         ov.draw(canvas, i / FPS)
         writer.write(canvas)
+        written += 1
         progress(0.95 * (n_intro + i) / total_frames, f"Renderizando vídeo ({n_intro + i}/{total_frames} frames)")
     # segura o último frame até a soma da última carta terminar de animar
     t = (i + 1) / FPS
@@ -621,6 +625,7 @@ def render(
         canvas = frame.copy()
         ov.draw(canvas, t)
         writer.write(canvas)
+        written += 1
         t += 1 / FPS
     summary_at = intro + t
     # resumo: crossfade do último frame (com overlay) para ele mesmo desfocado e escurecido,
@@ -636,14 +641,30 @@ def render(
         e = ease_out_back(x)
         blend_scaled(out_frame, panel, ov.W / 2, ov.H / 2 + (1 - e) * 60 * ov.u, 0.94 + 0.06 * e, clamp01(x * 1.4))
         writer.write(out_frame)
+        written += 1
     writer.close()
-    tmp.replace(out)
+    # som: o original depois da capa e o "ka-ching" quando a etiqueta de cada carta aparece
+    progress(0.97, "Misturando o som")
+    sounds = [round(intro + c["t"], 3) for c in scan["cards"]]
+    track = out.with_name(out.stem + ".som.wav")
+    try:
+        audio.write_wav(track, audio.soundtrack(video if info.has_audio else None, intro, written / FPS, sounds,
+                                                settings.card_sound_volume))
+        mixed = out.with_suffix(".part.mp4")
+        subprocess.run([ffmpeg_exe(), "-v", "error", "-y", "-i", str(tmp), "-i", str(track), "-map", "0:v", "-map", "1:a",
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(mixed)],
+                       check=True, capture_output=True)
+        mixed.replace(out)
+    finally:
+        tmp.unlink(missing_ok=True)
+        track.unlink(missing_ok=True)
     # capa do vídeo na página: a capa do começo (sem spoiler); sem capa, o resumo final
     image = Image.fromarray(poster if poster is not None else out_frame)
     image.thumbnail((720, 720))
     image.save(out.with_suffix(".jpg"), quality=85)
     timing = {"intro": intro, "summary": round(summary_at, 3),
-              "end": round(summary_at + int(settings.outro_seconds * FPS) / FPS, 3)}
+              "end": round(summary_at + int(settings.outro_seconds * FPS) / FPS, 3),
+              "sounds": sounds if settings.card_sound_volume > 0 else [], "sound_volume": settings.card_sound_volume}
     out.with_suffix(".json").write_text(json.dumps(timing))
     return out
 

@@ -37,7 +37,8 @@ uv sync --extra narracao
 COQUI_TOS_AGREED=1 uv run cardline voz   # aceita a licença, baixa a voz e lista as 58 vozes disponíveis
 ```
 
-Depois disso, rode sempre `uv sync --extra narracao`: um `uv sync` sem o extra desinstala a voz. As piadas do
+Depois disso, rode sempre `uv sync --extra narracao`: um `uv sync` sem o extra desinstala a voz.
+`uv run cardline voz --amostras` grava uma amostra de cada voz (~6 min), para ouvir e escolher na página. As piadas do
 roteiro são escritas por um modelo do Ollama (`gemma3:4b` por padrão); sem Ollama, o roteiro sai sem elas.
 
 `uv run cardline sync --sets 1,2` indexa só os sets que você abre. Os preços das cartas de cada pipeline
@@ -136,7 +137,8 @@ No detalhe de uma pipeline:
 - **Passos** com status, mensagem e tempo de cada um. O passo em andamento mostra a barra de progresso.
 - **Vídeo com overlay** para assistir ou baixar, e o **log** da execução. A **moeda do vídeo** (US$ ou R$)
   pode ser trocada acima do player; o vídeo é refeito ao reprocessar. Com narração, **Com/Sem** escolhe a versão.
-- **Narração**: **Narrar este vídeo** liga a narração numa pipeline já feita. O painel mostra o roteiro, e
+- **Narração**: **Narrar este vídeo** liga a narração numa pipeline já feita. O painel tem a **voz** (as 58 do
+  XTTS-v2, agrupadas em graves, médias e agudas pelo tom; ▶ toca uma amostra) e o roteiro, e
   cada fala pode ser editada no texto e no instante (▶ leva o vídeo àquele momento), apagada ou criada (**+ Fala**).
   **Salvar e narrar de novo** grava de novo só as falas que mudaram; **Escrever outro roteiro** troca por um
   novo; **Desligar** apaga o vídeo narrado (as falas gravadas ficam guardadas).
@@ -181,8 +183,10 @@ resultado do booster, para ver se booster ruim rende mais (ou menos) views.
 **Configuração (uma vez):**
 
 1. No [Google Cloud](https://console.cloud.google.com), crie um projeto e ative a **YouTube Data API v3**.
-2. Configure a **tela de consentimento OAuth** (tipo externo) e adicione o seu e-mail como usuário de teste.
-   Com o app em "Teste", a autorização vence a cada 7 dias; publicar o app (mesmo sem verificação) evita isso.
+2. Configure a **tela de consentimento OAuth** (tipo externo). Em **Público-alvo**, adicione a conta do canal
+   como **usuário de teste**: sem isso, o Google bloqueia a conexão com "Erro 403: access_denied" (o app está em
+   teste). Com o app em "Teste", a autorização vence a cada 7 dias; publicar o app (mesmo sem verificação)
+   evita as duas coisas, com um aviso de "app não verificado" na hora de autorizar.
 3. Em **Credenciais**, crie um **ID do cliente OAuth** do tipo **"TVs e dispositivos de entrada limitada"**.
 4. Cole o ID e a chave secreta na página (card do YouTube no Resumo ou na pipeline). Eles ficam em
    `data/youtube/`, fora do git.
@@ -255,7 +259,7 @@ no túnel, ou só redes de confiança.
 | Conferir com IA local | (opcional) um modelo de visão do Ollama lê nome e número de cada recorte | `scan.json` |
 | Atualizar preços | busca os preços de hoje do set e fixa o preço da abertura de cada carta (foil ou não); ao reprocessar, o preço da abertura é mantido, e uma carta nova recebe o preço do dia da abertura | `scan.json` |
 | Registrar na coleção | substitui as cartas que esta pipeline tinha registrado | banco |
-| Gerar vídeo com overlay | vídeo 1080×1920: capa (o primeiro frame parado, com o booster e o valor pago), etiquetas, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` (a capa), `overlay.json` (tempos) |
+| Gerar vídeo com overlay | vídeo 1080×1920: capa (o primeiro frame parado, com o booster e o valor pago), etiquetas com um "ka-ching" de caixa registradora a cada carta, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` (a capa), `overlay.json` (tempos) |
 | Narrar o vídeo | (opcional) escreve o roteiro, grava cada fala com a voz e mistura com o som do vídeo | `narrado.mp4`, `narracao/` |
 
 Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo).
@@ -287,7 +291,8 @@ Cartas obtidas fora de vídeo: `uv run cardline add 1/169 --foil --qty 2`.
 (`USD` ou `BRL`), cartas por booster, fps da análise, resolução de saída, duração do resumo, e o modelo do
 Ollama para conferência. Com `verify_model` preenchido, a opção já vem marcada no upload. Para a narração,
 `narration_voice` (a voz do XTTS-v2) e `narration_writer` (o modelo do Ollama que escreve as piadas).
-`intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa).
+`intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa), e `card_sound_volume` o volume do
+"ka-ching" de cada carta (0,35; 0 tira o som).
 
 ## Como funciona
 
@@ -309,7 +314,9 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
   desfocado. O booster entra com um pop e um reflexo passando pelo pacote, e o painel com o set e o valor pago
   sobe logo depois. Na saída, o booster voa até o lugar do ícone no painel do topo, o frame volta ao normal e o
   vídeo começa sem corte. O som original entra atrasado pelo tempo da capa, e a capa vira a imagem do vídeo
-  na página, sem spoiler.
+  na página, sem spoiler. O "ka-ching" (`audio.py`) bate quando a etiqueta de cada carta aparece. É um trecho
+  (alavanca + campainha) de [Cash register.ogg](https://commons.wikimedia.org/wiki/File:Cash_register.ogg),
+  em domínio público. Na narração, o som é remontado das mesmas peças: só o original abaixa durante a fala.
 - **Ícones dos sets** (`catalog.py`): o [tcgcsv](https://tcgcsv.com) espelha o catálogo do TCGplayer, e o
   grupo de cada set de Lorcana lá tem a mesma sigla do código do set no Lorcast. Do grupo sai o produto
   "Booster Pack" avulso (não o sleeved nem a caixa). Na foto em 1000×1000 só sai o branco ligado à borda (o

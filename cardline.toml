@@ -19,6 +19,9 @@ outro_seconds = 4.0
 # entrando animados; na saída, o booster voa para o painel do topo. 0 = sem capa.
 intro_seconds = 3.0
 
+# Volume do "ka-ching" de caixa registradora quando a etiqueta de cada carta aparece no vídeo (0 = sem som).
+card_sound_volume = 0.35
+
 # Modelo de visão do Ollama que confere cada carta lendo nome e número de coleção (ex.: "qwen3.5:4b").
 # Preenchido, a conferência já vem marcada no upload.
 # Só sinaliza divergências, nunca troca a carta sozinho. Vazio = desmarcada (marcando, usa qwen3.5:4b).

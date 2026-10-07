@@ -66,6 +66,7 @@ def test_render_puts_the_cover_before_the_video_and_delays_the_sound(tmp_path):
 
     meta = timing(out)
     assert meta["intro"] == 1.0 and meta["end"] == pytest.approx(meta["summary"] + 1.0)
+    assert meta["sounds"] == [1.5, 2.2]  # o "ka-ching" de cada carta, contando a capa
     assert probe(out).duration == pytest.approx(meta["end"], abs=0.15)
     assert out.with_suffix(".jpg").exists()  # a capa vira a imagem do vídeo na página
     pcm = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(out), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],

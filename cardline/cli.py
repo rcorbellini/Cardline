@@ -82,10 +82,14 @@ def cmd_edit(s: Settings, a: argparse.Namespace) -> None:
 
 
 def cmd_voice(s: Settings, a: argparse.Namespace) -> None:
-    from .narration import load_xtts, unavailable
+    from .narration import load_xtts, make_samples, unavailable
 
     if reason := unavailable():
         raise SystemExit(f"Narração indisponível: {reason}")
+    if a.amostras:
+        found = make_samples(s, lambda n, total, name: print(f"  {n + 1}/{total} {name}", flush=True))
+        print(f"{len(found)} amostras em {s.cache_dir / 'vozes'}")
+        return
     try:
         tts = load_xtts()
     except RuntimeError as e:
@@ -154,6 +158,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.set_defaults(func=cmd_edit)
 
     sp = sub.add_parser("voz", help="prepara a voz da narração (baixa na primeira vez) e lista as vozes")
+    sp.add_argument("--amostras", action="store_true", help="grava uma amostra de cada voz, para ouvir na página")
     sp.set_defaults(func=cmd_voice)
 
     sp = sub.add_parser("add", help="adiciona à coleção uma carta que não veio de vídeo")

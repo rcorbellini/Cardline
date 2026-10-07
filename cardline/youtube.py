@@ -30,6 +30,7 @@ UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=res
 CHUNK = 8 * 1024 * 1024  # múltiplo de 256 KB, como o upload retomável exige
 PRIVACY = ("public", "unlisted", "private")
 GAMING = "20"  # categoria do vídeo no YouTube
+ACCESS_HINT = 'Se o Google mostrou "Erro 403: access_denied" (app em teste), adicione a conta do canal como usuária de teste no Google Cloud (ou publique o app) e peça outro código.'
 
 
 class NotConnected(Exception):
@@ -146,7 +147,7 @@ def poll_device_login(settings: Settings, device_code: str) -> str:
     if error in ("authorization_pending", "slow_down"):
         return "pending" if error == "authorization_pending" else "slow_down"
     if error == "access_denied":
-        raise YouTubeError("A autorização foi negada na conta do Google.")
+        raise YouTubeError(f"O Google negou a autorização. {ACCESS_HINT}")
     if error == "expired_token":
         raise YouTubeError("O código expirou. Peça outro.")
     raise YouTubeError(f"O Google recusou a conexão: {_message(payload)}")

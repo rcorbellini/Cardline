@@ -17,6 +17,7 @@ class Settings:
     output_short_side: int = 1080  # lado menor do vídeo com overlay (1080 = 1080x1920 em retrato)
     outro_seconds: float = 4.0  # duração do resumo no fim do vídeo (frame congelado)
     intro_seconds: float = 3.0  # capa no começo do vídeo: booster e valor pago sobre o primeiro frame (0 = sem capa)
+    card_sound_volume: float = 0.35  # "ka-ching" de caixa registradora quando cada carta aparece (0 = sem som)
     workers: int = max(1, min(8, (os.cpu_count() or 2) - 1))
     verify_model: str = ""  # modelo de visão do Ollama para conferir cada carta (ex.: "qwen3.5:4b"); vazio = desligado
     narration_voice: str = "Damien Black"  # voz do XTTS-v2 na narração (lista: cardline voz)

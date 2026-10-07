@@ -404,13 +404,30 @@ function renderRun() {
 
 // ---- narração: liga/desliga e roteiro editável ----
 let videoMode = 'narrated';  // quando as duas versões existem: com ou sem narração
-let narr = { runId: null, base: '', draft: [], dirty: false };
+let narr = { runId: null, base: '', draft: [], dirty: false, voice: null };
 function narrSync(r) {  // o rascunho acompanha o servidor enquanto não há edição por salvar
   const lines = r.narration?.lines || [];
-  const base = JSON.stringify(lines.map(l => [l.t, l.texto]));
+  const base = JSON.stringify([r.narration?.voz, lines.map(l => [l.t, l.texto])]);
   if (narr.runId === r.id && (narr.dirty || narr.base === base)) return false;
-  narr = { runId: r.id, base, draft: lines.map(l => ({ t: l.t, texto: l.texto })), dirty: false };
+  narr = { runId: r.id, base, draft: lines.map(l => ({ t: l.t, texto: l.texto })), dirty: false, voice: r.narration?.voz };
   return true;
+}
+const pitchGroup = v => !v.f0 ? 'Outras vozes' : v.f0 < 140 ? 'Graves' : v.f0 < 190 ? 'Médias' : 'Agudas';
+function voiceOptions(selected) {  // agrupadas pelo tom medido na amostra
+  const groups = {};
+  for (const v of S.meta.narration.voices || []) (groups[pitchGroup(v)] ||= []).push(v);
+  return ['Graves', 'Médias', 'Agudas', 'Outras vozes'].filter(g => groups[g]).map(g => `<optgroup label="${g}">${groups[g]
+    .sort((a, b) => (a.f0 || 0) - (b.f0 || 0)).map(v => `<option value="${esc(v.name)}" ${v.name === selected ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</optgroup>`).join('');
+}
+let voicePlayer = null;
+function playVoice(name, btn) {  // ▶ toca a amostra da voz escolhida; tocar de novo para
+  const v = (S.meta.narration.voices || []).find(x => x.name === name);
+  if (voicePlayer) { voicePlayer.pause(); voicePlayer = null; btn.textContent = '▶'; return; }
+  if (!v?.sample) { alert('Esta voz ainda não tem amostra (rode: cardline voz --amostras).'); return; }
+  voicePlayer = new Audio(v.sample);
+  btn.textContent = '■';
+  voicePlayer.onended = () => { voicePlayer = null; btn.textContent = '▶'; };
+  voicePlayer.play().catch(() => { voicePlayer = null; btn.textContent = '▶'; });
 }
 const fmtT = t => (Math.round(t * 100) / 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 function scriptRows() {
@@ -437,14 +454,16 @@ function renderNarration(r) {
     patch(box, `<div class="panel narr">
       <div class="narrhead"><h3>Narração</h3><span class="muted narrsrc"></span><span class="spacer"></span>
         <button class="linkbtn" data-action="narration-off">Desligar</button></div>
-      <fieldset class="scriptset"><ol class="script" id="r-script"></ol><p class="muted small narrempty"></p>
+      <fieldset class="scriptset"><div class="voicepick"><label for="r-voice">Voz</label><select id="r-voice"></select>
+          <button type="button" class="btn ghost small" data-action="voice-play" title="Ouvir esta voz" aria-label="Ouvir a amostra da voz">▶</button></div>
+        <ol class="script" id="r-script"></ol><p class="muted small narrempty"></p>
         <div class="narractions"><button type="button" class="linkbtn" data-action="script-add">+ Fala</button><span class="spacer"></span>
           <button type="button" class="linkbtn" data-action="script-new">Escrever outro roteiro</button></div>
         <button type="button" class="btn" data-action="script-save">Salvar e narrar de novo</button></fieldset>
       <p class="muted small">Edite o texto ou o instante (em segundos) de cada fala. Ao narrar de novo, só as falas que mudaram são gravadas.</p></div>`);
     narr.runId = null;
   }
-  if (narrSync(r)) scriptRows();
+  if (narrSync(r)) { scriptRows(); patch($('#r-voice'), voiceOptions(narr.voice)); }
   const empty = !narr.draft.length;
   box.querySelector('.narrsrc').textContent = n.source === 'editado' ? 'roteiro editado por você'
     : n.writer ? `piadas do ${n.writer}` : n.lines.length ? 'roteiro automático' : '';
@@ -453,6 +472,14 @@ function renderNarration(r) {
   box.querySelector('.scriptset').disabled = busy;
   box.querySelector('[data-action="script-save"]').disabled = !narr.dirty || empty;
 }
+$('#view-run').addEventListener('change', ev => {  // trocar a voz: vale ao narrar de novo
+  if (ev.target.id !== 'r-voice') return;
+  narr.voice = ev.target.value;
+  narr.dirty = true;
+  if (voicePlayer) { voicePlayer.pause(); voicePlayer = null; }
+  $('#r-narr [data-action="voice-play"]').textContent = '▶';
+  $('#r-narr [data-action="script-save"]').disabled = false;
+});
 $('#view-run').addEventListener('input', ev => {
   const el = ev.target.closest('#r-script [data-field]');
   if (!el) return;
@@ -516,6 +543,7 @@ $('#view-run').addEventListener('click', async ev => {
       if (action === 'script-add') $('#r-script li:last-child .txt')?.focus();
       return;
     }
+    if (action === 'voice-play') { playVoice($('#r-voice').value, target); return; }
     if (action === 'script-seek') {
       const video = $('#r-video video'), line = narr.draft[+target.dataset.i];
       if (video && line) { video.currentTime = Math.max(0, line.t - 0.5); video.play(); }
@@ -523,7 +551,7 @@ $('#view-run').addEventListener('click', async ev => {
     }
     if (action === 'script-save') {
       target.disabled = true;
-      await api(`/api/runs/${id}/narration`, json({ lines: narr.draft.filter(l => l.texto.trim()) }, 'PUT'));
+      await api(`/api/runs/${id}/narration`, json({ lines: narr.draft.filter(l => l.texto.trim()), voz: narr.voice }, 'PUT'));
       narr.dirty = false; narr.base = '';  // a próxima atualização traz o roteiro como o servidor guardou
       await api(`/api/runs/${id}/rerun`, json({ from_step: null }));
     }

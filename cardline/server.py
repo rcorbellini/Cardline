@@ -128,6 +128,7 @@ class RunPatch(BaseModel):
 
 class ScriptBody(BaseModel):
     lines: list[dict]  # [{"t": segundos, "texto": "..."}]
+    voz: str | None = None  # voz do XTTS-v2 desta narração
 
 
 class ClientBody(BaseModel):
@@ -178,7 +179,7 @@ class YouTubeJobs:
             if result == "slow_down":
                 interval += 5
         if state["status"] == "waiting":
-            state.update(status="error", error="O código expirou. Peça outro.")
+            state.update(status="error", error=f"O código expirou sem a autorização do Google. {youtube.ACCESS_HINT}")
 
     def busy(self) -> bool:
         return any(job["status"] == "sending" for job in self.uploads.values())
@@ -307,7 +308,7 @@ def create_app(settings: Settings) -> FastAPI:
             script = narration.load_script(folder) or {}
             out["narration"] = {"enabled": bool(json.loads(run["options"]).get("narration")),
                                 "lines": script.get("lines", []), "source": script.get("source"),
-                                "writer": script.get("writer")}
+                                "writer": script.get("writer"), "voz": script.get("voz") or settings.narration_voice}
             if scan and run["kind"] == "abertura":
                 names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
                 out["youtube_suggestion"] = youtube.suggestion(run, scan, names)
@@ -336,6 +337,8 @@ def create_app(settings: Settings) -> FastAPI:
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
             "youtube": youtube.status(settings),
             "narration": {"unavailable": narration.unavailable(), "voice": settings.narration_voice,
+                          "voices": [{**v, "sample": f"/vozes/{v['file']}" if v.get("file") else None}
+                                     for v in narration.voices(settings)],
                           "writer": settings.narration_writer or None},
             "verify": {"default": bool(settings.verify_model),
                        "model": settings.verify_model or pipeline.DEFAULT_VERIFY_MODEL,
@@ -499,7 +502,7 @@ def create_app(settings: Settings) -> FastAPI:
         """Roteiro editado na página: vale na próxima narração (só as falas que mudaram são gravadas de novo)."""
         folder = narrated_run(run_id)
         try:
-            narration.edit_script(folder, body.lines)
+            narration.edit_script(folder, body.lines, body.voz)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         pipeline.mark_stale(settings, run_id, "narrate")
@@ -707,6 +710,8 @@ def create_app(settings: Settings) -> FastAPI:
     app.mount("/runs", StaticFiles(directory=settings.runs_dir), name="runs")
     app.mount("/img", StaticFiles(directory=settings.images_dir, check_dir=False), name="img")
     (settings.cache_dir / "sets").mkdir(parents=True, exist_ok=True)
+    narration.samples_dir(settings).mkdir(parents=True, exist_ok=True)
+    app.mount("/vozes", StaticFiles(directory=narration.samples_dir(settings)), name="vozes")
     app.mount("/set-icons", StaticFiles(directory=settings.cache_dir / "sets"), name="set-icons")
     app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
     return app

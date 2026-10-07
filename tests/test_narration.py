@@ -113,6 +113,19 @@ def test_jokes_from_the_model_are_checked(tmp_path, monkeypatch):
     assert jokes == {4: "Megara... puxa as cordas, e a gente cai."}
 
 
+def test_changing_only_the_voice_keeps_the_automatic_script(tmp_path):
+    narration.save_script(tmp_path, {"source": "auto", "seed": 1, "lines": [{"t": 0.2, "texto": "Abertura", "tipo": "abertura"}]})
+    narration.edit_script(tmp_path, [{"t": 0.2, "texto": "Abertura"}], voice="Viktor Eka")
+    script = narration.load_script(tmp_path)
+    assert script["source"] == "auto" and script["voz"] == "Viktor Eka" and script["lines"][0]["tipo"] == "abertura"
+    narration.edit_script(tmp_path, [{"t": 0.2, "texto": "Outra abertura"}], voice="Viktor Eka")
+    assert narration.load_script(tmp_path)["source"] == "editado"
+    with pytest.raises(ValueError):
+        narration.edit_script(tmp_path, [{"t": 0.2, "texto": "x y"}], voice="Ninguém")
+    narration.discard_script(tmp_path)
+    assert narration.load_script(tmp_path)["voz"] == "Viktor Eka"  # outro roteiro, mesma voz
+
+
 def test_edited_script_is_cleaned_and_a_new_one_can_be_asked_for(tmp_path):
     narration.edit_script(tmp_path, [{"t": 5, "texto": "  Segunda   fala "}, {"t": "1.5", "texto": "Primeira"},
                                      {"t": 2, "texto": "   "}])
@@ -269,7 +282,9 @@ def test_script_routes(settings):
     with TestClient(create_app(settings)) as client:
         assert "unavailable" in client.get("/api/meta").json()["narration"]
         assert client.get(f"/api/runs/{run_id}").json()["narration"] == {"enabled": False, "lines": [], "source": None,
-                                                                          "writer": None}
+                                                                          "writer": None, "voz": "Damien Black"}
+        voices = client.get("/api/meta").json()["narration"]["voices"]
+        assert len(voices) == 58 and {"name": "Damien Black", "sample": None} in voices  # sem amostras gravadas ainda
         lines = {"lines": [{"t": 1, "texto": "Uma rara!"}]}
         assert client.put(f"/api/runs/{run_id}/narration", json=lines).status_code == 409  # narração desligada
 
