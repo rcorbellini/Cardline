@@ -143,6 +143,7 @@ class PostBody(BaseModel):
     caption: str = ""  # legenda (Instagram) ou descrição (YouTube)
     privacy: str = "public"  # só o YouTube tem visibilidade
     variant: str = "narrado"  # narrado | overlay
+    tags: list[str] | None = None  # tags do YouTube (vazio = as sugeridas)
 
 
 class LinkBody(BaseModel):
@@ -355,7 +356,7 @@ def create_app(settings: Settings) -> FastAPI:
                                 "writer": script.get("writer"), "voz": script.get("voz") or settings.narration_voice}
             if scan and run["kind"] == "abertura":
                 names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
-                out["post_suggestion"] = social.suggestion(scan, names)
+                out["post_suggestion"] = social.suggestion(scan, names, settings.youtube_tags)
             log = folder / "pipeline.log"
             lines = log.read_text(errors="replace").splitlines()[-120:] if log.exists() else []
             out["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in lines)
@@ -692,10 +693,16 @@ def create_app(settings: Settings) -> FastAPI:
             if not youtube.status(settings)["connected"]:
                 raise HTTPException(409, "Conecte o canal do YouTube.")
             caption = f"{body.caption}\n\n{social.HASHTAGS['youtube']}".strip()
+            tags = body.tags
+            if not tags:
+                folder = settings.root / run["dir"]
+                scan = load_scan(folder) if (folder / "scan.json").exists() else {"cards": []}
+                names = {r["code"]: r["name"] for r in con().execute("SELECT code, name FROM sets")}
+                tags = social.suggestion(scan, names, settings.youtube_tags)["tags"]
 
             def work(progress):
-                created = youtube.upload(settings, video, body.title, caption, ["lorcana", "disney lorcana", "booster", "tcg"],
-                                         body.privacy, progress=lambda f: progress(f, "Enviando o vídeo"))
+                created = youtube.upload(settings, video, body.title, caption, tags, body.privacy,
+                                         progress=lambda f: progress(f, "Enviando o vídeo"))
                 c = db.connect(settings.db_path)
                 social.save_post(c, run_id, "youtube", created["id"], youtube.url(created["id"]), via="api", variant=variant,
                                  title=created.get("snippet", {}).get("title"),

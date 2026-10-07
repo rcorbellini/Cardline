@@ -119,6 +119,7 @@ def test_upload_goes_in_parts_and_resumes_after_a_failure(settings, monkeypatch,
     assert seen == [0.4, 0.8, 1.0]
     meta = g.calls[0][2]["body"]
     assert meta["status"] == {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
+    assert meta["snippet"]["tags"] == ["lorcana"]
 
 
 def test_stats_come_from_the_api(settings, monkeypatch):
@@ -145,10 +146,11 @@ def test_routes_link_unlink_and_post(settings, monkeypatch):
     run_id = new_run(settings)
     folder = settings.runs_dir / str(run_id)
     (folder / "overlay.mp4").write_bytes(b"video")
-    uploads = []
+    uploads, sent_tags = [], []
 
     def fake_upload(s, path, title, description, tags, privacy, progress=lambda f: None):
         uploads.append((path.name, title, privacy, description))
+        sent_tags.append(tags)
         progress(1.0)
         return {"id": "novo1234567", "snippet": {"title": title}, "status": {"privacyStatus": "private"}}
 
@@ -177,5 +179,22 @@ def test_routes_link_unlink_and_post(settings, monkeypatch):
             time.sleep(0.05)
         assert job["status"] == "done", job
         assert uploads == [("overlay.mp4", "Abrindo um booster", "public", "Legenda\n\n#shorts")]  # sem narrado.mp4: o overlay
+        assert {"lorcana", "booster", "br", "brasil"} <= set(sent_tags[0])  # sem tags na página: as do cardline.toml
         post = client.get(f"/api/runs/{run_id}").json()["posts"]["youtube"]
         assert post["via"] == "api" and post["privacy"] == "private"  # projeto sem auditoria: travado como privado
+
+        assert client.delete(f"/api/runs/{run_id}/posts/youtube").status_code == 200
+        assert client.post(f"/api/runs/{run_id}/posts/youtube", json={"title": "De novo", "tags": ["minha tag", "br"]}).status_code == 200
+        for _ in range(50):
+            if client.get(f"/api/runs/{run_id}").json()["post_jobs"]["youtube"]["status"] != "sending":
+                break
+            time.sleep(0.05)
+        assert sent_tags[1] == ["minha tag", "br"]  # as tags editadas na página
+
+
+def test_tags_follow_youtube_rules():
+    assert youtube.clean_tags(["Lorcana", "lorcana", " booster  <br> ", "", "brasil"]) == ["Lorcana", "booster br", "brasil"]
+    many = youtube.clean_tags([f"tag número {i}" for i in range(80)])  # com espaço: contam as aspas
+    used = sum(len(t) + 2 for t in many) + len(many) - 1  # + as vírgulas
+    assert used <= 500 < used + len("tag número 99") + 3  # para quando a próxima não cabe
+

@@ -90,7 +90,7 @@ def linked(con, network: str) -> list[tuple[int, str]]:
                                               (network,))]
 
 
-def suggestion(scan: dict, set_names: dict[str, str]) -> dict:
+def suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> dict:
     """Título e legenda sugeridos para o vídeo da abertura (sem spoiler do resultado)."""
     packs = max((c.get("pack") or 1 for c in scan["cards"]), default=1)
     sets = list(dict.fromkeys(set_names.get(c["set"], f"set {c['set']}") for c in scan["cards"] if c.get("set"))) or ["Lorcana"]
@@ -99,5 +99,5 @@ def suggestion(scan: dict, set_names: dict[str, str]) -> dict:
     caption = (f"Abertura de {what} de Disney Lorcana: {', '.join(sets)}.\n"
                "Preço de cada carta pelo mercado (TCGplayer) no dia da abertura. Será que valeu?\n\n"
                "#lorcana #disneylorcana #tcg #booster")
-    return {"title": title[:100], "caption": caption, "tags": ["lorcana", "disney lorcana", "booster", "tcg", *sets],
+    return {"title": title[:100], "caption": caption, "tags": list(dict.fromkeys([*tags, *sets])),
             "hashtags": HASHTAGS}

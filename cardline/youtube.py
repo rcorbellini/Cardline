@@ -222,13 +222,30 @@ def url(vid: str) -> str:
     return f"https://youtu.be/{vid}"
 
 
+def clean_tags(tags: list[str]) -> list[str]:
+    """Tags nas regras do YouTube: sem < e >, sem repetição e até 500 caracteres no total (contando a vírgula entre
+    elas e as aspas que ele põe em volta de tag com espaço). O que passar do limite fica de fora."""
+    out, seen, total = [], set(), 0
+    for tag in tags:
+        tag = " ".join(re.sub(r"[<>,]", " ", str(tag)).split())[:100]
+        if not tag or tag.lower() in seen:
+            continue
+        size = len(tag) + (2 if " " in tag else 0) + (1 if out else 0)
+        if total + size > 500:
+            break
+        out.append(tag)
+        seen.add(tag.lower())
+        total += size
+    return out
+
+
 def upload(settings: Settings, path: Path, title: str, description: str, tags: list[str], privacy: str,
            progress=lambda fraction: None) -> dict:
     """Envia o vídeo (upload retomável, em partes, com progresso) e devolve o recurso que o YouTube criou."""
     if privacy not in PRIVACY:
         raise ValueError("Visibilidade deve ser public, unlisted ou private.")
     size = path.stat().st_size
-    meta = {"snippet": {"title": title[:100], "description": description[:5000], "tags": tags[:30],
+    meta = {"snippet": {"title": title[:100], "description": description[:5000], "tags": clean_tags(tags),
                         "categoryId": GAMING, "defaultLanguage": "pt-BR", "defaultAudioLanguage": "pt-BR"},
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}}
     auth = {"Authorization": f"Bearer {access_token(settings)}"}

@@ -1214,6 +1214,7 @@ function renderSocial(r) {
     box.innerHTML = `<div class="panel ytpanel"><h3>Postar nas redes</h3>
       <label class="ytfield">Título (YouTube)<input id="sp-title" maxlength="100" value="${esc(sug.title || '')}"></label>
       <label class="ytfield">Legenda<textarea id="sp-caption" rows="4" maxlength="2200">${esc(sug.caption || '')}</textarea></label>
+      <label class="ytfield">Tags (YouTube, separadas por vírgula)<input id="sp-tags" value="${esc((sug.tags || []).join(', '))}"></label>
       <div class="ytrow"><label class="ytfield" id="sp-variant-box">Versão<select id="sp-variant"><option value="narrado">com narração</option><option value="overlay">sem narração</option></select></label>
         <label class="ytfield">Visibilidade no YouTube<select id="sp-privacy">${Object.entries(PRIVACY).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label></div>
       <div class="netrows">${NETS.map(n => `<div class="netrow" id="net-${n.key}"></div>`).join('')}</div>
@@ -1322,7 +1323,8 @@ document.addEventListener('click', async ev => {
     if (action === 'post') {
       b.disabled = true;
       await api(`/api/runs/${id}/posts/${net}`, json({ title: $('#sp-title').value, caption: $('#sp-caption').value,
-        privacy: $('#sp-privacy').value, variant: $('#sp-variant').value }));
+        privacy: $('#sp-privacy').value, variant: $('#sp-variant').value,
+        tags: $('#sp-tags').value.split(',').map(t => t.trim()).filter(Boolean) }));
     }
     if (action === 'link' || action === 'link-id') {
       const url = action === 'link' ? $('#sp-url').value : `https://youtu.be/${b.dataset.vid}`;

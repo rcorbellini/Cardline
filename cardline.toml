@@ -45,3 +45,7 @@ narration_writer = "gemma3:4b"
 # (ex.: "https://meu-tunel.ngrok-free.app"). Vazio = o endereço do túnel pelo qual a página foi aberta,
 # ou o que o ngrok informa na API local dele (http://127.0.0.1:4040).
 public_url = ""
+
+# Tags dos vídeos postados no YouTube pela API; o nome do set de cada abertura entra junto.
+# Na página dá para editar antes de postar.
+youtube_tags = ["lorcana", "disney lorcana", "booster", "abertura de booster", "tcg", "br", "brasil"]

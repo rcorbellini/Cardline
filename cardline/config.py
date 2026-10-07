@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
@@ -24,6 +24,8 @@ class Settings:
     narration_voice: str = "Damien Black"  # voz do XTTS-v2 na narração (lista: cardline voz)
     narration_writer: str = "gemma3:4b"  # modelo do Ollama que escreve as piadas do roteiro; vazio = roteiro padrão
     public_url: str = ""  # endereço público do cardline (o Instagram baixa o vídeo dele); vazio = o do túnel ngrok
+    youtube_tags: list[str] = field(default_factory=lambda: [  # tags dos vídeos no YouTube (o nome do set entra junto)
+        "lorcana", "disney lorcana", "booster", "abertura de booster", "tcg", "br", "brasil"])
 
     @property
     def data_dir(self) -> Path:

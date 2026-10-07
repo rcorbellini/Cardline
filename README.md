@@ -202,6 +202,9 @@ O painel **Postar nas redes**, no detalhe de uma abertura, posta o vídeo e vinc
    o ID e a chave na página (ficam em `data/youtube/`, fora do git).
 4. **Conectar o canal do YouTube**: abra google.com/device (no celular ou no computador) e digite o código.
 
+O vídeo vai com as **tags** de `youtube_tags` (lorcana, disney lorcana, booster, abertura de booster, tcg, br,
+brasil) mais o nome do set; dá para editar no painel antes de postar.
+
 Atenção: o YouTube trava como **privado** todo vídeo enviado por um projeto de API que não passou pela
 [auditoria do Google](https://support.google.com/youtube/answer/7300965), e não dá para mudar depois. Até lá,
 poste pelo app e vincule o link.
@@ -315,7 +318,8 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
 `narration_voice` (a voz do XTTS-v2) e `narration_writer` (o modelo do Ollama que escreve as piadas).
 `intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa). `card_sound_volume` e
 `celebration_volume` são os volumes do "ka-ching" de cada carta e dos aplausos (0,25 e 0,3), relativos à voz do
-narrador: 1 é tão alto quanto ela, 0,25 fica ~12 dB abaixo e 0 tira o efeito.
+narrador: 1 é tão alto quanto ela, 0,25 fica ~12 dB abaixo e 0 tira o efeito. `youtube_tags` são as tags dos
+vídeos postados no YouTube (o nome do set entra junto).
 
 ## Como funciona
 
