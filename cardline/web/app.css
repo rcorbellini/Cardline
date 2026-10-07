@@ -469,3 +469,7 @@ svg .tick.down { fill: var(--down); }
 .netform input, .netform textarea { font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--panel-2); color: var(--text); min-width: 0; width: 100%; }
 .chartwrap .barlabel { fill: var(--text); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.netbadge { display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--text); flex: none; vertical-align: middle; }
+.netbadge svg { width: 20px; height: 20px; display: block; }
+a.netbadge { border-radius: 6px; }
+a.netbadge:hover { background: var(--panel-2); }

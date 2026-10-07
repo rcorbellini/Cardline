@@ -232,9 +232,28 @@ function resultHtml(r) {
   const d = r.value_now - r.paid_usd;
   return `<span><small>Resultado</small><b class="${cls(d)}">${money(d, true)} (${pctTxt(r.value_now, r.paid_usd)})</b></span>`;
 }
+function queueLabel(r) {  // o servidor roda uma pipeline por vez, na ordem em que entraram na fila
+  const ahead = S.runs.filter(x => x.id !== r.id && (x.status === 'running'
+    || (x.status === 'queued' && (x.created_at < r.created_at || (x.created_at === r.created_at && x.id < r.id))))).length;
+  return ahead ? `Na fila · ${ahead} na frente` : 'Na fila · começa em seguida';
+}
+// ícones das redes onde a pipeline já tem post vinculado
+const NET_ICONS = {
+  youtube: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="4" fill="#FF0033"/><path d="M10 9l5.2 3-5.2 3z" fill="#fff"/></svg>',
+  instagram: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5.5" fill="none" stroke="#E1306C" stroke-width="2"/><circle cx="12" cy="12" r="4.2" fill="none" stroke="#E1306C" stroke-width="2"/><circle cx="17.4" cy="6.6" r="1.2" fill="#E1306C"/></svg>',
+  tiktok: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h3c.2 1.9 1.6 3.4 3.6 3.6v3a6.6 6.6 0 0 1-3.6-1.1v6.4a5.3 5.3 0 1 1-5.3-5.3l.8.1v3.1a2.3 2.3 0 1 0 1.5 2.1z" fill="currentColor"/></svg>',
+};
+function netBadges(r, links = false) {
+  return ['youtube', 'instagram', 'tiktok'].filter(n => r.posts?.[n]).map(n => {
+    const p = r.posts[n], label = NETS.find(x => x.key === n).label;
+    const title = `Postado no ${label}${p.views != null ? ` · ${fmtInt(p.views)} visualizações` : ''}`;
+    return links ? `<a class="netbadge" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(title)}" aria-label="${esc(title)}">${NET_ICONS[n]}</a>`
+      : `<span class="netbadge" title="${esc(title)}" role="img" aria-label="${esc(title)}">${NET_ICONS[n]}</span>`;
+  }).join('');
+}
 function progressHtml(r) {
   if (!active(r)) return '';
-  const label = r.status === 'queued' ? 'Na fila' : `${S.meta.steps.find(s => s.name === r.step)?.label || ''} · ${r.message || ''}`;
+  const label = r.status === 'queued' ? queueLabel(r) : `${S.meta.steps.find(s => s.name === r.step)?.label || ''} · ${r.message || ''}`;
   const p = r.status === 'queued' ? 0 : Math.round((r.progress ?? 0) * 100);
   return `<div class="bar"><i style="width:${p}%"></i></div><div class="muted" style="font-size:13px">${esc(label)}</div>`;
 }
@@ -252,7 +271,7 @@ function renderRuns() {
   }
   patch($('#view-pipelines'), head + '<div class="runs">' + list.map(r => `
     <a class="panel runcard" href="#/pipelines/${r.id}">
-      <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}${(r.sets || []).map(c => setIcon(c, 'seticon small')).join('')}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
+      <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}${(r.sets || []).map(c => setIcon(c, 'seticon small')).join('')}${netBadges(r)}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
         <span class="spacer"></span>${statusChip(r)}</div>
       ${progressHtml(r)}
       ${r.thumbs.length ? `<div class="thumbs">${r.thumbs.map(t => `<img loading="lazy" src="${esc(t)}" alt="">`).join('')}</div>` : ''}
@@ -296,7 +315,7 @@ function renderRun() {
   const cadastro = r.kind === 'cadastro';
   const canRun = !active(r);
   const resumeLabel = steps.find(s => s.name === r.resume_from)?.label;
-  patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${kindChip(r)}${statusChip(r)}<span class="spacer"></span>
+  patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${kindChip(r)}${statusChip(r)}${netBadges(r, true)}<span class="spacer"></span>
     ${canRun && r.resume_from && r.status !== 'done' ? `<button class="btn" data-action="resume">${r.status === 'stale' ? 'Reprocessar com as edições' : `Continuar de “${esc(resumeLabel)}”`}</button>` : ''}
     ${canRun ? `<span class="rerun"><select id="r-from" aria-label="Passo inicial">${steps.map(s => `<option value="${s.name}">${esc(s.label)}</option>`).join('')}</select>
       <button class="btn ghost" data-action="rerun">Rodar de novo daqui</button></span>
