@@ -18,6 +18,8 @@ class Settings:
     outro_seconds: float = 4.0  # duração do resumo no fim do vídeo (frame congelado)
     workers: int = max(1, min(8, (os.cpu_count() or 2) - 1))
     verify_model: str = ""  # modelo de visão do Ollama para conferir cada carta (ex.: "qwen3.5:4b"); vazio = desligado
+    narration_voice: str = "Damien Black"  # voz do XTTS-v2 na narração (lista: cardline voz)
+    narration_writer: str = "gemma3:4b"  # modelo do Ollama que escreve as piadas do roteiro; vazio = roteiro padrão
 
     @property
     def data_dir(self) -> Path:

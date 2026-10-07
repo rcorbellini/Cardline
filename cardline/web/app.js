@@ -284,7 +284,7 @@ function runSkeleton() {
     <div class="cols">
       <div><div class="sectionhead"><h3>Cartas</h3><span class="muted" id="r-cards-sub"></span></div>
         <ul class="pulls" id="r-cards"></ul><div id="r-edits"></div></div>
-      <div class="side"><div class="panel"><ul class="steps" id="r-steps"></ul></div><div id="r-video"></div></div>
+      <div class="side"><div class="panel"><ul class="steps" id="r-steps"></ul></div><div id="r-video"></div><div id="r-narr"></div></div>
     </div>
     <details class="log"><summary>Log da execução</summary><pre id="r-log"></pre></details>`);
 }
@@ -340,10 +340,18 @@ function renderRun() {
   const curControl = cadastro || r.options?.overlay === false ? '' : `<div class="vidbar"><span>Moeda do vídeo com overlay</span>
     <div class="seg" role="group" aria-label="Moeda do vídeo com overlay">${['USD', 'BRL'].filter(c => c in S.meta.rates).map(c =>
       `<button data-action="video-currency" data-cur="${c}" aria-pressed="${c === videoCur}" ${active(r) ? 'disabled' : ''}>${sym(c)}</button>`).join('')}</div></div>`;
-  patch($('#r-video'), curControl + (r.overlay && overlayStep && overlayStep.status !== 'running'
-    ? `<video class="player" controls preload="metadata" src="${esc(r.overlay)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"
+  const narrStep = r.steps.find(s => s.name === 'narrate');
+  const narrated = r.narrated && narrStep?.status !== 'running';
+  const mode = narrated && videoMode === 'narrated' ? 'narrated' : 'plain';
+  const [vsrc, vstep] = mode === 'narrated' ? [r.narrated, narrStep] : [r.overlay, overlayStep];
+  const modeControl = narrated ? `<div class="vidbar"><span>Narração no vídeo</span>
+    <div class="seg" role="group" aria-label="Versão do vídeo">${[['narrated', 'Com'], ['plain', 'Sem']].map(([m, label]) =>
+      `<button data-action="video-mode" data-mode="${m}" aria-pressed="${m === mode}">${label}</button>`).join('')}</div></div>` : '';
+  patch($('#r-video'), curControl + modeControl + (vsrc && overlayStep && overlayStep.status !== 'running'
+    ? `<video class="player" controls preload="metadata" src="${esc(vsrc)}?v=${encodeURIComponent(vstep?.finished_at || '')}"
          ${r.poster ? `poster="${esc(r.poster)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"` : ''}></video>
-       <p class="muted" style="font-size:13px"><a href="${esc(r.overlay)}" download="pipeline-${r.id}-overlay.mp4">Baixar vídeo com overlay</a></p>` : ''));
+       <p class="muted" style="font-size:13px"><a href="${esc(vsrc)}" download="pipeline-${r.id}-${mode === 'narrated' ? 'narrado' : 'overlay'}.mp4">Baixar ${mode === 'narrated' ? 'vídeo narrado' : 'vídeo com overlay'}</a></p>` : ''));
+  renderNarration(r);
 
   const cards = r.cards || [];
   const editable = !active(r);
@@ -393,6 +401,66 @@ function renderRun() {
   }
 }
 
+// ---- narração: liga/desliga e roteiro editável ----
+let videoMode = 'narrated';  // quando as duas versões existem: com ou sem narração
+let narr = { runId: null, base: '', draft: [], dirty: false };
+function narrSync(r) {  // o rascunho acompanha o servidor enquanto não há edição por salvar
+  const lines = r.narration?.lines || [];
+  const base = JSON.stringify(lines.map(l => [l.t, l.texto]));
+  if (narr.runId === r.id && (narr.dirty || narr.base === base)) return false;
+  narr = { runId: r.id, base, draft: lines.map(l => ({ t: l.t, texto: l.texto })), dirty: false };
+  return true;
+}
+const fmtT = t => (Math.round(t * 100) / 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+function scriptRows() {
+  $('#r-script').innerHTML = narr.draft.map((l, i) => `<li>
+    <div class="lhead"><button type="button" class="seek" data-action="script-seek" data-i="${i}" title="Ver este momento no vídeo" aria-label="Ver o momento da fala ${i + 1} no vídeo">▶</button>
+      <input class="t" type="text" inputmode="decimal" value="${fmtT(l.t)}" data-i="${i}" data-field="t" aria-label="Instante da fala ${i + 1}, em segundos"><span class="muted">s</span>
+      <span class="spacer"></span><button type="button" class="del" data-action="script-del" data-i="${i}" title="Apagar a fala" aria-label="Apagar a fala ${i + 1}">✕</button></div>
+    <textarea class="txt" rows="2" maxlength="160" data-i="${i}" data-field="texto" aria-label="Fala ${i + 1}">${esc(l.texto)}</textarea></li>`).join('');
+}
+function renderNarration(r) {
+  const box = $('#r-narr'), nm = S.meta.narration || {};
+  if (r.kind !== 'abertura' || r.options?.overlay === false) { patch(box, ''); return; }
+  const n = r.narration || { enabled: false, lines: [] };
+  const busy = active(r);
+  if (!n.enabled) {
+    narr.runId = null;
+    patch(box, `<div class="panel narr"><h3>Narração</h3>
+      <p class="muted">Um narrador de trailer comenta a abertura: a aposta, a falsa esperança, as raras e o desfecho, sem spoiler. O roteiro fica editável aqui.</p>
+      <div><button class="btn" data-action="narration-on" ${nm.unavailable || busy ? 'disabled' : ''}>Narrar este vídeo</button></div>
+      ${nm.unavailable ? `<p class="muted small">Para narrar, ${esc(nm.unavailable)}.</p>` : ''}</div>`);
+    return;
+  }
+  if (!box.querySelector('#r-script')) {  // o editor é montado uma vez; depois só muda o que não é digitado
+    patch(box, `<div class="panel narr">
+      <div class="narrhead"><h3>Narração</h3><span class="muted narrsrc"></span><span class="spacer"></span>
+        <button class="linkbtn" data-action="narration-off">Desligar</button></div>
+      <fieldset class="scriptset"><ol class="script" id="r-script"></ol><p class="muted small narrempty"></p>
+        <div class="narractions"><button type="button" class="linkbtn" data-action="script-add">+ Fala</button><span class="spacer"></span>
+          <button type="button" class="linkbtn" data-action="script-new">Escrever outro roteiro</button></div>
+        <button type="button" class="btn" data-action="script-save">Salvar e narrar de novo</button></fieldset>
+      <p class="muted small">Edite o texto ou o instante (em segundos) de cada fala. Ao narrar de novo, só as falas que mudaram são gravadas.</p></div>`);
+    narr.runId = null;
+  }
+  if (narrSync(r)) scriptRows();
+  const empty = !narr.draft.length;
+  box.querySelector('.narrsrc').textContent = n.source === 'editado' ? 'roteiro editado por você'
+    : n.writer ? `piadas do ${n.writer}` : n.lines.length ? 'roteiro automático' : '';
+  box.querySelector('.narrempty').hidden = !empty;
+  box.querySelector('.narrempty').textContent = busy ? 'O roteiro aparece aqui quando a narração começar.' : 'Sem falas. Use “Outro roteiro” para escrever um.';
+  box.querySelector('.scriptset').disabled = busy;
+  box.querySelector('[data-action="script-save"]').disabled = !narr.dirty || empty;
+}
+$('#view-run').addEventListener('input', ev => {
+  const el = ev.target.closest('#r-script [data-field]');
+  if (!el) return;
+  const line = narr.draft[+el.dataset.i];
+  if (el.dataset.field === 't') line.t = Math.max(0, parseFloat(el.value.replace(',', '.')) || 0); else line.texto = el.value;
+  narr.dirty = true;
+  $('#r-narr [data-action="script-save"]').disabled = false;
+});
+
 $('#view-run').addEventListener('click', async ev => {
   const target = ev.target.closest('[data-action]');
   const action = target?.dataset.action;
@@ -424,6 +492,45 @@ $('#view-run').addEventListener('click', async ev => {
       location.hash = '#/pipelines';
       await refresh(true);
       return;
+    }
+    if (action === 'video-mode') { videoMode = target.dataset.mode; renderRun(); return; }
+    if (action === 'narration-on') {
+      target.disabled = true;
+      await api(`/api/runs/${id}`, json({ narration: true }, 'PATCH'));
+      await api(`/api/runs/${id}/rerun`, json({ from_step: null }));
+    }
+    if (action === 'narration-off') {
+      if (!confirm('Desligar a narração? O vídeo narrado é apagado; as falas gravadas ficam guardadas para quando você ligar de novo.')) return;
+      await api(`/api/runs/${id}`, json({ narration: false }, 'PATCH'));
+    }
+    if (action === 'script-add' || action === 'script-del') {
+      if (action === 'script-del') narr.draft.splice(+target.dataset.i, 1);
+      else {
+        const last = narr.draft[narr.draft.length - 1];
+        narr.draft.push({ t: last ? Math.round((last.t + 2) * 10) / 10 : 0.2, texto: '' });
+      }
+      narr.dirty = true;
+      scriptRows();
+      renderNarration(S.run);
+      if (action === 'script-add') $('#r-script li:last-child .txt')?.focus();
+      return;
+    }
+    if (action === 'script-seek') {
+      const video = $('#r-video video'), line = narr.draft[+target.dataset.i];
+      if (video && line) { video.currentTime = Math.max(0, line.t - 0.5); video.play(); }
+      return;
+    }
+    if (action === 'script-save') {
+      target.disabled = true;
+      await api(`/api/runs/${id}/narration`, json({ lines: narr.draft.filter(l => l.texto.trim()) }, 'PUT'));
+      narr.dirty = false; narr.base = '';  // a próxima atualização traz o roteiro como o servidor guardou
+      await api(`/api/runs/${id}/rerun`, json({ from_step: null }));
+    }
+    if (action === 'script-new') {
+      if (!confirm(narr.dirty ? 'Descartar suas edições e escrever outro roteiro?' : 'Escrever outro roteiro no lugar deste?')) return;
+      await api(`/api/runs/${id}/narration/new`, { method: 'POST' });
+      narr.dirty = false; narr.base = '';
+      await api(`/api/runs/${id}/rerun`, json({ from_step: null }));
     }
     if (action === 'edit-paid') { editPaid(); return; }
     if (action === 'edit-card') { editCard(target.dataset.uid); return; }
@@ -567,8 +674,18 @@ function prepareNew() {
   $('#opt-verify').checked = v.available && v.default;
   $('#verify-label').textContent = v.available
     ? `Conferir cada carta com IA local (${v.model}, ~1 s por carta)` : `Conferir com IA local (Ollama não encontrado)`;
+  const nm = S.meta.narration;
+  $('#opt-narration').checked = false;
+  $('#narration-label').textContent = nm.unavailable ? `Narrar o vídeo (para isso, ${nm.unavailable})`
+    : 'Narrar o vídeo: um narrador comenta a abertura sem dar spoiler (voz em português, ~2 min a mais)';
+  syncNarrationOption();
   applyKind();
 }
+function syncNarrationOption() {  // a narração é sobre o vídeo com overlay
+  $('#opt-narration').disabled = !!S.meta.narration.unavailable || !$('#opt-overlay').checked;
+  if ($('#opt-narration').disabled) $('#opt-narration').checked = false;
+}
+$('#opt-overlay').addEventListener('change', syncNarrationOption);
 const newKind = () => document.querySelector('input[name="kind"]:checked').value;
 function applyKind() {  // valor pago, moeda e vídeo só existem na abertura de booster
   const cadastro = newKind() === 'cadastro';
@@ -601,6 +718,7 @@ $('#new-form').onsubmit = ev => {
   if (kind === 'abertura') {
     params.set('paid_currency', $('#paid-currency').value);
     params.set('overlay', $('#opt-overlay').checked);
+    params.set('narration', $('#opt-narration').checked);
     params.set('currency', $('#new-currency').value);
     if (paid != null) params.set('paid', paid);
   }

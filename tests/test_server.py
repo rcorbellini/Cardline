@@ -15,7 +15,7 @@ def client(tmp_path, monkeypatch):
 
 def test_meta_exposes_steps_and_rates(client):
     meta = client.get("/api/meta").json()
-    assert [s["name"] for s in meta["steps"]] == ["scan", "verify", "prices", "commit", "overlay"]
+    assert [s["name"] for s in meta["steps"]] == ["scan", "verify", "prices", "commit", "overlay", "narrate"]
     assert meta["rates"] == {"USD": 1.0, "BRL": 5.0}
 
 

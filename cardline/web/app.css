@@ -383,3 +383,30 @@ dialog.dlg.narrow { width: min(460px, calc(100vw - 32px)); }
 .setstats { display: flex; flex-wrap: wrap; gap: 2px 12px; }
 .seticonactions { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-top: 8px; font-size: 12px; }
 .seticonactions .linkbtn { font-size: 13px; }
+
+/* narração */
+.vidbar + .vidbar { margin-top: 8px; }
+.narr { display: grid; gap: 10px; padding: 14px 16px; margin-top: 16px; }
+.narr h3 { margin: 0; font-size: 15px; }
+.narr p { margin: 0; font-size: 13px; }
+.narrhead { display: flex; align-items: baseline; gap: 8px; }
+.narrhead .spacer, .narractions .spacer { flex: 1; }
+.narrsrc { font-size: 12px; }
+.scriptset { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 10px; }
+.script { counter-reset: fala; }
+.script { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.script li { display: grid; gap: 4px; }
+.lhead { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.lhead .spacer { flex: 1; }
+.script input, .script textarea {
+  font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); color: var(--text); min-width: 0;
+}
+.script input.t { width: 64px; text-align: right; font-variant-numeric: tabular-nums; padding: 3px 6px; font-size: 13px; }
+.script textarea { width: 100%; resize: vertical; line-height: 1.35; field-sizing: content; min-height: 2.2em; }
+.script .seek, .script .del {
+  height: 26px; min-width: 26px; border: 0; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; font-size: 12px;
+}
+.script .seek:hover, .script .del:hover { background: var(--panel-2); color: var(--text); }
+.narractions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.scriptset:disabled { opacity: .6; }

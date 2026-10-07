@@ -8,7 +8,8 @@ Começando por **Disney Lorcana**: você envia o vídeo abrindo o booster e o ca
 3. registra as cartas na sua coleção, vinculadas à pipeline que as abriu;
 4. compara com o valor pago pelo booster (resultado da abertura);
 5. renderiza o vídeo de volta com overlay: preço de cada carta quando ela aparece e o total do booster somando,
-   num painel com o ícone do set.
+   num painel com o ícone do set;
+6. (opcional) narra o vídeo: um narrador de trailer comenta a abertura sem dar spoiler, com voz em português.
 
 Também dá para **cadastrar cartas que você já tem**: grave as cartas uma por uma e o cardline identifica,
 precifica e registra na coleção, sem valor pago e sem vídeo de saída.
@@ -26,6 +27,17 @@ Requer [uv](https://docs.astral.sh/uv/). O ffmpeg vem embutido (imageio-ffmpeg),
 uv sync
 uv run cardline sync          # catálogo + preços + imagens + índices (~2 min na primeira vez, ~500 MB em data/cache)
 ```
+
+Para a **narração** (opcional), instale o extra da voz. Ele é pesado: torch (só CPU) e, na primeira narração,
+a voz XTTS-v2 (1,9 GB), que usa a [licença CPML](https://coqui.ai/cpml), só para uso não comercial:
+
+```bash
+uv sync --extra narracao
+COQUI_TOS_AGREED=1 uv run cardline voz   # aceita a licença, baixa a voz e lista as 58 vozes disponíveis
+```
+
+Depois disso, rode sempre `uv sync --extra narracao`: um `uv sync` sem o extra desinstala a voz. As piadas do
+roteiro são escritas por um modelo do Ollama (`gemma3:4b` por padrão); sem Ollama, o roteiro sai sem elas.
 
 `uv run cardline sync --sets 1,2` indexa só os sets que você abre. Os preços das cartas de cada pipeline
 são atualizados no próprio passo de preços, então o `sync` só precisa rodar de novo quando sair um set novo
@@ -84,7 +96,8 @@ nem ao reprocessar uma pipeline. É ele que aparece no vídeo e em "Na abertura"
 2. Arraste o vídeo (MP4 ou MOV, do jeito que sai do celular).
 3. Na abertura, informe o **valor pago** pelo(s) booster(s), em R$ ou US$. É opcional e pode ser preenchido depois.
 4. **Set das cartas**: deixe em "Detectar automaticamente" ou escolha o set. Na abertura, escolha também a
-   **moeda do vídeo com overlay** e se quer gerar o vídeo.
+   **moeda do vídeo com overlay**, se quer gerar o vídeo e se quer **narrar o vídeo** (precisa do extra
+   `narracao`; ~2 min a mais).
 5. **Conferir com IA local** só fica habilitado com o Ollama rodando. Com `verify_model` no
    `cardline.toml`, ele já vem marcado.
 6. **Enviar e processar** (ou **Enviar e cadastrar**): a barra mostra o envio. Ao terminar, a página abre a
@@ -121,7 +134,13 @@ No detalhe de uma pipeline:
   <img src="docs/pagina-editar.jpg" width="560" alt="No celular: carta deslizada para a direita mostrando Editar, outra deslizada para a esquerda mostrando Remover, e a janela de edição com a chave Foil">
 - **Passos** com status, mensagem e tempo de cada um. O passo em andamento mostra a barra de progresso.
 - **Vídeo com overlay** para assistir ou baixar, e o **log** da execução. A **moeda do vídeo** (US$ ou R$)
-  pode ser trocada acima do player; o vídeo é refeito ao reprocessar.
+  pode ser trocada acima do player; o vídeo é refeito ao reprocessar. Com narração, **Com/Sem** escolhe a versão.
+- **Narração**: **Narrar este vídeo** liga a narração numa pipeline já feita. O painel mostra o roteiro, e
+  cada fala pode ser editada no texto e no instante (▶ leva o vídeo àquele momento), apagada ou criada (**+ Fala**).
+  **Salvar e narrar de novo** grava de novo só as falas que mudaram; **Escrever outro roteiro** troca por um
+  novo; **Desligar** apaga o vídeo narrado (as falas gravadas ficam guardadas).
+
+  <img src="docs/pagina-narracao.jpg" width="360" alt="Painel da narração: vídeo com a escolha com ou sem narração e o roteiro com o instante e o texto de cada fala, editáveis">
 - Ações: **Continuar** (depois de falha ou interrupção), **Rodar de novo daqui** (a partir de qualquer passo)
   e **Excluir** (remove a pipeline e as cartas que ela registrou na coleção).
 
@@ -172,14 +191,16 @@ no túnel, ou só redes de confiança.
 | GET | `/api/collection` | cartas da coleção, agrupadas por carta e acabamento, com as cópias |
 | GET | `/api/runs` | pipelines com status, progresso e valores |
 | GET | `/api/runs/{id}` | detalhe: passos, cartas e log |
-| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL` | cria a pipeline (`kind`: `abertura` ou `cadastro`); o corpo da requisição é o vídeo |
+| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL&narration=true` | cria a pipeline (`kind`: `abertura` ou `cadastro`); o corpo da requisição é o vídeo |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
-| PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}` e/ou `{"currency": "BRL"}` (moeda do vídeo); só o que for enviado muda |
+| PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo) e/ou `{"narration": true}`; só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
 | PATCH | `/api/runs/{id}/cards/{uid}` | `{"foil": true}`: edita a carta (por enquanto, só o acabamento); fica pendente até reprocessar |
 | DELETE | `/api/runs/{id}/cards/{uid}` | tira uma carta da identificação (fica pendente até reprocessar) |
 | POST | `/api/runs/{id}/cards/{uid}/restore` | devolve uma carta removida |
 | DELETE | `/api/runs/{id}` | exclui a pipeline e as cartas dela |
+| PUT | `/api/runs/{id}/narration` | `{"lines": [{"t": 6.2, "texto": "Hakuna matata... sei."}]}`: salva o roteiro editado (vale na próxima narração) |
+| POST | `/api/runs/{id}/narration/new` | descarta o roteiro: a próxima narração escreve outro |
 | GET | `/api/sets` | sets com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo |
 | POST | `/api/sets/sync` | inicia o `cardline sync` em segundo plano (um por vez); `GET` na mesma rota mostra o andamento e o log |
 | POST | `/api/sets/{code}/icon` | troca o ícone do set; o corpo da requisição é a imagem |
@@ -196,6 +217,7 @@ no túnel, ou só redes de confiança.
 | Atualizar preços | busca os preços de hoje do set e fixa o preço da abertura de cada carta (foil ou não); ao reprocessar, o preço da abertura é mantido, e uma carta nova recebe o preço do dia da abertura | `scan.json` |
 | Registrar na coleção | substitui as cartas que esta pipeline tinha registrado | banco |
 | Gerar vídeo com overlay | vídeo 1080×1920 com etiquetas, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` |
+| Narrar o vídeo | (opcional) escreve o roteiro, grava cada fala com a voz e mistura com o som do vídeo | `narrado.mp4`, `narracao/` |
 
 Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo).
 
@@ -224,7 +246,8 @@ Cartas obtidas fora de vídeo: `uv run cardline add 1/169 --foil --qty 2`.
 
 `cardline.toml` (todas as chaves são opcionais e estão documentadas no arquivo): moeda padrão do vídeo
 (`USD` ou `BRL`), cartas por booster, fps da análise, resolução de saída, duração do resumo, e o modelo do
-Ollama para conferência. Com `verify_model` preenchido, a opção já vem marcada no upload.
+Ollama para conferência. Com `verify_model` preenchido, a opção já vem marcada no upload. Para a narração,
+`narration_voice` (a voz do XTTS-v2) e `narration_writer` (o modelo do Ollama que escreve as piadas).
 
 ## Como funciona
 
@@ -247,6 +270,13 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
   grupo de cada set de Lorcana lá tem a mesma sigla do código do set no Lorcast. Do grupo sai o produto
   "Booster Pack" avulso (não o sleeved nem a caixa). Na foto em 1000×1000 só sai o branco ligado à borda (o
   branco da arte fica), e o resultado é recortado no booster.
+- **Narração** (`narration.py`): o roteiro tem estrutura fixa, que garante o tempo e que o resultado só
+  apareça no fim. A aposta (valor pago) abre, as raras ganham reação, a falsa esperança vem no meio e o
+  desfecho ("Eu avisei.") só depois do resumo. As piadas das cartas vêm de um banco de falas aprovadas ou do
+  modelo do Ollama, com exemplos; piada com número, spoiler ou o inglês da carta é descartada. A voz é o XTTS-v2
+  na CPU (~1,7 s por segundo de fala). Como ele às vezes troca palavras, o Whisper transcreve cada tomada, e só
+  vale a que diz o texto certo, comparando pela pronúncia ("atiçar" = "atissar"). Até 3 tomadas; piada que a voz
+  não acerta sai. O som original abaixa enquanto o narrador fala, e o áudio sai em -16 LUFS.
 - **Conferência com IA local** (`verify.py`): no vídeo de exemplo o `qwen3.5:4b` acertou 12/12 nomes e
   números (~1 s por carta). Ele só **sinaliza** divergências, nunca troca a carta, porque pode alucinar.
 
@@ -254,7 +284,8 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
 
 - `data/cardline.db`: catálogo, preços, pipelines e **a sua coleção**. Fica fora do git (o repositório é
   público e o banco muda a cada atualização de preço), então faça backup desse arquivo.
-- `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg`) e `pipeline.log` de cada pipeline.
+- `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg`), `narrado.mp4` (+ o roteiro
+  e as falas gravadas em `narracao/`) e `pipeline.log` de cada pipeline.
 - `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
   que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 

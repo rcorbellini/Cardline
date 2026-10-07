@@ -12,6 +12,18 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.optional-dependencies]
+# narração do vídeo com voz em português (XTTS-v2 + Whisper para conferir cada fala); pesado: torch e ~2 GB de modelo
+narracao = [
+    "coqui-tts>=0.27.5",
+    "faster-whisper>=1.2.1",
+    "num2words>=0.5.14",
+    "torch>=2.9",
+    "torchaudio>=2.9",
+    "torchcodec>=0.8",
+    "transformers>=4.57,<5",  # o XTTS do coqui-tts ainda usa APIs que saíram na versão 5
+]
+
 [project.scripts]
 cardline = "cardline.cli:main"
 
@@ -30,3 +42,14 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# torch só de CPU: bem menor que o pacote com CUDA, e a narração roda bem na CPU
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+torchcodec = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

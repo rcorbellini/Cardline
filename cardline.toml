@@ -22,3 +22,11 @@ verify_model = ""
 
 # Processos paralelos no scan (padrão: núcleos - 1, no máximo 8).
 # workers = 8
+
+# Narração do vídeo (precisa do extra: uv sync --extra narracao).
+# Voz do XTTS-v2 que lê o roteiro; `uv run cardline voz` lista as 58 opções.
+narration_voice = "Damien Black"
+
+# Modelo do Ollama que escreve as piadas das cartas no roteiro (o resto do roteiro tem estrutura fixa).
+# Vazio = roteiro padrão, sem piadas por carta.
+narration_writer = "gemma3:4b"

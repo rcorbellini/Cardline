@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS runs (
     paid_currency TEXT,
     paid_usd      REAL,                       -- convertido pela cotação do dia da abertura
     set_hint      TEXT,
-    options       TEXT NOT NULL DEFAULT '{}', -- {"overlay": bool, "verify": bool, "currency": "USD"|"BRL"}
+    options       TEXT NOT NULL DEFAULT '{}', -- {"overlay": bool, "verify": bool, "currency": "USD"|"BRL", "narration": bool}
     recorded_at   TEXT,
     created_at    TEXT NOT NULL,
     started_at    TEXT,
@@ -116,6 +116,7 @@ def connect(path: Path) -> sqlite3.Connection:
         for v in range(version + 1, SCHEMA_VERSION + 1):
             MIGRATIONS[v](con)
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    con.commit()  # migração com INSERT abre transação; sem isso o banco fica travado para os outros processos
     return con
 
 
@@ -129,9 +130,16 @@ def _set_icon_columns(con: sqlite3.Connection) -> None:
         _add_column(con, "sets", column, ddl)
 
 
+def _narrate_steps(con: sqlite3.Connection) -> None:
+    """Aberturas de antes da narração: o passo novo aparece como pulado (dá para ligar na página)."""
+    con.execute("INSERT OR IGNORE INTO run_steps(run_id, name, status, message)"
+                " SELECT id, 'narrate', 'skipped', 'desligada' FROM runs WHERE kind = 'abertura'")
+
+
 MIGRATIONS = {
     3: lambda con: _add_column(con, "runs", "kind", "TEXT NOT NULL DEFAULT 'abertura'"),
     4: _set_icon_columns,
+    5: _narrate_steps,
 }
 
 

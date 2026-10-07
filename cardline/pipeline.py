@@ -7,6 +7,7 @@ Cada run tem uma pasta (`runs/<id>/`) com os artefatos dos passos:
     prices   scan.json → price_usd           atualiza os preços do set e precifica cada carta
     commit   tabela collection (run_id)      registra as cartas na coleção, substituindo as anteriores do run
     overlay  overlay.mp4                     vídeo com os preços sobrepostos
+    narrate  narrado.mp4, narracao/          (opcional) roteiro sem spoiler lido por uma voz em português
 
 Há dois tipos: "abertura" (booster: todos os passos, com o vídeo) e "cadastro" (cartas que você já tem:
 termina ao registrar na coleção, sem valor pago nem vídeo, e sem deduzir a foil pela estrutura do booster).
@@ -42,17 +43,20 @@ STEPS = [
     ("prices", "Atualizar preços"),
     ("commit", "Registrar na coleção"),
     ("overlay", "Gerar vídeo com overlay"),
+    ("narrate", "Narrar o vídeo"),
 ]
 STEP_NAMES = [name for name, _ in STEPS]
 LABELS = dict(STEPS)
 KINDS = {
     "abertura": ("Abertura de booster", STEP_NAMES),
-    "cadastro": ("Cadastro de coleção", [n for n in STEP_NAMES if n != "overlay"]),
+    "cadastro": ("Cadastro de coleção", [n for n in STEP_NAMES if n not in ("overlay", "narrate")]),
 }
 
 
 def steps_for(kind: str) -> list[str]:
     return KINDS[kind][1]
+
+
 DEFAULT_VERIFY_MODEL = "qwen3.5:4b"
 
 
@@ -102,12 +106,14 @@ def create_run(
     currency: str | None = None,
     move: bool = False,
     kind: str = "abertura",
+    narration: bool = False,
 ) -> int:
     """Cadastra um run na fila. Com `move`, o vídeo (um upload) passa a morar na pasta do run."""
     if kind not in KINDS:
         raise ValueError(f"Tipo de pipeline desconhecido: {kind}")
     if kind == "cadastro":  # sem compra e sem vídeo de saída
         paid, overlay = None, False
+    narration = narration and overlay  # narra o vídeo com overlay
     con = db.connect(settings.db_path)
     sha1 = sha1 or sha1_file(video)
     dup = con.execute("SELECT id FROM runs WHERE video_sha1 = ?", (sha1,)).fetchone()
@@ -117,6 +123,7 @@ def create_run(
         "overlay": overlay,
         "verify": bool(settings.verify_model) if verify is None else verify,
         "currency": (currency or settings.currency).upper(),
+        "narration": narration,
     }
     paid_currency = paid_currency.upper()
     with con:
@@ -270,7 +277,25 @@ def _overlay(ctx: RunContext) -> str:
     return "overlay.mp4 pronto"
 
 
-STEP_FUNCS = {"scan": _scan, "verify": _verify, "prices": _prices, "commit": _commit, "overlay": _overlay}
+def _narrate(ctx: RunContext) -> str:
+    if not ctx.options.get("narration"):
+        raise Skip("desligada")
+    if not (ctx.dir / "overlay.mp4").exists():
+        raise Skip("sem vídeo com overlay")
+    from .narration import narrate
+
+    return narrate(ctx.settings, ctx.run, ctx.dir, ctx.progress)
+
+
+STEP_FUNCS = {"scan": _scan, "verify": _verify, "prices": _prices, "commit": _commit, "overlay": _overlay,
+              "narrate": _narrate}
+
+
+def _ensure_steps(con: sqlite3.Connection, run_id: int, kind: str) -> None:
+    """Runs criados antes de um passo existir ganham a linha dele (ex.: narrar, nas aberturas antigas)."""
+    with con:
+        con.executemany("INSERT OR IGNORE INTO run_steps(run_id, name, status) VALUES (?, ?, 'pending')",
+                        [(run_id, n) for n in steps_for(kind)])
 
 
 def first_step_to_run(con: sqlite3.Connection, run: sqlite3.Row) -> str:
@@ -288,6 +313,7 @@ def execute(settings: Settings, run_id: int, from_step: str | None = None) -> bo
     run = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     if run is None:
         raise SystemExit(f"Pipeline #{run_id} não existe.")
+    _ensure_steps(con, run_id, run["kind"])
     start = from_step or first_step_to_run(con, run)
     names = steps_for(run["kind"])
     todo = names[names.index(start):]
@@ -351,9 +377,13 @@ def enqueue(settings: Settings, run_id: int, from_step: str | None = None) -> No
 def mark_stale(settings: Settings, run_id: int, from_step: str) -> None:
     """Depois de uma correção, os passos a partir de `from_step` precisam rodar de novo."""
     con = db.connect(settings.db_path)
-    names = steps_for(con.execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()["kind"])
+    run = con.execute("SELECT kind, resume_from FROM runs WHERE id = ?", (run_id,)).fetchone()
+    names = steps_for(run["kind"])
     if from_step not in names:
         return
+    _ensure_steps(con, run_id, run["kind"])
+    if run["resume_from"] in names and names.index(run["resume_from"]) < names.index(from_step):
+        from_step = run["resume_from"]  # já havia uma correção antes: continua de lá, senão ela se perde
     with con:
         con.executemany(
             "UPDATE run_steps SET status = 'stale' WHERE run_id = ? AND name = ? AND status != 'pending'",
@@ -394,6 +424,36 @@ def update_overlay_currency(settings: Settings, run_id: int, currency: str) -> N
     step = con.execute("SELECT status FROM run_steps WHERE run_id = ? AND name = 'overlay'", (run_id,)).fetchone()
     if step and step["status"] in ("done", "stale"):
         mark_stale(settings, run_id, "overlay")
+
+
+def update_narration(settings: Settings, run_id: int, enabled: bool) -> None:
+    """Liga ou desliga a narração. Ligar deixa o passo pendente; desligar apaga o vídeo narrado."""
+    con = db.connect(settings.db_path)
+    run = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        raise LookupError(f"Pipeline #{run_id} não existe.")
+    if run["status"] in ("queued", "running"):
+        raise RuntimeError("A pipeline está rodando; espere terminar para mudar a narração.")
+    if run["kind"] != "abertura":
+        raise ValueError("Cadastro de coleção não gera vídeo.")
+    options = json.loads(run["options"])
+    if bool(options.get("narration")) == enabled:
+        return
+    if enabled and not options.get("overlay", True):
+        raise ValueError("Sem o vídeo com overlay não há o que narrar.")
+    options["narration"] = enabled
+    with con:
+        con.execute("UPDATE runs SET options = ? WHERE id = ?", (json.dumps(options), run_id))
+    _ensure_steps(con, run_id, run["kind"])
+    if enabled:
+        mark_stale(settings, run_id, "narrate")
+        return
+    (settings.root / run["dir"] / "narrado.mp4").unlink(missing_ok=True)
+    with con:
+        con.execute("UPDATE run_steps SET status = 'skipped', message = 'desligada', started_at = NULL, finished_at = NULL"
+                    " WHERE run_id = ? AND name = 'narrate'", (run_id,))
+        if run["status"] == "stale" and run["resume_from"] == "narrate":  # só faltava narrar
+            con.execute("UPDATE runs SET status = 'done', resume_from = NULL WHERE id = ?", (run_id,))
 
 
 def delete_run(settings: Settings, run_id: int) -> None:

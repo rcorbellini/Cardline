@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, pipeline, rarity
+from . import db, narration, pipeline, rarity
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, restore_card, set_card_foil
 from .config import Settings
@@ -122,6 +122,11 @@ class RunPatch(BaseModel):
     paid: float | None = None
     paid_currency: str | None = None
     currency: str | None = None  # moeda do vídeo com overlay
+    narration: bool | None = None  # liga/desliga a narração do vídeo
+
+
+class ScriptBody(BaseModel):
+    lines: list[dict]  # [{"t": segundos, "texto": "..."}]
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -189,6 +194,8 @@ def create_app(settings: Settings) -> FastAPI:
             "value_now": sum(db.price_usd(rows[x["card_id"]], x["foil"]) or 0 for x in cards) if cards else None,
             "thumbs": [f"{url}/{x['crop']}" for x in cards if x.get("crop")][:24],
             "overlay": f"{url}/overlay.mp4" if (folder / "overlay.mp4").exists() else None,
+            "narrated": f"{url}/narrado.mp4" if json.loads(run["options"]).get("narration")
+                        and (folder / "narrado.mp4").exists() else None,
             "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
             "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
@@ -210,6 +217,10 @@ def create_app(settings: Settings) -> FastAPI:
                 for x in removed
             ]
             out["card_info"] = {cid: card_json(r) for cid, r in rows.items()}
+            script = narration.load_script(folder) or {}
+            out["narration"] = {"enabled": bool(json.loads(run["options"]).get("narration")),
+                                "lines": script.get("lines", []), "source": script.get("source"),
+                                "writer": script.get("writer")}
             log = folder / "pipeline.log"
             lines = log.read_text(errors="replace").splitlines()[-120:] if log.exists() else []
             out["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in lines)
@@ -233,6 +244,8 @@ def create_app(settings: Settings) -> FastAPI:
             "rarities": [[k, label, color] for k, (label, color) in rarity.RARITIES.items()],
             "inks": [[k, label, color] for k, (label, color) in rarity.INKS.items()],
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
+            "narration": {"unavailable": narration.unavailable(), "voice": settings.narration_voice,
+                          "writer": settings.narration_writer or None},
             "verify": {"default": bool(settings.verify_model),
                        "model": settings.verify_model or pipeline.DEFAULT_VERIFY_MODEL,
                        "available": ollama_available()},
@@ -271,7 +284,7 @@ def create_app(settings: Settings) -> FastAPI:
     async def upload(
         request: Request, filename: str, paid: float | None = None, paid_currency: str = "BRL",
         set_hint: str | None = None, overlay: bool = True, verify: bool | None = None, currency: str | None = None,
-        kind: str = "abertura",
+        kind: str = "abertura", narration: bool = False,
     ):
         if kind not in pipeline.KINDS:
             raise HTTPException(400, "Tipo de pipeline deve ser abertura ou cadastro.")
@@ -298,7 +311,7 @@ def create_app(settings: Settings) -> FastAPI:
                 run_id = pipeline.create_run(
                     settings, tmp, video_name=Path(filename).name, sha1=sha1.hexdigest(), paid=paid,
                     paid_currency=paid_currency, set_hint=set_hint, overlay=overlay, verify=verify,
-                    currency=currency, move=True, kind=kind,
+                    currency=currency, move=True, kind=kind, narration=narration,
                 )
             except pipeline.DuplicateVideo as e:
                 raise HTTPException(409, {"message": str(e), "run_id": e.run_id}) from e
@@ -323,8 +336,15 @@ def create_app(settings: Settings) -> FastAPI:
         if run is None:
             raise HTTPException(404, "Pipeline não encontrada.")
         if run["status"] in ("queued", "running"):
-            raise HTTPException(409, "A pipeline está rodando; espere terminar para editar as cartas.")
+            raise HTTPException(409, "A pipeline está rodando; espere terminar para editar.")
         return settings.root / run["dir"]
+
+    def narrated_run(run_id: int) -> Path:
+        folder = editable_run(run_id)
+        options = json.loads(con().execute("SELECT options FROM runs WHERE id = ?", (run_id,)).fetchone()[0])
+        if not options.get("narration"):
+            raise HTTPException(409, "A narração desta pipeline está desligada.")
+        return folder
 
     @app.delete("/api/runs/{run_id}/cards/{uid}")
     def delete_card(run_id: int, uid: str):
@@ -375,10 +395,30 @@ def create_app(settings: Settings) -> FastAPI:
                 pipeline.update_paid(settings, run_id, body.paid, body.paid_currency or "BRL")
             if "currency" in sent and body.currency:
                 pipeline.update_overlay_currency(settings, run_id, body.currency.upper())
+            if "narration" in sent and body.narration is not None:
+                pipeline.update_narration(settings, run_id, body.narration)
         except ValueError as e:  # cadastro não tem valor pago nem vídeo
             raise HTTPException(400, str(e)) from e
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
+        return {"ok": True}
+
+    @app.put("/api/runs/{run_id}/narration")
+    def save_script(run_id: int, body: ScriptBody):
+        """Roteiro editado na página: vale na próxima narração (só as falas que mudaram são gravadas de novo)."""
+        folder = narrated_run(run_id)
+        try:
+            narration.edit_script(folder, body.lines)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        pipeline.mark_stale(settings, run_id, "narrate")
+        return {"ok": True}
+
+    @app.post("/api/runs/{run_id}/narration/new")
+    def new_script(run_id: int):
+        """Descarta o roteiro: a próxima narração escreve outro."""
+        narration.discard_script(narrated_run(run_id))
+        pipeline.mark_stale(settings, run_id, "narrate")
         return {"ok": True}
 
     @app.post("/api/prices/refresh")

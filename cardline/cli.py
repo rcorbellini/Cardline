@@ -36,7 +36,7 @@ def cmd_process(s: Settings, a: argparse.Namespace) -> None:
         run_id = create_run(
             s, Path(a.video), paid=a.paid, paid_currency=a.paid_currency, set_hint=a.set,
             overlay=not a.no_overlay, verify=a.verify, currency=a.currency,
-            kind="cadastro" if a.cadastro else "abertura",
+            kind="cadastro" if a.cadastro else "abertura", narration=a.narrar,
         )
     except DuplicateVideo as e:
         raise SystemExit(f"{e} Para reprocessar: cardline run {e.run_id} --from scan") from e
@@ -81,6 +81,19 @@ def cmd_edit(s: Settings, a: argparse.Namespace) -> None:
           " (ou 'Rodar o resto' na página)")
 
 
+def cmd_voice(s: Settings, a: argparse.Namespace) -> None:
+    from .narration import load_xtts, unavailable
+
+    if reason := unavailable():
+        raise SystemExit(f"Narração indisponível: {reason}")
+    try:
+        tts = load_xtts()
+    except RuntimeError as e:
+        raise SystemExit(str(e)) from e
+    print(f"Voz pronta. Em uso: {s.narration_voice} (narration_voice no cardline.toml)")
+    print("Vozes do XTTS-v2:", ", ".join(tts.speakers))
+
+
 def cmd_add(s: Settings, a: argparse.Namespace) -> None:
     from .collection import add
 
@@ -114,6 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None,
                     help="confere as cartas com o modelo de visão do Ollama (padrão: verify_model do cardline.toml)")
     sp.add_argument("--currency", choices=["USD", "BRL"], help="moeda do overlay (padrão: cardline.toml)")
+    sp.add_argument("--narrar", action="store_true", help="narra o vídeo com overlay (precisa do extra narracao)")
     sp.set_defaults(func=cmd_process)
 
     sp = sub.add_parser("run", help="executa uma pipeline existente, de onde parou ou a partir de um passo")
@@ -138,6 +152,9 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--remove", action="store_true", help="remove a carta")
     sp.add_argument("--at", type=float, help="insere --card como carta nova nesse instante do vídeo (segundos)")
     sp.set_defaults(func=cmd_edit)
+
+    sp = sub.add_parser("voz", help="prepara a voz da narração (baixa na primeira vez) e lista as vozes")
+    sp.set_defaults(func=cmd_voice)
 
     sp = sub.add_parser("add", help="adiciona à coleção uma carta que não veio de vídeo")
     sp.add_argument("card", help="SET/NÚM (ex.: 1/169), id do Lorcast ou nome")

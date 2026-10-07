@@ -73,7 +73,7 @@ def test_failure_stops_and_resume_continues_from_the_failed_step(settings, video
     fail.clear()
     calls.clear()
     assert pipeline.execute(settings, run_id) is True
-    assert calls == ["commit", "overlay"]
+    assert calls == ["commit", "overlay", "narrate"]
     assert set(steps(settings, run_id).values()) == {"done"}
 
 
@@ -83,11 +83,12 @@ def test_editing_marks_the_rest_stale_and_rerun_only_redoes_it(settings, video, 
     pipeline.execute(settings, run_id)
     pipeline.mark_stale(settings, run_id, "prices")
     assert run_row(settings, run_id)["status"] == "stale"
-    assert steps(settings, run_id) == {"scan": "done", "verify": "done", "prices": "stale", "commit": "stale", "overlay": "stale"}
+    assert steps(settings, run_id) == {"scan": "done", "verify": "done", "prices": "stale", "commit": "stale",
+                                       "overlay": "stale", "narrate": "stale"}
 
     calls.clear()
     pipeline.execute(settings, run_id)
-    assert calls == ["prices", "commit", "overlay"]
+    assert calls == ["prices", "commit", "overlay", "narrate"]
 
 
 def test_enqueue_refuses_a_run_already_in_the_queue(settings, video):
