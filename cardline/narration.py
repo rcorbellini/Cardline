@@ -46,6 +46,7 @@ GOOD = 0.85  # quanto do texto o Whisper precisa reconhecer para a tomada valer 
 GAP = 0.12  # respiro mínimo entre duas falas
 SR = 48000
 DUCK_DB = -14.0  # quanto o som original abaixa durante a fala
+EFFECTS_DUCK_DB = -4.0  # e quanto os efeitos de fundo (ka-ching, aplausos) abaixam
 ATTACK, RELEASE, RAMP = 0.15, 0.35, 0.12
 TAIL = 1.2  # pausa depois da última fala; se o vídeo acabar antes, o último quadro fica mais tempo
 MAX_LINES, MAX_CHARS = 20, 160
@@ -674,9 +675,10 @@ def mix(overlay: Path, out: Path, clips: list[tuple[Path, float]], segments: lis
     extra = max(0.0, segments[-1][1] + TAIL - length) if segments else 0.0
     n = int(round((length + extra) * SR))
     gain = ducking(n, segments)
-    if meta is not None and "sounds" in meta:
-        orig = audio.soundtrack(source if source and source.exists() else None, meta.get("intro", 0.0), n / SR, [], 0)
-        orig = orig * gain[:, None] + audio.card_sounds(meta["sounds"], n, meta.get("sound_volume", 0))[:, None]
+    if meta is not None and "sounds" in meta:  # efeitos abaixam só um pouco: ficam de fundo, nunca por cima da voz
+        fx_gain = 1 - (1 - gain) * (1 - 10 ** (EFFECTS_DUCK_DB / 20)) / (1 - 10 ** (DUCK_DB / 20))
+        orig = audio.soundtrack(source if source and source.exists() else None, meta.get("intro", 0.0), n / SR, meta,
+                                original_gain=gain, effects_gain=fx_gain)
     else:
         raw = audio.decode(overlay)[:n]
         orig = np.zeros((n, 2), np.float32)

@@ -19,8 +19,11 @@ outro_seconds = 4.0
 # entrando animados; na saída, o booster voa para o painel do topo. 0 = sem capa.
 intro_seconds = 3.0
 
-# Volume do "ka-ching" de caixa registradora quando a etiqueta de cada carta aparece no vídeo (0 = sem som).
-card_sound_volume = 0.35
+# Efeitos de fundo do vídeo, com volume relativo à voz do narrador (1 = tão alto quanto ela; 0,25 ≈ 12 dB abaixo;
+# 0 = sem o efeito). O "ka-ching" de caixa registradora toca quando a etiqueta de cada carta aparece; os aplausos,
+# quando a soma das cartas alcança o valor pago pelo booster.
+card_sound_volume = 0.25
+celebration_volume = 0.3
 
 # Modelo de visão do Ollama que confere cada carta lendo nome e número de coleção (ex.: "qwen3.5:4b").
 # Preenchido, a conferência já vem marcada no upload.

@@ -44,6 +44,18 @@ def test_cover_starts_on_the_first_frame_and_lands_on_the_video_with_the_panel(o
     assert np.abs(end.astype(int) - video_start).mean() < 1.5
 
 
+def test_applause_comes_when_the_running_total_reaches_the_paid_value():
+    scan = {"cards": [card(1.0, "A", price=3.0), card(2.0, "B", price=3.0), card(3.0, "C", price=4.0)]}
+    paid = lambda usd: Overlay(scan, Money("BRL", 5.0), (360, 640), 12, paid_usd=usd)  # noqa: E731
+    from cardline.overlay import COUNT_UP, FLY, POP_IN
+    arrive = lambda t: t + POP_IN + FLY  # noqa: E731
+    # pagou 5: a primeira carta (3) não paga; a segunda leva a soma a 6, e os 5 são alcançados no meio da contagem
+    assert paid(5.0).celebration_time() == pytest.approx(arrive(2.0) + COUNT_UP * 2 / 3)
+    assert paid(3.0).celebration_time() == pytest.approx(arrive(1.0) + COUNT_UP)
+    assert paid(11.0).celebration_time() is None  # o booster não se pagou: sem aplausos
+    assert paid(None).celebration_time() is None
+
+
 def test_cover_shows_the_value_as_informed(overlay):
     sprites = overlay._cover_sprites()
     assert sprites["images"][0].height > 0.35 * 640  # o booster é o destaque
@@ -67,6 +79,7 @@ def test_render_puts_the_cover_before_the_video_and_delays_the_sound(tmp_path):
     meta = timing(out)
     assert meta["intro"] == 1.0 and meta["end"] == pytest.approx(meta["summary"] + 1.0)
     assert meta["sounds"] == [1.5, 2.2]  # o "ka-ching" de cada carta, contando a capa
+    assert meta["celebration"] is None  # as cartas valem US$ 1,00 e o booster custou US$ 8: sem aplausos
     assert probe(out).duration == pytest.approx(meta["end"], abs=0.15)
     assert out.with_suffix(".jpg").exists()  # a capa vira a imagem do vídeo na página
     pcm = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(out), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],

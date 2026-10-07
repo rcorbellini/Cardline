@@ -277,7 +277,7 @@ no túnel, ou só redes de confiança.
 | Conferir com IA local | (opcional) um modelo de visão do Ollama lê nome e número de cada recorte | `scan.json` |
 | Atualizar preços | busca os preços de hoje do set e fixa o preço da abertura de cada carta (foil ou não); ao reprocessar, o preço da abertura é mantido, e uma carta nova recebe o preço do dia da abertura | `scan.json` |
 | Registrar na coleção | substitui as cartas que esta pipeline tinha registrado | banco |
-| Gerar vídeo com overlay | vídeo 1080×1920: capa (o primeiro frame parado, com o booster e o valor pago), etiquetas com um "ka-ching" de caixa registradora a cada carta, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` (a capa), `overlay.json` (tempos) |
+| Gerar vídeo com overlay | vídeo 1080×1920: capa (o primeiro frame parado, com o booster e o valor pago), etiquetas com um "ka-ching" de caixa registradora a cada carta, aplausos quando a soma alcança o valor pago, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` (a capa), `overlay.json` (tempos) |
 | Narrar o vídeo | (opcional) escreve o roteiro, grava cada fala com a voz e mistura com o som do vídeo | `narrado.mp4`, `narracao/` |
 
 Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo).
@@ -309,8 +309,9 @@ Cartas obtidas fora de vídeo: `uv run cardline add 1/169 --foil --qty 2`.
 (`USD` ou `BRL`), cartas por booster, fps da análise, resolução de saída, duração do resumo, e o modelo do
 Ollama para conferência. Com `verify_model` preenchido, a opção já vem marcada no upload. Para a narração,
 `narration_voice` (a voz do XTTS-v2) e `narration_writer` (o modelo do Ollama que escreve as piadas).
-`intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa), e `card_sound_volume` o volume do
-"ka-ching" de cada carta (0,35; 0 tira o som).
+`intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa). `card_sound_volume` e
+`celebration_volume` são os volumes do "ka-ching" de cada carta e dos aplausos (0,25 e 0,3), relativos à voz do
+narrador: 1 é tão alto quanto ela, 0,25 fica ~12 dB abaixo e 0 tira o efeito.
 
 ## Como funciona
 
@@ -332,9 +333,13 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
   desfocado. O booster entra com um pop e um reflexo passando pelo pacote, e o painel com o set e o valor pago
   sobe logo depois. Na saída, o booster voa até o lugar do ícone no painel do topo, o frame volta ao normal e o
   vídeo começa sem corte. O som original entra atrasado pelo tempo da capa, e a capa vira a imagem do vídeo
-  na página, sem spoiler. O "ka-ching" (`audio.py`) bate quando a etiqueta de cada carta aparece. É um trecho
-  (alavanca + campainha) de [Cash register.ogg](https://commons.wikimedia.org/wiki/File:Cash_register.ogg),
-  em domínio público. Na narração, o som é remontado das mesmas peças: só o original abaixa durante a fala.
+  na página, sem spoiler. Os efeitos (`audio.py`) são de fundo: o "ka-ching" bate quando a etiqueta de cada
+  carta aparece, e os aplausos entram no instante em que a soma das cartas alcança o valor pago (no meio da
+  contagem animada do total; booster que não se paga não tem aplausos). Os arquivos estão no nível da fala do
+  narrador (-20 LUFS, medido com EBU R128) e o volume é relativo a ela; na narração, o som original abaixa 14 dB
+  durante a fala e os efeitos, 4 dB. Sons: um trecho de
+  [Cash register.ogg](https://commons.wikimedia.org/wiki/File:Cash_register.ogg) (domínio público) e um de
+  [277021 sandermotions applause-2.wav](https://commons.wikimedia.org/wiki/File:277021_sandermotions_applause-2.wav) (CC0).
 - **Ícones dos sets** (`catalog.py`): o [tcgcsv](https://tcgcsv.com) espelha o catálogo do TCGplayer, e o
   grupo de cada set de Lorcana lá tem a mesma sigla do código do set no Lorcast. Do grupo sai o produto
   "Booster Pack" avulso (não o sleeved nem a caixa). Na foto em 1000×1000 só sai o branco ligado à borda (o

@@ -352,6 +352,18 @@ class Overlay:
 
     # ---- composição por frame --------------------------------------------------------------
 
+    def celebration_time(self) -> float | None:
+        """Instante (no vídeo, antes da capa) em que a soma de todas as cartas alcança o valor pago, ou None."""
+        if not self.paid_usd:
+            return None
+        before = 0.0
+        for k in sorted(range(len(self.cards)), key=lambda k: self.arrive[k]):
+            price = self.cards[k].get("price_usd") or 0.0
+            if price and before + price >= self.paid_usd:  # no meio da contagem animada do total
+                return self.arrive[k] + COUNT_UP * min(1.0, (self.paid_usd - before) / price)
+            before += price
+        return None
+
     def _total_at(self, t: float, cards: list[int]) -> float:
         total = 0.0
         for k in cards:
@@ -643,13 +655,17 @@ def render(
         writer.write(out_frame)
         written += 1
     writer.close()
-    # som: o original depois da capa e o "ka-ching" quando a etiqueta de cada carta aparece
+    # som: o original depois da capa, o "ka-ching" quando a etiqueta de cada carta aparece e os aplausos quando
+    # a soma alcança o valor pago
     progress(0.97, "Misturando o som")
-    sounds = [round(intro + c["t"], 3) for c in scan["cards"]]
+    celebration = ov.celebration_time()
+    effects = {"sounds": [round(intro + c["t"], 3) for c in scan["cards"]] if settings.card_sound_volume > 0 else [],
+               "sound_volume": settings.card_sound_volume,
+               "celebration": round(intro + celebration, 3) if celebration is not None and settings.celebration_volume > 0 else None,
+               "celebration_volume": settings.celebration_volume}
     track = out.with_name(out.stem + ".som.wav")
     try:
-        audio.write_wav(track, audio.soundtrack(video if info.has_audio else None, intro, written / FPS, sounds,
-                                                settings.card_sound_volume))
+        audio.write_wav(track, audio.soundtrack(video if info.has_audio else None, intro, written / FPS, effects))
         mixed = out.with_suffix(".part.mp4")
         subprocess.run([ffmpeg_exe(), "-v", "error", "-y", "-i", str(tmp), "-i", str(track), "-map", "0:v", "-map", "1:a",
                         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(mixed)],
@@ -663,8 +679,7 @@ def render(
     image.thumbnail((720, 720))
     image.save(out.with_suffix(".jpg"), quality=85)
     timing = {"intro": intro, "summary": round(summary_at, 3),
-              "end": round(summary_at + int(settings.outro_seconds * FPS) / FPS, 3),
-              "sounds": sounds if settings.card_sound_volume > 0 else [], "sound_volume": settings.card_sound_volume}
+              "end": round(summary_at + int(settings.outro_seconds * FPS) / FPS, 3), **effects}
     out.with_suffix(".json").write_text(json.dumps(timing))
     return out
 
