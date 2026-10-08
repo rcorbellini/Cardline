@@ -54,3 +54,10 @@ public_url = ""
 # Tags dos vídeos postados no YouTube pela API; o nome do set de cada abertura entra junto.
 # Na página dá para editar antes de postar.
 youtube_tags = ["lorcana", "disney lorcana", "booster", "abertura de booster", "tcg", "br", "brasil"]
+
+# Contas (entrar com o Google). admin_email é o administrador: fica com os dados de antes das contas e cuida dos
+# sets e do cliente OAuth (vazio = o primeiro a entrar). Também podem entrar os e-mails de allowed_emails ("*" =
+# qualquer conta do Google) e quem recebeu um compartilhamento. Para não publicar e-mails no git, coloque estas
+# chaves em data/config.toml (fora do git), que vale por cima deste arquivo.
+# admin_email = "voce@gmail.com"
+# allowed_emails = ["amigo@gmail.com"]

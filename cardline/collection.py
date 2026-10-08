@@ -22,14 +22,16 @@ def save_scan(run_dir: Path, scan: dict) -> None:
 
 
 def register(con: sqlite3.Connection, run_id: int, scan: dict) -> None:
-    """Grava as cartas do scan como as cartas do run (substitui o que o run tinha registrado)."""
+    """Grava as cartas do scan como as cartas do run, na coleção do dono dele (substitui o que o run tinha)."""
+    user_id = con.execute("SELECT user_id FROM runs WHERE id = ?", (run_id,)).fetchone()["user_id"]
     with con:
         con.execute("DELETE FROM collection WHERE run_id = ?", (run_id,))
         con.executemany(
-            "INSERT INTO collection(card_id, foil, run_id, pack, slot, video_time, price_usd, added_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO collection(card_id, foil, run_id, pack, slot, video_time, price_usd, added_at, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (c["card_id"], int(c["foil"]), run_id, c["pack"], c["slot"], c["t"], c.get("price_usd"), scan["scanned_at"])
+                (c["card_id"], int(c["foil"]), run_id, c["pack"], c["slot"], c["t"], c.get("price_usd"), scan["scanned_at"],
+                 user_id)
                 for c in scan["cards"]
             ],
         )
@@ -215,11 +217,16 @@ def add(settings: Settings, card_ref: str, foil: bool, qty: int) -> None:
     row = db.resolve_card(con, card_ref)
     foil = foil or row["rarity"] in FOIL_ONLY
     price = db.price_usd(row, foil)
+    from .auth import admin
+
+    boss = admin(con, settings)  # pela linha de comando, a carta é do administrador
+    user_id = boss.id if boss else None
     with con:
         con.executemany(
-            "INSERT INTO collection(card_id, foil, price_usd, added_at) VALUES (?, ?, ?, ?)",
-            [(row["id"], int(foil), price, db.now())] * qty,
+            "INSERT INTO collection(card_id, foil, price_usd, added_at, user_id) VALUES (?, ?, ?, ?, ?)",
+            [(row["id"], int(foil), price, db.now(), user_id)] * qty,
         )
-    db.record_value(con)
+    if user_id is not None:
+        db.record_value(con, user_id)
     print(f"Adicionada: {qty}× {db.display_name(row)} ({row['set_code']}/{row['number']}){' foil' if foil else ''}"
           f" — {money_for(settings).fmt(price)} cada")

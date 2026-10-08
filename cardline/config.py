@@ -28,6 +28,9 @@ class Settings:
     public_url: str = ""  # endereço público do cardline (o Instagram baixa o vídeo dele); vazio = o do túnel ngrok
     youtube_tags: list[str] = field(default_factory=lambda: [  # tags dos vídeos no YouTube (o nome do set entra junto)
         "lorcana", "disney lorcana", "booster", "abertura de booster", "tcg", "br", "brasil"])
+    admin_email: str = ""  # dono dos dados de antes das contas e quem cuida dos sets; vazio = o primeiro a entrar
+    allowed_emails: list[str] = field(default_factory=list)  # quem mais pode criar conta ("*" = qualquer um)
+    account: int | None = None  # interno: o usuário das credenciais de YouTube/Instagram (não vem do toml)
 
     @property
     def data_dir(self) -> Path:
@@ -59,15 +62,17 @@ class Settings:
 
 
 def load_settings(root: Path | None = None) -> Settings:
+    """`cardline.toml` (no git) e, por cima, `data/config.toml`: o que é só desta instalação (e-mails das contas)."""
     root = Path(root or os.environ.get("CARDLINE_HOME") or Path.cwd()).resolve()
     cfg: dict = {}
-    path = root / "cardline.toml"
-    if path.exists():
-        cfg = tomllib.loads(path.read_text())
-    known = {f.name for f in fields(Settings)} - {"root"}
-    unknown = set(cfg) - known
-    if unknown:
-        raise SystemExit(f"cardline.toml: chaves desconhecidas: {', '.join(sorted(unknown))}")
+    known = {f.name for f in fields(Settings)} - {"root", "account"}
+    for path in (root / "cardline.toml", root / "data" / "config.toml"):
+        if path.exists():
+            part = tomllib.loads(path.read_text())
+            unknown = set(part) - known
+            if unknown:
+                raise SystemExit(f"{path.name}: chaves desconhecidas: {', '.join(sorted(unknown))}")
+            cfg.update(part)
     settings = Settings(root=root, **cfg)
     settings.currency = settings.currency.upper()
     if settings.currency not in ("USD", "BRL"):

@@ -46,7 +46,14 @@ class YouTubeError(Exception):
 
 
 def folder(settings: Settings) -> Path:
+    """data/youtube: o cliente OAuth do app (um só, também usado para entrar)."""
     return settings.data_dir / "youtube"
+
+
+def token_path(settings: Settings) -> Path:
+    """O token do canal de cada usuário fica na pasta dele (data/youtube/u<id>)."""
+    base = folder(settings)
+    return (base / f"u{settings.account}" if settings.account is not None else base) / "token.json"
 
 
 def _read(path: Path) -> dict | None:
@@ -74,7 +81,7 @@ def save_client(settings: Settings, client_id: str, client_secret: str) -> None:
 
 
 def token(settings: Settings) -> dict | None:
-    return _read(folder(settings) / "token.json")
+    return _read(token_path(settings))
 
 
 def status(settings: Settings) -> dict:
@@ -142,7 +149,7 @@ def poll_device_login(settings: Settings, device_code: str) -> str:
         _save_token(settings, payload)
         tok = token(settings)
         tok["channel"] = my_channel(settings)
-        _write(folder(settings) / "token.json", tok)
+        _write(token_path(settings), tok)
         return "done"
     error = payload.get("error")
     if error in ("authorization_pending", "slow_down"):
@@ -156,7 +163,7 @@ def poll_device_login(settings: Settings, device_code: str) -> str:
 
 def _save_token(settings: Settings, payload: dict) -> None:
     old = token(settings) or {}
-    _write(folder(settings) / "token.json", {
+    _write(token_path(settings), {
         **old,
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token") or old.get("refresh_token"),  # a renovação não manda outro
@@ -186,7 +193,7 @@ def disconnect(settings: Settings) -> None:
     tok = token(settings)
     if tok and tok.get("refresh_token"):
         _request("POST", REVOKE_URL, form={"token": tok["refresh_token"]}, timeout=15)  # se falhar, o token sai igual
-    (folder(settings) / "token.json").unlink(missing_ok=True)
+    token_path(settings).unlink(missing_ok=True)
 
 
 def _api(settings: Settings, method: str, path: str, **kwargs) -> dict:

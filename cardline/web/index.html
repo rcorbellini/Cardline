@@ -8,7 +8,15 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<div class="wrap">
+<main class="login" id="login" hidden>
+  <div class="panel logincard">
+    <span class="logo big" aria-hidden="true">C</span>
+    <h1>Cardline</h1>
+    <p class="muted">Coleção Disney Lorcana</p>
+    <div id="login-body" aria-live="polite"></div>
+  </div>
+</main>
+<div class="wrap" id="app" hidden>
   <header class="top">
     <div class="brand">
       <a class="logo" href="#/resumo" aria-label="Início">C</a>
@@ -16,8 +24,10 @@
       <span class="spacer"></span>
       <div class="seg" id="currency" role="group" aria-label="Moeda"></div>
       <button class="iconbtn" id="theme" title="Alternar tema claro/escuro">Tema</button>
-      <a class="btn" href="#/nova">+ Nova pipeline</a>
+      <a class="btn" href="#/nova" data-write>+ Nova pipeline</a>
+      <button class="avatarbtn" id="account" aria-haspopup="dialog" hidden></button>
     </div>
+    <p class="viewbanner" id="viewbanner" hidden></p>
     <nav class="tabs">
       <a href="#/resumo" data-tab="resumo">Resumo</a>
       <a href="#/colecao" data-tab="colecao">Coleção</a>
@@ -27,7 +37,7 @@
   </header>
 
   <section id="view-resumo" class="view" hidden>
-    <p class="updated resumobar"><button class="btn ghost small" id="refresh-prices">↻ Atualizar preços</button>
+    <p class="updated resumobar"><button class="btn ghost small" id="refresh-prices" data-write>↻ Atualizar preços</button>
       <span id="updated"></span><span id="refresh-status" role="status"></span></p>
     <div class="stats" id="stats"></div>
     <section class="panel chartcard" aria-labelledby="chart-title">
@@ -52,7 +62,7 @@
       <div class="charthead">
         <div><h2 id="sealed-title">Lacrados</h2>
           <p class="muted">Boosters, caixas e decks fechados da coleção, pelo preço de mercado do TCGplayer</p></div>
-        <a class="linkbtn" href="#/colecao" id="sealed-goto">Ver e adicionar</a>
+        <a class="linkbtn" href="#/colecao" id="sealed-goto"><span>Ver</span><span data-write> e adicionar</span></a>
       </div>
       <div id="sealed-resumo"></div>
     </section>
@@ -69,11 +79,11 @@
       <div class="charthead">
         <div><h2 id="yt-title">Redes: visualizações e reações por abertura</h2>
           <p class="muted" id="yt-sub">YouTube, Instagram e TikTok de cada abertura postada; embaixo, o resultado do booster</p>
-          <p class="updated ytread" id="yt-read" hidden><button class="btn ghost small" id="yt-refresh">↻ Atualizar números</button>
+          <p class="updated ytread" id="yt-read" hidden><button class="btn ghost small" id="yt-refresh" data-write>↻ Atualizar números</button>
             <span id="yt-read-when"></span><span id="yt-refresh-status" role="status"></span></p></div>
         <ul class="legend" id="yt-legend"></ul>
       </div>
-      <div id="yt-connect-resumo"></div>
+      <div id="yt-connect-resumo" data-write></div>
       <div class="chartwrap ytcharts" id="yt-charts"></div>
       <details class="charttable" id="yt-tabledetails"><summary>Ver tabela</summary><div id="yt-table"></div></details>
     </section>
@@ -122,8 +132,8 @@
     </div>
     <div id="col-lacrados" hidden>
       <div class="toolbar"><p class="muted sealedintro">Boosters, caixas, decks e baús fechados, pelo preço de mercado do TCGplayer
-        (atualizado junto com os preços das cartas).</p><button class="btn" id="sealed-new">+ Adicionar lacrado</button></div>
-      <form class="panel form sealedform" id="sealed-form" hidden>
+        (atualizado junto com os preços das cartas).</p><button class="btn" id="sealed-new" data-write>+ Adicionar lacrado</button></div>
+      <form class="panel form sealedform" id="sealed-form" data-write hidden>
         <h2>Adicionar lacrado</h2>
         <div class="fields">
           <label>Set<select id="sealed-set"></select></label>
@@ -146,7 +156,7 @@
   <section id="view-pipelines" class="view" hidden></section>
   <section id="view-sets" class="view" hidden>
     <div class="toolbar"><h2>Sets</h2><span class="spacer"></span>
-      <button class="btn" id="sync-sets">Sincronizar</button></div>
+      <button class="btn" id="sync-sets" data-admin>Sincronizar</button></div>
     <p class="muted setsintro">A base de sets (coleções) do Cardline. <b>Sincronizar</b> traz sets novos, cartas,
       preços, as imagens que fazem um set ser reconhecido em vídeo e os ícones. Lorcana não tem símbolo de set
       nas cartas; o ícone é a foto oficial do booster (TCGplayer), e dá para trocar por outra imagem.</p>

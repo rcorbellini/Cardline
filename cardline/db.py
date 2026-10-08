@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS runs (
     recorded_at   TEXT,
     created_at    TEXT NOT NULL,
     started_at    TEXT,
-    finished_at   TEXT
+    finished_at   TEXT,
+    user_id       INTEGER                     -- dono (contas)
 );
 
 CREATE TABLE IF NOT EXISTS run_steps (
@@ -96,7 +97,8 @@ CREATE TABLE IF NOT EXISTS collection (
     slot       INTEGER,
     video_time REAL,
     price_usd  REAL,                          -- preço no momento da abertura
-    added_at   TEXT NOT NULL
+    added_at   TEXT NOT NULL,
+    user_id    INTEGER                        -- dono (o da pipeline; à mão, quem adicionou)
 );
 CREATE INDEX IF NOT EXISTS collection_run ON collection(run_id);
 
@@ -115,12 +117,37 @@ CREATE TABLE IF NOT EXISTS posts (  -- o vídeo de uma abertura numa rede
     PRIMARY KEY (run_id, network)
 );
 
-CREATE TABLE IF NOT EXISTS value_history (  -- valor da coleção por dia: um ponto por dia, a última gravação do dia vale
-    day         TEXT PRIMARY KEY,
-    cards_usd   REAL NOT NULL,  -- as cartas da coleção pelo preço de mercado de então
-    sealed_usd  REAL,           -- os lacrados
+CREATE TABLE IF NOT EXISTS user_values (  -- valor da coleção de cada usuário por dia: a última gravação do dia vale
+    user_id     INTEGER NOT NULL,  -- 0 = de antes das contas (fica com o administrador)
+    day         TEXT NOT NULL,
+    cards_usd   REAL NOT NULL,     -- as cartas da coleção pelo preço de mercado de então
+    sealed_usd  REAL,              -- os lacrados
     cards       INTEGER NOT NULL,
-    recorded_at TEXT NOT NULL
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS users (  -- contas (entrar com o Google)
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    email      TEXT NOT NULL UNIQUE,
+    name       TEXT,
+    picture    TEXT,
+    created_at TEXT NOT NULL,
+    last_login TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,   -- sha256 do cookie: o banco não guarda a sessão em si
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shares (  -- quem pode ver os dados de quem (só ver)
+    owner_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email      TEXT NOT NULL,      -- o convidado (pode ainda não ter entrado)
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (owner_id, email)
 );
 
 CREATE TABLE IF NOT EXISTS sealed (  -- produtos lacrados da coleção (booster, caixa, deck...), cotados pelo TCGplayer
@@ -138,7 +165,8 @@ CREATE TABLE IF NOT EXISTS sealed (  -- produtos lacrados da coleção (booster,
     added_at         TEXT NOT NULL,
     registered_usd   REAL,            -- preço de mercado quando entrou na coleção (não muda)
     run_id           INTEGER REFERENCES runs(id) ON DELETE CASCADE,  -- registrado por uma pipeline de lacrados
-    opened           INTEGER NOT NULL DEFAULT 0  -- quantos já foram abertos (pipelines de abertura); em estoque = qty - opened
+    opened           INTEGER NOT NULL DEFAULT 0,  -- quantos já foram abertos (pipelines de abertura); em estoque = qty - opened
+    user_id          INTEGER                      -- dono
 );
 
 CREATE TABLE IF NOT EXISTS jobs (  -- atualizações disparadas na página: preços, números das redes, sincronização de sets
@@ -149,7 +177,8 @@ CREATE TABLE IF NOT EXISTS jobs (  -- atualizações disparadas na página: pre�
     result      TEXT,            -- JSON: o que a atualização mudou
     log         TEXT,
     started_at  TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    user_id     INTEGER          -- quem disparou
 );
 
 CREATE TABLE IF NOT EXISTS scheduled_posts (  -- o que o cardline publica na hora marcada (a rede não programa sozinha)
@@ -192,6 +221,8 @@ def connect(path: Path) -> sqlite3.Connection:
     if 0 < version < SCHEMA_VERSION:
         for v in range(version + 1, SCHEMA_VERSION + 1):
             MIGRATIONS[v](con)
+    for table in OWNED:  # depois das migrações: a coluna pode ter acabado de nascer
+        con.execute(f"CREATE INDEX IF NOT EXISTS {table}_user ON {table}(user_id)")
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.commit()  # migração com INSERT abre transação; sem isso o banco fica travado para os outros processos
     return con
@@ -237,7 +268,9 @@ MIGRATIONS = {
     8: lambda con: _value_history(con),
     9: lambda con: _sealed_origin(con),
     10: lambda con: _add_column(con, "sealed", "opened", "INTEGER NOT NULL DEFAULT 0"),
+    11: lambda con: _accounts(con),
 }
+OWNED = ("runs", "collection", "sealed", "jobs")  # tabelas com dono (user_id)
 
 
 def now() -> str:
@@ -351,17 +384,20 @@ def price_usd(row: sqlite3.Row | dict, foil: bool) -> float | None:
     return row["usd"] if row["usd"] is not None else row["usd_foil"]
 
 
-def record_value(con: sqlite3.Connection) -> None:
+def record_value(con: sqlite3.Connection, user_id: int | None = None) -> None:
     """Grava o valor da coleção de hoje pelos preços atuais (um ponto por dia: a última gravação do dia vale).
 
-    Chamado quando os preços mudam (atualizar preços, sincronizar) e quando a coleção muda (pipeline registrada,
-    excluída, carta avulsa), para o último ponto do gráfico ser o valor da coleção que o Resumo mostra."""
-    cards_usd, sealed, n = collection_value(con)
-    with con:
-        con.execute("INSERT INTO value_history(day, cards_usd, sealed_usd, cards, recorded_at) VALUES (?, ?, ?, ?, ?)"
-                    " ON CONFLICT(day) DO UPDATE SET cards_usd = excluded.cards_usd, sealed_usd = excluded.sealed_usd,"
-                    " cards = excluded.cards, recorded_at = excluded.recorded_at",
-                    (now()[:10], cards_usd, sealed, n, now()))
+    Chamado quando os preços mudam (atualizar preços, sincronizar: aí sem `user_id`, para todos) e quando a coleção
+    de alguém muda (pipeline registrada ou excluída, carta avulsa, lacrado), para o último ponto do gráfico ser o
+    valor que o Resumo mostra."""
+    users = [user_id] if user_id is not None else [r[0] for r in con.execute("SELECT id FROM users")]
+    for uid in users:
+        cards_usd, sealed, n = collection_value(con, uid)
+        with con:
+            con.execute("INSERT INTO user_values(user_id, day, cards_usd, sealed_usd, cards, recorded_at) VALUES (?, ?, ?, ?, ?, ?)"
+                        " ON CONFLICT(user_id, day) DO UPDATE SET cards_usd = excluded.cards_usd, sealed_usd = excluded.sealed_usd,"
+                        " cards = excluded.cards, recorded_at = excluded.recorded_at",
+                        (uid, now()[:10], cards_usd, sealed, n, now()))
 
 
 def _sealed_origin(con: sqlite3.Connection) -> None:
@@ -371,11 +407,25 @@ def _sealed_origin(con: sqlite3.Connection) -> None:
     con.execute("UPDATE sealed SET registered_usd = usd WHERE registered_usd IS NULL")
 
 
-def collection_value(con: sqlite3.Connection) -> tuple[float, float | None, int]:
-    """(cartas pelo preço de mercado atual, lacrados ou None, quantas cartas)."""
-    rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id").fetchall()
-    sealed = con.execute("SELECT SUM((qty - opened) * usd) FROM sealed WHERE usd IS NOT NULL AND qty > opened").fetchone()[0]
+def collection_value(con: sqlite3.Connection, user_id: int) -> tuple[float, float | None, int]:
+    """(cartas pelo preço de mercado atual, lacrados ou None, quantas cartas) da coleção do usuário."""
+    rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id"
+                       " WHERE c.user_id = ?", (user_id,)).fetchall()
+    sealed = con.execute("SELECT SUM((qty - opened) * usd) FROM sealed WHERE usd IS NOT NULL AND qty > opened"
+                         " AND user_id = ?", (user_id,)).fetchone()[0]
     return sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), sealed, len(rows)
+
+
+def _accounts(con: sqlite3.Connection) -> None:
+    """Contas: cada tabela de dados ganha o dono (os dados de antes ficam com o administrador quando ele existir) e
+    o histórico de valor passa a ser por usuário."""
+    for table in OWNED:
+        _add_column(con, table, "user_id", "INTEGER")
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "value_history" in tables:
+        con.execute("INSERT OR IGNORE INTO user_values(user_id, day, cards_usd, sealed_usd, cards, recorded_at)"
+                    " SELECT 0, day, cards_usd, sealed_usd, cards, recorded_at FROM value_history")
+        con.execute("DROP TABLE value_history")
 
 
 def _value_history(con: sqlite3.Connection) -> None:
@@ -383,6 +433,6 @@ def _value_history(con: sqlite3.Connection) -> None:
     rows = con.execute("SELECT card_id, foil, added_at FROM collection").fetchall()
     for (day,) in con.execute("SELECT DISTINCT day FROM price_history WHERE day <= ? ORDER BY day", (now()[:10],)).fetchall():
         owned = [r for r in rows if (r["added_at"] or "")[:10] <= day]
-        if owned:
-            con.execute("INSERT OR IGNORE INTO value_history(day, cards_usd, cards, recorded_at) VALUES (?, ?, ?, ?)",
+        if owned:  # user_id 0: de antes das contas (fica com o administrador)
+            con.execute("INSERT OR IGNORE INTO user_values(user_id, day, cards_usd, cards, recorded_at) VALUES (0, ?, ?, ?, ?)",
                         (day, sum(price_on(con, r["card_id"], bool(r["foil"]), day) or 0 for r in owned), len(owned), now()))

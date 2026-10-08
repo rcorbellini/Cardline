@@ -35,7 +35,9 @@ class InstagramError(Exception):
 
 
 def folder(settings: Settings) -> Path:
-    return settings.data_dir / "instagram"
+    """O token do Instagram de cada usuário fica na pasta dele (data/instagram/u<id>)."""
+    base = settings.data_dir / "instagram"
+    return base / f"u{settings.account}" if settings.account is not None else base
 
 
 def token(settings: Settings) -> dict | None:

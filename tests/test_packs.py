@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from cardline import db, packs, pipeline, sealed
+from cardline import auth, db, packs, pipeline, sealed
 from cardline.config import Settings
 from cardline.server import create_app
 
@@ -77,6 +77,8 @@ def run(settings, tmp_path):
     with con:
         con.execute("UPDATE runs SET status = 'done' WHERE id = ?", (run_id,))
         con.execute("UPDATE run_steps SET status = 'done' WHERE run_id = ?", (run_id,))
+    auth.upsert_user(con, "eu@teste.dev")
+    auth.adopt(con, settings)  # a pipeline (criada sem dono) fica com o primeiro usuário
     return run_id
 
 
@@ -87,7 +89,8 @@ def test_boosters_are_priced_and_registered_as_sealed_items(settings, run):
     assert sealed.price_packs(settings, con, scan) == (0, [])
     assert [p["price_usd"] for p in scan["packs"]] == [6.5, 5.0, 6.5]
     assert sealed.register_packs(settings, con, run, scan, 60.0, "BRL") == 3
-    items = {x["name"] + x["set_code"]: x for x in sealed.items(con)}
+    uid = con.execute("SELECT user_id FROM runs WHERE id = ?", (run,)).fetchone()[0]
+    items = {x["name"] + x["set_code"]: x for x in sealed.items(con, uid)}
     fabled = items["Booster Pack9"]
     assert (fabled["qty"], fabled["registered_usd"], fabled["paid"], fabled["paid_usd"], fabled["run_id"]) == (2, 6.5, 20.0, 4.0, run)
     taken = sealed.take(con, fabled["id"], 1)  # um Fabled aberto numa abertura
@@ -97,7 +100,7 @@ def test_boosters_are_priced_and_registered_as_sealed_items(settings, run):
     sealed.register_packs(settings, con, run, scan, 60.0, "BRL")
     row = con.execute("SELECT qty, opened, registered_usd FROM sealed WHERE id = ?", (taken["id"],)).fetchone()
     assert tuple(row) == (1, 1, 6.5)  # o aberto continua aberto; nenhum Fabled fechado
-    assert [x["set_code"] for x in sealed.items(con)] == ["7"]
+    assert [x["set_code"] for x in sealed.items(con, uid)] == ["7"]
 
 
 def test_the_page_edits_the_boosters_and_shows_the_sealed_run(settings, run):

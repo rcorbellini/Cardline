@@ -9,12 +9,17 @@ const store = {
 // atualiza o HTML de um container só quando mudou (não reinicia vídeo, foco, <details>...)
 const patch = (el, html) => { if (el._html === html) return false; el.innerHTML = html; el._html = html; return true; };
 
-const S = { meta: null, col: { cards: {}, owned: [] }, runs: [], run: null, runId: null, cur: 'USD', file: null, xhr: null };
+const S = { meta: null, col: { cards: {}, owned: [] }, runs: [], run: null, runId: null, cur: 'USD', file: null, xhr: null,
+            me: null, viewAs: null };
+const RO = () => !!S.viewAs;  // vendo a coleção de quem compartilhou com você: só visualização
 
+const OWN = /^\/api\/(auth|shares)\//;  // a conta e os compartilhamentos são sempre de quem entrou
 async function api(path, opts = {}) {
+  if (S.viewAs && !OWN.test(path)) opts = { ...opts, headers: { ...opts.headers, 'X-Cardline-Owner': String(S.viewAs.id) } };
   const r = await fetch(path, opts);
   const body = await r.json().catch(() => null);
   if (!r.ok) {
+    if (r.status === 401 && !OWN.test(path)) showLogin();  // a sessão venceu ou foi encerrada em outra aba
     const d = body?.detail;
     const err = new Error(typeof d === 'string' ? d : d?.message || r.statusText);
     err.detail = d;
@@ -336,7 +341,7 @@ function renderRuns() {
   const head = `<div class="toolbar"><h2>Pipelines</h2>
     <div class="seg" role="group" aria-label="Tipo de pipeline">${filters.map(([k, label]) =>
       `<button data-runkind="${k}" aria-pressed="${runKind === k}">${label}</button>`).join('')}</div>
-    <span class="spacer"></span><a class="btn" href="#/nova">+ Nova pipeline</a></div>`;
+    <span class="spacer"></span><a class="btn" href="#/nova" data-write>+ Nova pipeline</a></div>`;
   const runs = runKind === 'atualizacao' ? [] : S.runs.filter(r => runKind === 'todas' || r.kind === runKind);
   const jobs = ['todas', 'atualizacao'].includes(runKind) ? S.jobs : [];
   const list = [...runs.map(r => ({ r, t: new Date(r.created_at) })), ...jobs.map(j => ({ j, t: new Date(j.started_at) }))]
@@ -390,7 +395,7 @@ function renderRun() {
   if (!r || r.id !== S.runId) return;
   const steps = r.steps;  // os passos deste tipo de pipeline
   const cadastro = r.kind === 'cadastro';
-  const canRun = !active(r);
+  const canRun = !active(r) && !RO();
   const resumeLabel = steps.find(s => s.name === r.resume_from)?.label;
   patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${kindChip(r)}${dupChip(r)}${statusChip(r)}${netBadges(r, true)}<span class="spacer"></span>
     ${canRun && r.resume_from && r.status !== 'done' ? `<button class="btn" data-action="resume">${r.status === 'stale' ? 'Reprocessar com as edições' : `Continuar de “${esc(resumeLabel)}”`}</button>` : ''}
@@ -411,7 +416,7 @@ function renderRun() {
   if (!editingPaid && !cadastro) {
     patch($('#r-paid'), `<small>Valor pago</small><b class="num">${r.paid != null ? `${sym(r.paid_currency)} ${nf.format(r.paid)}` : '—'}</b>
       ${r.paid != null && r.paid_currency !== S.cur ? `<div class="muted" style="font-size:13px">≈ ${money(r.paid_usd)}</div>` : ''}
-      <div><button class="linkbtn" data-action="edit-paid">${r.paid != null ? 'editar' : 'informar valor pago'}</button></div>`);
+      ${RO() ? '' : `<div><button class="linkbtn" data-action="edit-paid">${r.paid != null ? 'editar' : 'informar valor pago'}</button></div>`}`);
   }
   const d = r.paid_usd != null && r.value_now != null ? r.value_now - r.paid_usd : null;
   if (cadastro) patch($('#r-kpis'), `
@@ -440,11 +445,11 @@ function renderRun() {
 
   const overlayStep = r.steps.find(s => s.name === 'overlay');
   const videoCur = r.options?.currency || 'USD';
-  const curControl = cadastro || r.options?.overlay === false ? '' : `<div class="vidbar"><span>Moeda do vídeo com overlay</span>
+  const curControl = cadastro || r.options?.overlay === false || RO() ? '' : `<div class="vidbar"><span>Moeda do vídeo com overlay</span>
     <div class="seg" role="group" aria-label="Moeda do vídeo com overlay">${['USD', 'BRL'].filter(c => c in S.meta.rates).map(c =>
       `<button data-action="video-currency" data-cur="${c}" aria-pressed="${c === videoCur}" ${active(r) ? 'disabled' : ''}>${sym(c)}</button>`).join('')}</div></div>`;
   const logoOn = !!r.options?.logo, canLogo = logoOn || !!S.meta.logo?.default;  // ligar usa o logo padrão
-  const logoControl = cadastro || r.options?.overlay === false ? '' : `<div class="vidbar"><span>Logo no vídeo</span>
+  const logoControl = cadastro || r.options?.overlay === false || RO() ? '' : `<div class="vidbar"><span>Logo no vídeo</span>
     <div class="seg" role="group" aria-label="Logo no vídeo">${[[true, 'Com'], [false, 'Sem']].map(([on, label]) =>
       `<button data-action="video-logo" data-on="${on}" aria-pressed="${on === logoOn}" ${active(r) || (on && !canLogo) ? 'disabled' : ''}>${label}</button>`).join('')}</div></div>`;
   const narrStep = r.steps.find(s => s.name === 'narrate');
@@ -462,14 +467,14 @@ function renderRun() {
   renderSocial(r);
 
   const cards = r.cards || [];
-  const editable = !active(r);
+  const editable = !active(r) && !RO();
   $('#r-cards-title').textContent = r.kind === 'lacrados' ? 'Boosters' : 'Cartas';
   if (r.kind === 'lacrados') renderPacks(r, editable);
   else {
   const best = cards.reduce((b, x) => (x.price_now ?? 0) > (b?.price_now ?? -1) ? x : b, null);
   patch($('#r-cards-sub'), !cards.length ? '' : editable ? 'deslize uma carta para editar ou remover' : 'recorte do vídeo ao lado da imagem oficial');
   const nrep = r.repeated || 0;
-  patch($('#r-sanitize'), cards.length ? `<button class="btn ghost small" data-action="sanitize" ${nrep && editable ? '' : 'disabled'}
+  patch($('#r-sanitize'), cards.length && !RO() ? `<button class="btn ghost small" data-action="sanitize" ${nrep && editable ? '' : 'disabled'}
     title="${nrep ? `Tira ${nrep === 1 ? 'a carta repetida' : `as ${nrep} cartas repetidas`}, deixando a primeira aparição de cada uma` : 'Nenhuma carta repetida'}">Sanitizar${nrep ? ` (${nrep})` : ''}</button>` : '');
   patch($('#r-cards'), cards.length ? cards.map(x => {
     const c = r.card_info[x.card], rr = rar(c.rarity);
@@ -500,13 +505,13 @@ function renderRun() {
         <span>${esc(c.name)}${c.version ? ` <span class="muted">${esc(c.version)}</span>` : ''}${x.foil ? ' <span class="foilpill">FOIL</span>' : ''}</span>
         ${editable ? `<button class="btn ghost small" data-action="restore-card" data-uid="${esc(x.uid)}">Restaurar</button>` : ''}</li>`;
     }).join('')}</ul></div>` : ''}
-    <div class="reprocess${pending ? ' pending' : ''}">
+    ${RO() ? '' : `<div class="reprocess${pending ? ' pending' : ''}">
       <p>${active(r) ? 'A pipeline está rodando; as cartas ficam editáveis quando ela terminar.'
         : pending ? `Edições pendentes: preços${cadastro ? ' e coleção' : ', coleção e vídeo'} só mudam depois de reprocessar.`
         : cadastro ? 'Deslize uma carta para a direita para marcar se é foil ou para a esquerda para remover, depois reprocesse.'
         : 'Deslize uma carta para a direita para editar ou para a esquerda para remover, depois reprocesse.'}</p>
       <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
-    </div>` : '');
+    </div>`}` : '');
   }
 
   const log = $('#r-log');
@@ -547,12 +552,12 @@ function renderPacks(r, editable) {
       <select id="pack-add-set" aria-label="Set do booster que faltou">${options(packs.at(-1)?.set)}</select>
       <input type="number" id="pack-add-t" min="0" step="0.1" placeholder="aos … s" aria-label="Instante do vídeo, em segundos">
       <button class="btn ghost small" data-action="add-pack">Incluir</button></div>` : ''}
-    <div class="reprocess${pending ? ' pending' : ''}">
+    ${RO() ? '' : `<div class="reprocess${pending ? ' pending' : ''}">
       <p>${active(r) ? 'A pipeline está rodando; os boosters ficam editáveis quando ela terminar.'
         : pending ? 'Edições pendentes: preços, lacrados e vídeo só mudam depois de reprocessar.'
         : 'Deslize um booster para a direita para editar (set e valor) ou para a esquerda para remover, depois reprocesse.'}</p>
       <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
-    </div>`);
+    </div>`}`);
 }
 // editar um booster: o set e o valor (vazio = o preço de mercado do TCGplayer; informado = fixo para ele)
 function editPack(uid) {
@@ -652,7 +657,7 @@ function scriptRows() {
 }
 function renderNarration(r) {
   const box = $('#r-narr'), nm = S.meta.narration || {};
-  if (r.kind === 'cadastro' || r.options?.overlay === false) { patch(box, ''); return; }
+  if (r.kind === 'cadastro' || r.options?.overlay === false || RO()) { patch(box, ''); return; }
   const n = r.narration || { enabled: false, lines: [] };
   const busy = active(r);
   if (!n.enabled) {
@@ -1357,6 +1362,7 @@ function renderTasks() {
 }
 async function pollTasks() {
   clearTimeout(taskTimer);
+  if (RO()) return;
   let st;
   try { st = await api('/api/tasks'); } catch { return; }
   const finished = Object.keys(st).filter(k => S.tasks[k]?.running && !st[k].running);
@@ -1416,18 +1422,18 @@ function renderSealed() {
       ${x.image ? `<img src="${esc(x.image)}" alt="" loading="lazy">` : '<span class="noimg"></span>'}
       <div class="sinfo"><b>${esc(x.name)}</b><span class="muted">${esc(setTitle(x.set_code))}</span>
         <span class="muted">${money(x.usd)} cada${paidEach(x) ? ` · pago ${paidEach(x)} cada` : ''}</span></div>
-      <div class="sqty" role="group" aria-label="Quantidade de ${esc(x.name)}">
+      <div class="sqty" role="group" aria-label="Quantidade de ${esc(x.name)}">${RO() ? `<b>${x.qty}×</b>` : `
         <button class="iconbtn" data-sealed-qty="${x.id}" data-delta="-1" ${x.qty <= 1 ? 'disabled' : ''} aria-label="Um a menos">−</button>
-        <b>${x.qty}</b><button class="iconbtn" data-sealed-qty="${x.id}" data-delta="1" aria-label="Um a mais">+</button></div>
+        <b>${x.qty}</b><button class="iconbtn" data-sealed-qty="${x.id}" data-delta="1" aria-label="Um a mais">+</button>`}</div>
       <div class="sval"><b class="num">${money(x.value_usd)}</b>${sealedResult(x.value_usd, x.paid_total_usd)}</div>
-      <div class="sact"><button class="linkbtn" data-sealed-paid="${x.id}">${x.paid == null ? 'Informar o pago' : 'Editar o pago'}</button>
-        <button class="linkbtn" data-sealed-del="${x.id}">Remover</button></div>
-    </article>`).join('') : '<p class="empty">Nenhum lacrado ainda. Use “+ Adicionar lacrado”.</p>');
+      ${RO() ? '' : `<div class="sact"><button class="linkbtn" data-sealed-paid="${x.id}">${x.paid == null ? 'Informar o pago' : 'Editar o pago'}</button>
+        <button class="linkbtn" data-sealed-del="${x.id}">Remover</button></div>`}
+    </article>`).join('') : `<p class="empty">Nenhum lacrado ainda.${RO() ? '' : ' Use “+ Adicionar lacrado”.'}</p>`);
 }
 function renderSealedResumo() {
   const d = S.sealed;
   if (!d) return;
-  if (!d.items.length) { patch($('#sealed-resumo'), '<p class="muted chartempty">Nenhum lacrado na coleção. Adicione em Coleção → Lacrados.</p>'); return; }
+  if (!d.items.length) { patch($('#sealed-resumo'), `<p class="muted chartempty">Nenhum lacrado na coleção.${RO() ? '' : ' Adicione em Coleção → Lacrados.'}</p>`); return; }
   const all = d.items.every(x => x.paid != null);  // o resultado compara só o que tem valor pago
   const tiles = [['Valor hoje', money(d.value_usd)], ['Itens', d.qty],
     ...(d.paid_usd != null ? [[all ? 'Pago' : 'Pago (dos informados)', money(d.paid_usd)], ['Resultado', sealedResult(d.value_of_paid_usd, d.paid_usd)]] : [])];
@@ -1520,8 +1526,8 @@ function renderSets() {
           <span>${x.owned ? `${x.owned} na coleção (${x.owned_unique} únicas)` : 'nenhuma na coleção'}</span></p>
         <p class="${x.recognized ? 'ok' : 'muted'}">${x.recognized ? '✓ reconhecido em vídeo' : x.booster ? 'ainda não reconhecido em vídeo: sincronize' : 'não reconhecido em vídeo (sem booster)'}</p>
         <div class="seticonactions">
-          <button class="linkbtn" data-icon-upload="${esc(x.code)}">Trocar ícone</button>
-          ${x.icon_source === 'manual' ? `<button class="linkbtn" data-icon-reset="${esc(x.code)}">${x.booster ? 'Usar a foto do booster' : 'Voltar ao selo'}</button>` : ''}
+          <button class="linkbtn" data-icon-upload="${esc(x.code)}" data-admin>Trocar ícone</button>
+          ${x.icon_source === 'manual' ? `<button class="linkbtn" data-icon-reset="${esc(x.code)}" data-admin>${x.booster ? 'Usar a foto do booster' : 'Voltar ao selo'}</button>` : ''}
           <span class="muted">${x.icon_source === 'manual' ? 'ícone enviado por você' : x.icon ? 'foto do booster (TCGplayer)' : 'selo com o número do set'}</span>
         </div>
       </div>
@@ -1685,6 +1691,7 @@ const sp = { key: null, recent: null, recentLoading: false, share: null, editing
 function ytConnectBox() {  // configuração e conexão do canal do YouTube (no painel e no Resumo)
   const m = S.meta.youtube || {};
   if (m.connected) return '';
+  if (!m.configured && !S.me?.admin) return '<div class="ytbox"><p>O administrador ainda não configurou o cliente OAuth do Google.</p></div>';
   if (!m.configured) return `<div class="ytbox"><p>Para postar e acompanhar os números, cole o cliente OAuth do Google
       (tipo "TVs e dispositivos de entrada limitada"; o passo a passo está no README).</p>
     <div class="ytclient"><input id="yt-client-id" placeholder="ID do cliente (…apps.googleusercontent.com)" autocomplete="off">
@@ -1722,6 +1729,7 @@ async function ytSync() {  // a situação das redes muda fora da página (token
   } catch (e) { console.warn(e); }
 }
 async function refreshSocialStats(maxAge) {  // em segundo plano: o Resumo mostra que está lendo
+  if (RO()) return;
   if (!S.runs.some(r => Object.keys(r.posts || {}).length)) return;
   if (!S.meta?.youtube?.connected && !S.meta?.instagram?.connected) return;
   await startTask('social', maxAge ? `?max_age=${maxAge}` : '');
@@ -1785,7 +1793,7 @@ function netRowHtml(r, n) {
 }
 function renderSocial(r) {
   const box = $('#r-yt');
-  if (r.kind === 'cadastro' || !r.overlay) { patch(box, ''); sp.key = null; return; }
+  if (r.kind === 'cadastro' || !r.overlay || RO()) { patch(box, ''); sp.key = null; return; }
   if (sp.key !== r.id) {  // o formulário é montado uma vez por pipeline: as atualizações não apagam o que foi digitado
     sp.key = r.id; sp.recent = null; sp.share = null; sp.editing = {};
     const sug = r.post_suggestion || {};
@@ -1878,7 +1886,7 @@ document.addEventListener('click', async ev => {
         renderAll(); return;
       }
       if (action === 'connect') { b.disabled = true; ytLogin = await api('/api/youtube/connect', { method: 'POST' }); renderAll(); ytPollLogin(); return; }
-      if (action === 'copy-code') { try { await navigator.clipboard.writeText(ytLogin.user_code); b.textContent = 'Copiado'; } catch {} return; }
+      if (action === 'copy-code') { if (await copyText(ytLogin.user_code)) b.textContent = 'Copiado'; return; }
       if (action === 'disconnect') {
         if (!confirm('Desconectar o canal do YouTube? Os vídeos vinculados continuam, mas os números param de atualizar.')) return;
         S.meta.youtube = await api('/api/youtube/disconnect', { method: 'POST' }); sp.recent = null; renderAll(); return;
@@ -2036,6 +2044,167 @@ new ResizeObserver(([entry]) => {
   if (Math.abs(w - ytWidth) > 2) { ytWidth = w; if (S.meta) renderSocialChart(); }
 }).observe($('#yt-charts'));
 
+// ---- conta: entrar com o Google, compartilhar e ver a coleção de quem compartilhou ----
+async function copyText(text) {  // pelo IP da rede de casa (http) não há navigator.clipboard: vai pelo jeito antigo
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const t = Object.assign(document.createElement('textarea'), { value: text });
+  t.style.cssText = 'position:fixed;opacity:0';
+  document.body.append(t);
+  t.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  t.remove();
+  return ok;
+}
+const GOOGLE_G = `<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
+  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`;
+const login = { info: null, timer: null, error: null, google: true };
+function showLogin(who) {  // sem sessão: a página vira a tela de entrada
+  if (who) login.google = who.google;
+  S.loggedOut = true;
+  clearTimeout(timer);
+  if ($('#dlg').open) $('#dlg').close();
+  $('#app').hidden = true;
+  $('#login').hidden = false;
+  renderLogin();
+}
+function renderLogin() {
+  const box = $('#login-body'), l = login.info;
+  if (!login.google) {
+    patch(box, `<p>Para entrar, falta configurar o cliente OAuth do Google. No computador do servidor, rode
+      <code>uv run cardline google</code> (o passo a passo está no README) e recarregue a página.</p>`);
+    return;
+  }
+  if (l?.done) { patch(box, '<p>Entrando…</p>'); return; }
+  if (l) {
+    const until = new Date(l.expires_at * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    patch(box, `<ol class="loginsteps">
+        <li>Abra <a href="${esc(l.verification_url)}" target="_blank" rel="noopener">${esc(l.verification_url.replace(/^https?:\/\/(www\.)?/, ''))}</a>
+          no celular ou no computador.</li>
+        <li>Entre com a sua conta do Google e digite o código:</li></ol>
+      <div class="coderow"><b class="code">${esc(l.user_code)}</b><button class="btn ghost small" data-login="copy">Copiar</button></div>
+      <p class="muted small">Esperando a autorização… o código vale até ${until}.</p>
+      <button class="linkbtn" data-login="cancel">Cancelar</button>`);
+    return;
+  }
+  patch(box, `<p>Entre com a sua conta do Google para ver e cuidar da sua coleção.</p>
+    ${login.error ? `<p class="error">${esc(login.error)}</p>` : ''}
+    <button class="btn googlebtn" data-login="start">${GOOGLE_G}Entrar com o Google</button>
+    <p class="muted small">O Google mostra um código para digitar em google.com/device. Assim a entrada funciona pelo
+      IP da rede de casa e pelo túnel, sem precisar de https.</p>`);
+}
+async function loginStart() {
+  login.error = null;
+  try { login.info = await api('/api/auth/start', { method: 'POST' }); } catch (e) { login.error = e.message; }
+  renderLogin();
+  if (login.info) login.timer = setTimeout(loginPoll, 3000);
+}
+async function loginPoll() {
+  const l = login.info;
+  if (!l) return;
+  try {
+    const st = await api('/api/auth/poll', json({ id: l.id }));
+    if (login.info !== l) return;  // cancelou enquanto esperava
+    if (st.status === 'done') { l.done = true; renderLogin(); store.set('viewAs', null); location.reload(); return; }
+  } catch (e) {
+    if (login.info === l) { login.info = null; login.error = e.message; renderLogin(); }
+    return;
+  }
+  login.timer = setTimeout(loginPoll, Math.max(2, l.interval) * 1000);
+}
+$('#login').addEventListener('click', async ev => {
+  const b = ev.target.closest('[data-login]');
+  if (!b) return;
+  if (b.dataset.login === 'start') { b.disabled = true; loginStart(); }
+  if (b.dataset.login === 'cancel') { clearTimeout(login.timer); login.info = null; renderLogin(); }
+  if (b.dataset.login === 'copy' && await copyText(login.info.user_code)) b.textContent = 'Copiado';
+});
+
+const userName = u => u.name || u.email;
+function avatar(u, cls = '') {  // a foto da conta do Google, ou a inicial
+  return u.picture ? `<img class="avatar ${cls}" src="${esc(u.picture)}" alt="" referrerpolicy="no-referrer">`
+    : `<span class="avatar ${cls}" aria-hidden="true">${esc(userName(u)[0].toUpperCase())}</span>`;
+}
+function applyAccount() {
+  const u = S.me.user, v = S.viewAs;
+  document.body.classList.toggle('readonly', RO());
+  document.body.classList.toggle('admin', S.me.admin && !RO());
+  const btn = $('#account');
+  btn.hidden = false;
+  btn.innerHTML = avatar(u);
+  btn.title = `${userName(u)}: conta e compartilhamento`;
+  btn.setAttribute('aria-label', `Conta de ${userName(u)}`);
+  $('#viewbanner').hidden = !v;
+  $('#viewbanner').innerHTML = v ? `${avatar(v, 'small')}<span class="vbtext">Você está vendo a coleção de <b>${esc(userName(v))}</b>: só visualização.</span>
+    <button class="linkbtn" data-view-as="">Voltar para a minha</button>` : '';
+}
+function renderShares() {
+  const mine = S.me.my_shares;
+  patch($('#share-list'), mine.length ? mine.map(e => `<li><span>${esc(e)}</span>
+    <button class="linkbtn" data-unshare="${esc(e)}" aria-label="Parar de compartilhar com ${esc(e)}">Remover</button></li>`).join('')
+    : '<li class="muted">Você ainda não compartilhou com ninguém.</li>');
+}
+function openAccount() {
+  const u = S.me.user, others = S.me.shared_with_me, viewing = S.viewAs?.id ?? null;
+  $('#dlgbody').innerHTML = `<div class="editcard account">
+    <button class="iconbtn close" type="button" data-close aria-label="Fechar">✕</button>
+    <div class="accthead">${avatar(u, 'big')}<div><b>${esc(userName(u))}</b>${u.name ? `<span class="muted">${esc(u.email)}</span>` : ''}
+      ${S.me.admin ? '<span class="muted small">administrador: cuida dos sets e do cliente OAuth do Google</span>' : ''}</div></div>
+    ${others.length ? `<section><h3>Ver a coleção de</h3><div class="viewlist" role="group" aria-label="De quem é a coleção mostrada">
+      <button type="button" data-view-as="" aria-pressed="${viewing == null}">${avatar(u, 'small')}<span><b>Minha coleção</b></span></button>
+      ${others.map(o => `<button type="button" data-view-as="${o.id}" aria-pressed="${viewing === o.id}">${avatar(o, 'small')}
+        <span><b>${esc(userName(o))}</b><small class="muted">${o.name ? `${esc(o.email)} · ` : ''}só visualização</small></span></button>`).join('')}
+    </div></section>` : ''}
+    <section><h3>Compartilhar a minha coleção</h3>
+      <p class="muted">Quem você adicionar entra com a conta do Google e vê as suas pipelines, a coleção, os lacrados e o
+        Resumo, sem poder mudar nada.</p>
+      <form class="shareform" id="share-form"><input type="email" id="share-email" placeholder="e-mail da conta do Google"
+          autocomplete="off" required aria-label="E-mail para compartilhar"><button class="btn small" id="share-add">Compartilhar</button></form>
+      <p class="error" id="share-error" hidden></p>
+      <ul class="sharelist" id="share-list"></ul></section>
+    <div class="actions"><button class="btn ghost" type="button" id="logout">Sair</button></div>
+  </div>`;
+  renderShares();
+  $('#dlg').className = 'dlg narrow';
+  $('#dlg').showModal();
+  const fail = msg => { $('#share-error').textContent = msg; $('#share-error').hidden = !msg; };
+  $('#share-form').onsubmit = async ev => {
+    ev.preventDefault();
+    $('#share-add').disabled = true;
+    try {
+      S.me.my_shares = (await api('/api/shares', json({ email: $('#share-email').value }))).mine;
+      $('#share-email').value = '';
+      fail('');
+      renderShares();
+    } catch (e) { fail(e.message); }
+    $('#share-add').disabled = false;
+  };
+  $('#logout').onclick = async () => {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch {}
+    store.set('viewAs', null);
+    location.reload();
+  };
+}
+$('#account').onclick = openAccount;
+document.addEventListener('click', async ev => {
+  const view = ev.target.closest('[data-view-as]'), un = ev.target.closest('[data-unshare]');
+  if (view) {  // trocar a coleção mostrada: recarrega tudo com o dono novo
+    const id = view.dataset.viewAs ? +view.dataset.viewAs : null;
+    if (id === (S.viewAs?.id ?? null)) { if ($('#dlg').open) $('#dlg').close(); return; }
+    store.set('viewAs', id);
+    const tab = { run: 'pipelines', job: 'pipelines', nova: 'pipelines' }[currentView()] || currentView();
+    history.replaceState(null, '', `#/${tab}`);  // a pipeline aberta não existe na outra coleção
+    location.reload();
+  }
+  if (un) {
+    try { S.me.my_shares = (await api(`/api/shares/${encodeURIComponent(un.dataset.unshare)}`, { method: 'DELETE' })).mine; renderShares(); }
+    catch (e) { $('#share-error').textContent = e.message; $('#share-error').hidden = false; }
+  }
+});
+
 // ---- rotas, carga e polling ----
 function currentView() {
   const h = location.hash || '#/resumo';  // a página abre no Resumo
@@ -2049,9 +2218,10 @@ function currentView() {
 }
 async function route() {
   const view = currentView();
+  if (view === 'nova' && RO()) { location.hash = '#/pipelines'; return; }
   for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'job', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
   if (view === 'sets') loadSets();
-  ytSync();
+  if (!RO()) ytSync();
   if (view === 'resumo') { refreshSocialStats(1800); pollTasks(); loadHistory(); }
   if (view === 'resumo' || view === 'colecao') loadSealed();
   document.querySelectorAll('nav.tabs a').forEach(a => {
@@ -2101,10 +2271,20 @@ async function refresh(collectionToo = false) {
     if (['resumo', 'colecao'].includes(currentView())) S.sealed = await api('/api/sealed');
     renderAll();
   } catch (e) { console.warn(e); }
+  if (S.loggedOut) return;
   timer = setTimeout(refresh, prevActive.size || S.jobs.some(j => j.status === 'running') ? 1500 : 8000);
 }
 
 (async () => {
+  let who;
+  try { who = await api('/api/auth/me'); } catch (e) { login.error = e.message; showLogin(); return; }
+  if (!who.user) { showLogin(who); return; }
+  S.me = who;
+  const viewId = store.get('viewAs', null);  // a coleção que estava sendo vista, se ainda é compartilhada
+  S.viewAs = who.shared_with_me.find(u => u.id === viewId) || null;
+  if (viewId != null && !S.viewAs) store.set('viewAs', null);
+  applyAccount();
+  $('#app').hidden = false;
   S.meta = await api('/api/meta');
   RAR = Object.fromEntries(S.meta.rarities.map(([k, label, color], rank) => [k, { label, color, rank }]));
   INK = Object.fromEntries(S.meta.inks.map(([k, label, color]) => [k, { label, color }]));

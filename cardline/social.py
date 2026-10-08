@@ -94,25 +94,26 @@ def posts(con, run_id: int) -> dict[str, dict]:
     return out
 
 
-def linked(con, network: str) -> list[tuple[int, str]]:
-    """(run_id, ID na rede) dos posts dessa rede que têm ID, para buscar os números."""
-    return [(r[0], r[1]) for r in con.execute("SELECT run_id, post_id FROM posts WHERE network = ? AND post_id IS NOT NULL",
-                                              (network,))]
+def linked(con, network: str, user_id: int | None = None) -> list[tuple[int, str]]:
+    """(run_id, ID na rede) dos posts dessa rede que têm ID (de um usuário, ou de todos), para buscar os números."""
+    return [(r[0], r[1]) for r in con.execute(
+        "SELECT p.run_id, p.post_id FROM posts p JOIN runs r ON r.id = p.run_id WHERE p.network = ? AND p.post_id IS NOT NULL"
+        " AND (? IS NULL OR r.user_id = ?)", (network, user_id, user_id))]
 
 
-def total_views(con) -> int:
-    """Visualizações somadas de todos os posts vinculados (a última leitura de cada um)."""
+def total_views(con, user_id: int) -> int:
+    """Visualizações somadas dos posts vinculados do usuário (a última leitura de cada um)."""
     return con.execute("SELECT COALESCE(SUM(v), 0) FROM (SELECT (SELECT views FROM post_stats s WHERE s.run_id = p.run_id"
-                       " AND s.network = p.network AND s.views IS NOT NULL ORDER BY fetched_at DESC LIMIT 1) AS v FROM posts p)"
-                       ).fetchone()[0]
+                       " AND s.network = p.network AND s.views IS NOT NULL ORDER BY fetched_at DESC LIMIT 1) AS v"
+                       " FROM posts p JOIN runs r ON r.id = p.run_id WHERE r.user_id = ?)", (user_id,)).fetchone()[0]
 
 
-def views_by_day(con) -> list[dict]:
+def views_by_day(con, user_id: int) -> list[dict]:
     """Visualizações por dia de leitura, somadas por rede: em cada dia, a última leitura de cada post até ele
     (um post entra no dia da primeira leitura; um post desvinculado sai com os números dele)."""
     reads = con.execute("SELECT s.run_id, s.network, s.fetched_at, s.views FROM post_stats s"
-                        " JOIN posts p ON p.run_id = s.run_id AND p.network = s.network"
-                        " WHERE s.views IS NOT NULL ORDER BY s.fetched_at").fetchall()
+                        " JOIN posts p ON p.run_id = s.run_id AND p.network = s.network JOIN runs r ON r.id = s.run_id"
+                        " WHERE s.views IS NOT NULL AND r.user_id = ? ORDER BY s.fetched_at", (user_id,)).fetchall()
     latest: dict[tuple[int, str], int] = {}
     out: list[dict] = []
     for i, r in enumerate(reads):

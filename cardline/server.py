@@ -7,6 +7,7 @@ banco e a página acompanha por polling. Se o servidor cair, os runs em andament
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -22,11 +23,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from http.cookies import SimpleCookie
+
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, instagram, jobs as job_log, logo, narration, pipeline, rarity, sealed, social, youtube
+from . import auth, db, instagram, jobs as job_log, logo, narration, pipeline, rarity, sealed, social, youtube
 from . import packs as packs_mod
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
@@ -91,7 +95,7 @@ class SyncJob:
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self) -> None:
+    def start(self, user_id: int | None = None) -> None:
         if self.running:
             raise RuntimeError("A sincronização já está rodando.")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,7 +105,7 @@ class SyncJob:
                 stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
         self.started_at, self.finished_at, self.code = db.now(), None, None
-        self.job = job_log.create(db.connect(self.settings.db_path), "sync")
+        self.job = job_log.create(db.connect(self.settings.db_path), "sync", user_id)
         threading.Thread(target=self._watch, args=(self.proc, self.job), daemon=True).start()
 
     def _watch(self, proc: subprocess.Popen, job: int) -> None:
@@ -129,8 +133,8 @@ class Task:
     """Tarefa de fundo (preços, números das redes): roda numa thread, uma de cada vez por tipo. O Resumo acompanha
     pelo /api/tasks, e a execução disparada pelo botão vira uma linha na aba Pipelines (tabela jobs)."""
 
-    def __init__(self, settings: Settings, kind: str):
-        self.settings, self.kind = settings, kind
+    def __init__(self, settings: Settings, kind: str, user_id: int | None = None):
+        self.settings, self.kind, self.user_id = settings, kind, user_id
         self.lock = threading.Lock()
         self.state = {"running": False, "started_at": None, "finished_at": None, "ok": None, "message": None,
                       "progress": None, "job": None}
@@ -140,7 +144,7 @@ class Task:
         with self.lock:
             if self.state["running"]:
                 raise RuntimeError("Já está rodando; espere terminar.")
-            job = job_log.create(db.connect(self.settings.db_path), self.kind) if record else None
+            job = job_log.create(db.connect(self.settings.db_path), self.kind, self.user_id) if record else None
             self.state = {"running": True, "started_at": db.now(), "finished_at": None, "ok": None,
                           "message": "Começando", "progress": 0.0, "job": job}
         threading.Thread(target=self._run, args=(work, job), daemon=True).start()
@@ -175,6 +179,14 @@ class SealedPatch(BaseModel):
     qty: int | None = None
     paid: float | None = None  # por unidade; null apaga
     paid_currency: str | None = None
+
+
+class LoginBody(BaseModel):
+    id: str  # o pedido de entrada (o código mostrado na página)
+
+
+class ShareBody(BaseModel):
+    email: str  # quem pode ver
 
 
 class PackBody(BaseModel):
@@ -238,26 +250,32 @@ class TokenBody(BaseModel):
 
 
 class YouTubeLogin:
-    """Conexão do canal do YouTube: o fluxo de dispositivo espera o usuário digitar o código em google.com/device."""
+    """Conexão do canal do YouTube de cada usuário: o fluxo de dispositivo espera ele digitar o código em
+    google.com/device."""
 
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        self.login: dict | None = None  # código mostrado na página e situação da espera
+    def __init__(self):
+        self.logins: dict[int, dict] = {}  # usuário → código mostrado na página e situação da espera
 
-    def start(self) -> dict:
-        info = youtube.start_device_login(self.settings)
+    def of(self, user_id: int) -> dict | None:
+        return self.logins.get(user_id)
+
+    def forget(self, user_id: int) -> None:
+        self.logins.pop(user_id, None)
+
+    def start(self, account: Settings) -> dict:
+        info = youtube.start_device_login(account)
         state = {"user_code": info["user_code"], "verification_url": info.get("verification_url") or info.get("verification_uri"),
                  "expires_at": time.time() + float(info.get("expires_in", 1800)), "status": "waiting", "error": None}
-        self.login = state
-        threading.Thread(target=self._poll, args=(info["device_code"], float(info.get("interval", 5)), state),
+        self.logins[account.account] = state
+        threading.Thread(target=self._poll, args=(account, info["device_code"], float(info.get("interval", 5)), state),
                          daemon=True).start()
         return state
 
-    def _poll(self, device_code: str, interval: float, state: dict) -> None:
-        while self.login is state and time.time() < state["expires_at"]:
+    def _poll(self, account: Settings, device_code: str, interval: float, state: dict) -> None:
+        while self.logins.get(account.account) is state and time.time() < state["expires_at"]:
             time.sleep(interval)
             try:
-                result = youtube.poll_device_login(self.settings, device_code)
+                result = youtube.poll_device_login(account, device_code)
             except (youtube.YouTubeError, youtube.NotConnected, OSError) as e:
                 state.update(status="error", error=str(e))
                 return
@@ -268,6 +286,48 @@ class YouTubeLogin:
                 interval += 5
         if state["status"] == "waiting":
             state.update(status="error", error=f"O código expirou sem a autorização do Google. {youtube.ACCESS_HINT}")
+
+
+def session_cookie(header: str | None) -> str | None:
+    if not header:
+        return None
+    jar = SimpleCookie()
+    try:
+        jar.load(header)
+    except Exception:  # noqa: BLE001 - cookie malformado de outro site: sem sessão
+        return None
+    return jar[auth.COOKIE].value if auth.COOKIE in jar else None
+
+
+class AuthGate:
+    """Toda a API, menos /api/auth, exige uma sessão. O cabeçalho X-Cardline-Owner mostra os dados de quem
+    compartilhou com o usuário, e aí só leitura: qualquer ação é recusada."""
+
+    def __init__(self, app, settings: Settings):
+        self.app, self.settings = app, settings
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "")
+        if scope["type"] != "http" or not path.startswith("/api/") or path.startswith("/api/auth/"):
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        con = db.connect(self.settings.db_path)
+        user = auth.request_user(con, self.settings, session_cookie(headers.get("cookie")))
+        if user is None:
+            return await JSONResponse({"detail": "Entre com a sua conta do Google."}, 401)(scope, receive, send)
+        owner, view = user.id, headers.get("x-cardline-owner", "")
+        if view.isdigit() and int(view) != user.id:
+            if scope["method"] not in ("GET", "HEAD"):
+                return await JSONResponse({"detail": "Você está vendo a coleção de outra pessoa: só visualização."},
+                                          403)(scope, receive, send)
+            if not auth.can_view(con, user, int(view)):
+                return await JSONResponse({"detail": "Essa coleção não foi compartilhada com você."}, 403)(scope, receive, send)
+            owner = int(view)
+        token = auth.CURRENT.set(auth.Viewer(user, owner))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            auth.CURRENT.reset(token)
 
 
 class PostJobs:
@@ -333,15 +393,22 @@ def local_time(value: str | datetime) -> str:
 def create_app(settings: Settings) -> FastAPI:
     runner = Runner(settings)
     sync_job = SyncJob(settings)
-    yt = YouTubeLogin(settings)
+    yt = YouTubeLogin()
     jobs = PostJobs(settings)
-    tasks = {"prices": Task(settings, "precos"), "social": Task(settings, "redes")}  # o Resumo mostra quando rodam
+    task_list: dict[tuple[str, int], Task] = {}  # (preços | redes, usuário): o Resumo de cada um mostra quando rodam
+
+    def task(name: str, user_id: int) -> Task:
+        if (name, user_id) not in task_list:
+            task_list[(name, user_id)] = Task(settings, {"prices": "precos", "social": "redes"}[name], user_id)
+        return task_list[(name, user_id)]
+
     edit_lock = threading.Lock()  # edições do scan.json não podem se intercalar
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     ollama = {"checked": 0.0, "available": False}
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        auth.adopt(con(), settings)  # o que não tem dono (de antes das contas) fica com o administrador
         pipeline.recover_interrupted(settings)
         social.interrupted(con())
         job_log.interrupted(con())
@@ -352,9 +419,41 @@ def create_app(settings: Settings) -> FastAPI:
         stop.set()
 
     app = FastAPI(title="cardline", lifespan=lifespan)
+    app.add_middleware(AuthGate, settings=settings)
 
     def con():
         return db.connect(settings.db_path)
+
+    # --- quem está usando: o porteiro (AuthGate) diz quem é e de quem são os dados mostrados ---
+
+    def viewer() -> auth.Viewer:
+        v = auth.CURRENT.get()
+        if v is None:
+            raise HTTPException(401, "Entre com a sua conta do Google.")
+        return v
+
+    def me() -> int:
+        """Quem usa a página: é em nome dele que tudo é criado e alterado."""
+        return viewer().user.id
+
+    def owner() -> int:
+        """De quem são os dados mostrados: os dele, ou os de quem compartilhou (só leitura)."""
+        return viewer().owner
+
+    def acct(user_id: int | None = None) -> Settings:
+        """As configurações com as credenciais (YouTube, Instagram, logos) de um usuário (por padrão, de quem usa)."""
+        return dataclasses.replace(settings, account=me() if user_id is None else user_id)
+
+    def run_row(run_id: int, write: bool = False):
+        """A pipeline, se ela é do usuário (ou, só para ver, de quem compartilhou com ele)."""
+        run = con().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None or run["user_id"] != (me() if write else owner()):
+            raise HTTPException(404, "Pipeline não encontrada.")
+        return run
+
+    def require_admin() -> None:
+        if not auth.is_admin(con(), settings, viewer().user):
+            raise HTTPException(403, "Só o administrador mexe no catálogo de sets.")
 
     def icon_url(r) -> str | None:
         """A miniatura (leve) do ícone, ou o próprio ícone se ela ainda não existir."""
@@ -414,7 +513,7 @@ def create_app(settings: Settings) -> FastAPI:
         """Pipelines repetidas: as que têm as mesmas cartas (sem contar ordem, foil nem cartas repetidas dentro
         delas), cada uma → as outras do grupo."""
         groups: dict[frozenset, list[int]] = {}
-        for r in c.execute("SELECT id, dir FROM runs ORDER BY id"):
+        for r in c.execute("SELECT id, dir FROM runs WHERE user_id = ? ORDER BY id", (owner(),)):  # só as do mesmo dono
             if ids := distinct_cards(r):
                 groups.setdefault(ids, []).append(r["id"])
         return {rid: [o for o in g if o != rid] for g in groups.values() if len(g) > 1 for rid in g}
@@ -516,8 +615,8 @@ def create_app(settings: Settings) -> FastAPI:
             "rarities": [[k, label, color] for k, (label, color) in rarity.RARITIES.items()],
             "inks": [[k, label, color] for k, (label, color) in rarity.INKS.items()],
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
-            "youtube": youtube.status(settings), "instagram": instagram.status(settings),
-            "logo": {"default": logo.default(settings), "corner": settings.logo_corner},
+            "youtube": youtube.status(acct()), "instagram": instagram.status(acct()),
+            "logo": {"default": logo.default(acct()), "corner": settings.logo_corner},
             "narration": {"unavailable": narration.unavailable(), "voice": settings.narration_voice,
                           "voices": [{**v, "sample": f"/vozes/{v['file']}" if v.get("file") else None}
                                      for v in narration.voices(settings)],
@@ -530,9 +629,9 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/collection")
     def collection():
         c = con()
-        rows = c.execute("SELECT * FROM collection ORDER BY added_at, pack, slot").fetchall()
+        rows = c.execute("SELECT * FROM collection WHERE user_id = ? ORDER BY added_at, pack, slot", (owner(),)).fetchall()
         card_rows = {r["id"]: r for r in c.execute(
-            "SELECT * FROM cards WHERE id IN (SELECT card_id FROM collection)")}
+            "SELECT * FROM cards WHERE id IN (SELECT card_id FROM collection WHERE user_id = ?)", (owner(),))}
         owned: dict = {}
         for r in rows:
             key = (r["card_id"], bool(r["foil"]))
@@ -547,15 +646,12 @@ def create_app(settings: Settings) -> FastAPI:
     def runs():
         c = con()
         dups = duplicates(c)
-        return [run_json(c, r, dups=dups) for r in c.execute("SELECT * FROM runs ORDER BY created_at DESC, id DESC")]
+        return [run_json(c, r, dups=dups) for r in c.execute(
+            "SELECT * FROM runs WHERE user_id = ? ORDER BY created_at DESC, id DESC", (owner(),))]
 
     @app.get("/api/runs/{run_id}")
     def run_detail(run_id: int):
-        c = con()
-        run = c.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-        if run is None:
-            raise HTTPException(404, "Pipeline não encontrada.")
-        return run_json(c, run, detail=True)
+        return run_json(con(), run_row(run_id), detail=True)
 
     @app.post("/api/runs", status_code=201)
     async def upload(
@@ -566,8 +662,10 @@ def create_app(settings: Settings) -> FastAPI:
     ):
         if kind not in pipeline.KINDS:
             raise HTTPException(400, "Tipo de pipeline deve ser abertura ou cadastro.")
-        if logo_name and not logo.path(settings, logo_name):
+        if logo_name and not logo.path(acct(), logo_name):
             raise HTTPException(400, "Logo não encontrado; envie a imagem de novo.")
+        if sealed_id and sealed.owner(con(), sealed_id) != me():
+            raise HTTPException(404, "Esse booster não está nos seus lacrados.")
         if paid_currency.upper() not in CURRENCIES or (currency and currency.upper() not in CURRENCIES):
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
         incoming = settings.runs_dir / "_incoming"
@@ -592,7 +690,7 @@ def create_app(settings: Settings) -> FastAPI:
                     settings, tmp, video_name=Path(filename).name, sha1=sha1.hexdigest(), paid=paid,
                     paid_currency=paid_currency, set_hint=set_hint, overlay=overlay, verify=verify,
                     currency=currency, move=True, kind=kind, narration=narration, logo=logo_name or None,
-                    sealed=(sealed_id, max(1, sealed_qty)) if sealed_id else None,
+                    sealed=(sealed_id, max(1, sealed_qty)) if sealed_id else None, user_id=me(),
                 )
             except pipeline.DuplicateVideo as e:
                 raise HTTPException(409, {"message": str(e), "run_id": e.run_id}) from e
@@ -610,13 +708,14 @@ def create_app(settings: Settings) -> FastAPI:
         if len(data) > 8 * 1024 * 1024:
             raise HTTPException(413, "Imagem grande demais (máximo 8 MB).")
         try:
-            name = logo.save(settings, data)
+            name = logo.save(acct(), data)  # na pasta de logos de quem enviou
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return {"logo": name, "url": f"/logos/{name}"}
 
     @app.post("/api/runs/{run_id}/rerun")
     def rerun(run_id: int, body: RerunBody):
+        run_row(run_id, write=True)
         try:
             pipeline.enqueue(settings, run_id, body.from_step)
         except LookupError as e:
@@ -627,9 +726,7 @@ def create_app(settings: Settings) -> FastAPI:
         return {"ok": True}
 
     def editable_run(run_id: int):
-        run = con().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-        if run is None:
-            raise HTTPException(404, "Pipeline não encontrada.")
+        run = run_row(run_id, write=True)
         if run["status"] in ("queued", "running"):
             raise HTTPException(409, "A pipeline está rodando; espere terminar para editar.")
         return settings.root / run["dir"]
@@ -750,8 +847,7 @@ def create_app(settings: Settings) -> FastAPI:
     def update_run(run_id: int, body: RunPatch):
         if any(c is not None and c.upper() not in CURRENCIES for c in (body.paid_currency, body.currency)):
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
-        if con().execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
-            raise HTTPException(404, "Pipeline não encontrada.")
+        run_row(run_id, write=True)
         sent = body.model_fields_set
         try:
             if "paid" in sent:
@@ -761,7 +857,7 @@ def create_app(settings: Settings) -> FastAPI:
             if "narration" in sent and body.narration is not None:
                 pipeline.update_narration(settings, run_id, body.narration)
             if "logo" in sent:
-                if body.logo and not logo.path(settings, body.logo):
+                if body.logo and not logo.path(acct(), body.logo):
                     raise HTTPException(400, "Logo não encontrado; envie a imagem de novo.")
                 pipeline.update_logo(settings, run_id, body.logo or None)
         except ValueError as e:  # cadastro não tem valor pago nem vídeo
@@ -803,76 +899,79 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/youtube")
     def youtube_status():
-        login = yt.login
-        return {**youtube.status(settings),
+        login = yt.of(me())
+        return {**youtube.status(acct()),
                 "login": {k: login[k] for k in ("user_code", "verification_url", "expires_at", "status", "error")}
                 if login else None}
 
     @app.post("/api/youtube/client")
     def youtube_client(body: ClientBody):
+        """O cliente OAuth é do app (serve para entrar e para o YouTube de todos): só o administrador troca."""
+        require_admin()
         try:
             youtube.save_client(settings, body.client_id, body.client_secret)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        return youtube.status(settings)
+        return youtube.status(acct())
 
     @app.post("/api/youtube/connect")
     def youtube_connect():
         """Pede um código ao Google; a página mostra o código e espera o usuário autorizar."""
-        state = net_call(yt.start)
+        state = net_call(yt.start, acct())
         return {k: state[k] for k in ("user_code", "verification_url", "expires_at", "status")}
 
     @app.post("/api/youtube/disconnect")
     def youtube_disconnect():
-        yt.login = None
-        youtube.disconnect(settings)
-        return youtube.status(settings)
+        yt.forget(me())
+        youtube.disconnect(acct())
+        return youtube.status(acct())
 
     @app.get("/api/youtube/recent")
     def youtube_recent():
         """Os últimos vídeos do canal, para vincular o que foi postado pelo app."""
-        return net_call(youtube.recent_uploads, settings)
+        return net_call(youtube.recent_uploads, acct())
 
     @app.get("/api/instagram")
     def instagram_status():
-        return instagram.status(settings)
+        return instagram.status(acct())
 
     @app.post("/api/instagram/token")
     def instagram_token(body: TokenBody):
         """Token gerado no painel da Meta (conta profissional testadora do app)."""
         try:
-            return net_call(instagram.save_token, settings, body.token)
+            return net_call(instagram.save_token, acct(), body.token)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
     @app.post("/api/instagram/disconnect")
     def instagram_disconnect():
-        instagram.disconnect(settings)
-        return instagram.status(settings)
+        instagram.disconnect(acct())
+        return instagram.status(acct())
 
-    def refresh_numbers(c, only_run: int | None = None, progress=lambda fraction, message=None: None) -> int:
-        """Lê os números de cada post pela API da rede (YouTube e Instagram conectados); devolve quantos leu."""
-        n = 0
-        if youtube.status(settings)["connected"]:
+    def refresh_numbers(c, user_id: int, only_run: int | None = None, progress=lambda fraction, message=None: None) -> int:
+        """Lê os números dos posts do usuário pela API da rede (o YouTube e o Instagram que ele conectou); devolve
+        quantos leu. Recebe o usuário porque também roda em segundo plano (depois de postar, na agenda)."""
+        n, us = 0, acct(user_id)
+        if youtube.status(us)["connected"]:
             progress(0.1, "Lendo o YouTube")
-            posts = [(r, v) for r, v in social.linked(c, "youtube") if only_run in (None, r)]
+            posts = [(r, v) for r, v in social.linked(c, "youtube", user_id) if only_run in (None, r)]
             if posts:
-                found = net_call(youtube.stats, settings, [v for _, v in posts])
+                found = net_call(youtube.stats, us, [v for _, v in posts])
                 for run_id, vid in posts:
                     if info := found.get(vid):
                         social.save_stats(c, run_id, "youtube", info)
                         social.update_post(c, run_id, "youtube", title=info["title"], privacy=info["privacy"],
                                            published_at=info["published_at"], scheduled_at=info["scheduled_at"])
                         n += 1
-        if instagram.status(settings)["connected"]:
-            posts = [(r, m) for r, m in social.linked(c, "instagram") if only_run in (None, r)]
+        if instagram.status(us)["connected"]:
+            posts = [(r, m) for r, m in social.linked(c, "instagram", user_id) if only_run in (None, r)]
             if posts:
                 progress(0.5, "Lendo o Instagram")
                 try:
-                    instagram.refresh(settings)  # renova o token de 60 dias com folga
+                    instagram.refresh(us)  # renova o token de 60 dias com folga
                 except (instagram.InstagramError, OSError):
                     pass
-                found = net_call(instagram.stats, settings, [m for _, m in posts])
+                found = net_call(instagram.stats, us, [m for _, m in posts])
                 for run_id, media in posts:
                     if info := found.get(media):
                         social.save_stats(c, run_id, "instagram", info)
@@ -880,30 +979,33 @@ def create_app(settings: Settings) -> FastAPI:
                         n += 1
         return n
 
-    def last_reads(c, only_run: int | None = None) -> list[str | None]:
-        """A última leitura pela API de cada post que dá para ler (rede conectada e ID na rede); None = nunca lido."""
-        nets = [n for n, mod in (("youtube", youtube), ("instagram", instagram)) if mod.status(settings)["connected"]]
+    def last_reads(c, user_id: int, only_run: int | None = None) -> list[str | None]:
+        """A última leitura pela API de cada post do usuário que dá para ler (rede conectada e ID na rede);
+        None = nunca lido."""
+        us = acct(user_id)
+        nets = [n for n, mod in (("youtube", youtube), ("instagram", instagram)) if mod.status(us)["connected"]]
         if not nets:
             return []
         return [r[0] for r in c.execute(
             "SELECT (SELECT MAX(fetched_at) FROM post_stats s WHERE s.run_id = p.run_id AND s.network = p.network"
-            f" AND s.manual = 0) FROM posts p WHERE p.post_id IS NOT NULL AND p.network IN ({','.join('?' * len(nets))})"
-            " AND (? IS NULL OR p.run_id = ?)", (*nets, only_run, only_run))]
+            " AND s.manual = 0) FROM posts p JOIN runs r ON r.id = p.run_id WHERE p.post_id IS NOT NULL"
+            f" AND p.network IN ({','.join('?' * len(nets))}) AND r.user_id = ? AND (? IS NULL OR p.run_id = ?)",
+            (*nets, user_id, only_run, only_run))]
 
     @app.post("/api/social/stats")
     def social_stats(max_age: float = 0, run: int | None = None):
         """Atualiza os números dos posts pela API. Com `max_age`, só se algum post estiver com a leitura mais velha
         que isso (ou sem leitura): ler um post não deixa os outros parecendo atualizados."""
         c = con()
-        reads = last_reads(c, run)
+        if run is not None:
+            run_row(run, write=True)
+        reads = last_reads(c, me(), run)
         if max_age and reads and all(r and time.time() - datetime.fromisoformat(r).timestamp() < max_age for r in reads):
             return {"updated": 0, "fresh": True}
-        return {"updated": refresh_numbers(c, run)}
+        return {"updated": refresh_numbers(c, me(), run)}
 
     def opening(run_id: int):
-        run = con().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-        if run is None:
-            raise HTTPException(404, "Pipeline não encontrada.")
+        run = run_row(run_id, write=True)
         if run["kind"] not in pipeline.VIDEO_KINDS:
             raise HTTPException(400, "Só aberturas de booster e registros de lacrados têm vídeo para postar.")
         return run
@@ -931,15 +1033,16 @@ def create_app(settings: Settings) -> FastAPI:
 
     def start_instagram(run, variant: str, caption: str, base: str, scheduled: bool = False) -> None:
         """Publica o Reel em segundo plano; o Instagram baixa o vídeo pelo endereço público `base`."""
-        run_id = run["id"]
+        run_id, us = run["id"], acct(run["user_id"])  # a conta do Instagram do dono da pipeline
         video, variant = video_of(run, variant)
-        video_url = f"{base}/runs/{video.parent.name}/{video.name}?v={int(video.stat().st_mtime)}"
+        rel = f"{video.parent.name}/{video.name}"  # o Instagram baixa sem sessão: o link vai assinado
+        video_url = f"{base}/runs/{rel}?v={int(video.stat().st_mtime)}&k={auth.sign(settings, rel)}"
         caption = f"{caption}\n\n{social.HASHTAGS['instagram']}".strip()
 
         def work(progress):
             c = db.connect(settings.db_path)
             try:
-                media = instagram.publish_reel(settings, video_url, caption, progress)
+                media = instagram.publish_reel(us, video_url, caption, progress)
             except Exception as e:
                 if scheduled:
                     social.set_schedule(c, run_id, "instagram", "failed", str(e))
@@ -949,7 +1052,7 @@ def create_app(settings: Settings) -> FastAPI:
                              privacy="public", published_at=media.get("timestamp"))
             social.unschedule(c, run_id, "instagram")
             try:
-                refresh_numbers(c, run_id)
+                refresh_numbers(c, run["user_id"], run_id)
             except HTTPException:
                 pass
 
@@ -978,7 +1081,8 @@ def create_app(settings: Settings) -> FastAPI:
                 raise HTTPException(400, "Visibilidade deve ser public, unlisted ou private.")
             if not body.title.strip():
                 raise HTTPException(400, "O vídeo precisa de um título.")
-            if not youtube.status(settings)["connected"]:
+            us = acct()
+            if not youtube.status(us)["connected"]:
                 raise HTTPException(409, "Conecte o canal do YouTube.")
             caption = f"{body.caption}\n\n{social.HASHTAGS['youtube']}".strip()
             tags = body.tags
@@ -989,7 +1093,7 @@ def create_app(settings: Settings) -> FastAPI:
                 tags = social.suggestion(scan, names, settings.youtube_tags)["tags"]
 
             def work(progress):
-                created = youtube.upload(settings, video, body.title, caption, tags, body.privacy,
+                created = youtube.upload(us, video, body.title, caption, tags, body.privacy,
                                          progress=lambda f: progress(f, "Enviando o vídeo"), publish_at=when)
                 c = db.connect(settings.db_path)
                 status = created.get("status", {})
@@ -998,7 +1102,7 @@ def create_app(settings: Settings) -> FastAPI:
                                  published_at=created.get("snippet", {}).get("publishedAt"),
                                  scheduled_at=status.get("publishAt"))
                 try:  # a visibilidade de verdade (projeto sem auditoria: travado como privado)
-                    refresh_numbers(c, run_id)
+                    refresh_numbers(c, run["user_id"], run_id)
                 except HTTPException:
                     pass
 
@@ -1007,7 +1111,7 @@ def create_app(settings: Settings) -> FastAPI:
             except RuntimeError as e:
                 raise HTTPException(409, str(e)) from e
             return {"ok": True}
-        if not instagram.status(settings)["connected"]:
+        if not instagram.status(acct())["connected"]:
             raise HTTPException(409, "Conecte o Instagram (cole o token gerado no painel da Meta).")
         base = public_base(settings, request)
         if when:  # na hora, o endereço vem do public_url ou do ngrok; o de agora fica de reserva
@@ -1042,16 +1146,17 @@ def create_app(settings: Settings) -> FastAPI:
                                     f"O cardline estava desligado na hora marcada ({local_time(at)}).")
                 continue
             req = json.loads(s["request"])
+            run = c.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()  # a agenda roda sem usuário logado
             base = public_base(settings, port=req.get("port"), fallback=req.get("base"))
             problem = ("O Instagram está desconectado: conecte de novo para publicar."
-                       if not instagram.status(settings)["connected"] else
+                       if not instagram.status(acct(run["user_id"]))["connected"] else
                        None if base else "Sem endereço público: o túnel (ngrok) está fechado.")
             if problem:
                 social.set_schedule(c, run_id, network, "waiting", problem)
                 continue
             social.set_schedule(c, run_id, network, "sending")
             try:
-                start_instagram(opening(run_id), req["variant"], req["caption"], base, scheduled=True)
+                start_instagram(run, req["variant"], req["caption"], base, scheduled=True)
             except RuntimeError:  # outro vídeo sendo publicado: tenta no próximo ciclo
                 social.set_schedule(c, run_id, network, "waiting", s["error"])
                 return
@@ -1073,6 +1178,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.delete("/api/runs/{run_id}/scheduled/{network}")
     def cancel_scheduled(run_id: int, network: str):
         """Cancela a publicação que o cardline faria na hora marcada (ou descarta a que falhou)."""
+        run_row(run_id, write=True)
         c = con()
         if (social.scheduled(c, run_id).get(network) or {}).get("status") == "sending":
             raise HTTPException(409, "A publicação já começou; espere terminar.")
@@ -1087,21 +1193,21 @@ def create_app(settings: Settings) -> FastAPI:
         if not found:
             raise HTTPException(400, "Não reconheci o link: use o link do vídeo no YouTube, do Reel ou do TikTok.")
         network, post_id, url = found
-        c = con()
-        if network == "youtube" and youtube.status(settings)["connected"]:
-            info = net_call(youtube.stats, settings, [post_id]).get(post_id)
+        c, us = con(), acct()
+        if network == "youtube" and youtube.status(us)["connected"]:
+            info = net_call(youtube.stats, us, [post_id]).get(post_id)
             if info is None:
                 raise HTTPException(404, "O YouTube não encontrou esse vídeo (ou ele é privado de outra conta).")
             social.save_post(c, run_id, network, post_id, url, via="link", title=info["title"], privacy=info["privacy"],
                              published_at=info["published_at"], scheduled_at=info["scheduled_at"])
             social.save_stats(c, run_id, network, info)
-        elif network == "instagram" and instagram.status(settings)["connected"]:
-            media = net_call(instagram.find_media, settings, post_id)  # o link traz o código; a API usa o ID da mídia
+        elif network == "instagram" and instagram.status(us)["connected"]:
+            media = net_call(instagram.find_media, us, post_id)  # o link traz o código; a API usa o ID da mídia
             social.save_post(c, run_id, network, media["id"] if media else None, url, via="link",
                              title=((media or {}).get("caption") or "")[:120] or None,
                              published_at=(media or {}).get("timestamp"))
             if media:
-                refresh_numbers(c, run_id)
+                refresh_numbers(c, me(), run_id)
         else:
             social.save_post(c, run_id, network, None if network == "instagram" else post_id, url, via="link")
         if (social.scheduled(c, run_id).get(network) or {}).get("status") != "sending":
@@ -1111,6 +1217,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.patch("/api/runs/{run_id}/posts/{network}")
     def post_numbers(run_id: int, network: str, body: StatsBody):
         """Números informados à mão (o TikTok não dá os números sem a aprovação do app)."""
+        run_row(run_id, write=True)
         c = con()
         if network not in social.posts(c, run_id):
             raise HTTPException(404, "Vincule o post antes de informar os números.")
@@ -1123,21 +1230,23 @@ def create_app(settings: Settings) -> FastAPI:
     @app.delete("/api/runs/{run_id}/posts/{network}")
     def unlink_post(run_id: int, network: str):
         """Desvincula o post desta abertura (ele continua na rede)."""
+        run_row(run_id, write=True)
         c = con()
         with c:
             c.execute("DELETE FROM posts WHERE run_id = ? AND network = ?", (run_id, network))
         jobs.jobs.pop((run_id, network), None)
         return {"ok": True}
 
-    def collection_sets() -> list[str]:
+    def collection_sets(user_id: int) -> list[str]:
         return [r[0] for r in con().execute(
-            "SELECT DISTINCT cards.set_code FROM collection JOIN cards ON cards.id = collection.card_id ORDER BY 1")]
+            "SELECT DISTINCT cards.set_code FROM collection JOIN cards ON cards.id = collection.card_id"
+            " WHERE collection.user_id = ? ORDER BY 1", (user_id,))]
 
     @app.post("/api/prices/refresh")
     def refresh_current_prices():
         """Busca os preços de hoje dos sets da coleção; o preço na abertura de cada carta não muda."""
         try:
-            return refresh_prices(settings, collection_sets())
+            return refresh_prices(settings, collection_sets(me()))
         except OSError as e:
             raise HTTPException(502, f"Não consegui buscar os preços no Lorcast ({e}).") from e
 
@@ -1148,7 +1257,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/sealed")
     def sealed_list():
         """Os lacrados da coleção, com o valor de hoje (preço de mercado × quantidade) e o pago."""
-        out = [sealed_json(r) for r in sealed.items(con())]
+        out = [sealed_json(r) for r in sealed.items(con(), owner())]
         paid = [x for x in out if x["paid_total_usd"] is not None]
         return {"items": out, "qty": sum(x["qty"] for x in out),
                 "value_usd": sum(x["value_usd"] or 0 for x in out),
@@ -1158,7 +1267,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/sealed/boosters")
     def sealed_boosters():
         """Os boosters fechados da coleção, para escolher numa abertura."""
-        return [sealed_json(r) for r in sealed.boosters(con())]
+        return [sealed_json(r) for r in sealed.boosters(con(), me())]
 
     @app.get("/api/sealed/products")
     def sealed_products(set_code: str = Query(..., alias="set")):
@@ -1177,7 +1286,8 @@ def create_app(settings: Settings) -> FastAPI:
         if body.paid_currency.upper() not in CURRENCIES:
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
         try:
-            return {"id": sealed.add(settings, con(), body.set_code, body.product_id, body.qty, body.paid, body.paid_currency)}
+            return {"id": sealed.add(settings, con(), body.set_code, body.product_id, body.qty, body.paid, body.paid_currency,
+                                     me())}
         except LookupError as e:
             raise HTTPException(404, str(e)) from e
         except (OSError, ValueError, KeyError) as e:
@@ -1189,6 +1299,8 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(400, "Quantidade (1 ou mais) e valor pago (não negativo) inválidos.")
         if body.paid_currency and body.paid_currency.upper() not in CURRENCIES:
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
+        if sealed.owner(con(), item_id) != me():
+            raise HTTPException(404, "Lacrado não encontrado.")
         try:
             sealed.update(settings, con(), item_id, body.qty, body.paid, body.paid_currency, "paid" in body.model_fields_set)
         except LookupError as e:
@@ -1197,6 +1309,8 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.delete("/api/sealed/{item_id}")
     def sealed_remove(item_id: int):
+        if sealed.owner(con(), item_id) != me():
+            raise HTTPException(404, "Lacrado não encontrado.")
         try:
             sealed.remove(con(), item_id)
         except LookupError as e:
@@ -1207,14 +1321,15 @@ def create_app(settings: Settings) -> FastAPI:
     def history():
         """As séries por dia do Resumo: o valor da coleção e as visualizações nas redes (por dia de leitura)."""
         c = con()
-        return {"value": [dict(r) for r in c.execute("SELECT day, cards_usd, sealed_usd, cards FROM value_history ORDER BY day")],
-                "views": social.views_by_day(c)}
+        return {"value": [dict(r) for r in c.execute("SELECT day, cards_usd, sealed_usd, cards FROM user_values"
+                                                     " WHERE user_id = ? ORDER BY day", (owner(),))],
+                "views": social.views_by_day(c, owner())}
 
     def live_job(j: dict) -> dict:
         """A linha da atualização com o andamento de agora, se ela ainda estiver rodando."""
         if j["status"] != "running":
             return j
-        for t in tasks.values():
+        for t in task_list.values():
             if t.state.get("job") == j["id"] and t.state["running"]:
                 return {**j, "progress": t.state["progress"], "message": t.state["message"]}
         if j["kind"] == "sync" and sync_job.job == j["id"]:
@@ -1226,11 +1341,11 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/jobs")
     def jobs_list():
         """As atualizações disparadas na página (preços, números das redes, sincronização), da mais nova."""
-        return [live_job(j) for j in job_log.recent(con())]
+        return [live_job(j) for j in job_log.recent(con(), owner())]
 
     @app.get("/api/jobs/{job_id}")
     def job_detail(job_id: int):
-        j = job_log.get(con(), job_id)
+        j = job_log.get(con(), job_id, owner())
         if j is None:
             raise HTTPException(404, "Atualização não encontrada.")
         return live_job(j)
@@ -1238,32 +1353,34 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/tasks")
     def task_status():
         """As tarefas de fundo do Resumo: preços e números das redes."""
-        return {name: dict(t.state) for name, t in tasks.items()}
+        return {name: dict(task(name, me()).state) for name in ("prices", "social")}
 
     @app.post("/api/tasks/prices")
     def start_prices():
         """Atualiza os preços de hoje em segundo plano (uma consulta ao Lorcast por set da coleção)."""
+        uid = me()  # a tarefa roda numa thread, sem o usuário da requisição
+
         def work(progress):
             c = db.connect(settings.db_path)
-            before = db.collection_value(c)
+            before = db.collection_value(c, uid)
             names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
             try:
-                done = refresh_prices(settings, collection_sets(), lambda f, m=None: progress(0.8 * f, m))["sets"]
+                done = refresh_prices(settings, collection_sets(uid), lambda f, m=None: progress(0.8 * f, m))["sets"]
             except OSError as e:
                 raise RuntimeError(f"Não consegui buscar os preços no Lorcast ({e}).") from e
             note, n = "", 0
             try:  # os lacrados: preço do TCGplayer via tcgcsv
-                n = sealed.refresh_prices(settings, c, lambda f, m=None: progress(0.8 + 0.2 * f, m))
+                n = sealed.refresh_prices(settings, c, lambda f, m=None: progress(0.8 + 0.2 * f, m), uid)
             except (OSError, ValueError, KeyError, LookupError) as e:
                 note = f"; os dos lacrados não vieram ({e})"
-            after = db.collection_value(c)
+            after = db.collection_value(c, uid)
             result = {"sets": [names.get(x, x) for x in done], "sealed": n, "cards_before": before[0],
                       "cards_after": after[0], "sealed_before": before[1], "sealed_after": after[1]}
             return (f"Preços de hoje atualizados ({len(done)} {'set' if len(done) == 1 else 'sets'}"
                     + (f" e {n} {'lacrado' if n == 1 else 'lacrados'}" if n else "") + f"){note}.", result)
 
         try:
-            return tasks["prices"].start(work)
+            return task("prices", uid).start(work)
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
 
@@ -1271,26 +1388,28 @@ def create_app(settings: Settings) -> FastAPI:
     def start_social(max_age: float = 0):
         """Lê os números de todos os vídeos vinculados em segundo plano. Com `max_age`, só se algum vídeo estiver
         com a leitura mais velha que isso (ou sem leitura)."""
-        reads = last_reads(con())
+        uid = me()
+        reads = last_reads(con(), uid)
         if not reads:
-            return {**tasks["social"].state, "skipped": True}
+            return {**task("social", uid).state, "skipped": True}
         if max_age and all(r and time.time() - datetime.fromisoformat(r).timestamp() < max_age for r in reads):
-            return {**tasks["social"].state, "fresh": True}
+            return {**task("social", uid).state, "fresh": True}
 
         def work(progress):
             c = con()
-            before = social.total_views(c)
-            n = refresh_numbers(c, None, progress)
+            before = social.total_views(c, uid)
+            n = refresh_numbers(c, uid, None, progress)
             return (f"{n} {'vídeo atualizado' if n == 1 else 'vídeos atualizados'}.",
-                    {"videos": n, "views_before": before, "views_after": social.total_views(c)})
+                    {"videos": n, "views_before": before, "views_after": social.total_views(c, uid)})
 
         try:  # a leitura automática (ao abrir o Resumo) não vira linha na aba Pipelines; a do botão vira
-            return tasks["social"].start(work, record=not max_age)
+            return task("social", uid).start(work, record=not max_age)
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
 
     @app.delete("/api/runs/{run_id}")
     def delete(run_id: int):
+        run_row(run_id, write=True)
         try:
             pipeline.delete_run(settings, run_id)
         except LookupError as e:
@@ -1306,7 +1425,8 @@ def create_app(settings: Settings) -> FastAPI:
         catalog = {r["set_code"]: r["n"] for r in c.execute("SELECT set_code, COUNT(*) AS n FROM cards GROUP BY set_code")}
         owned = {r["set_code"]: (r["copies"], r["unique_cards"]) for r in c.execute(
             "SELECT cards.set_code, COUNT(*) AS copies, COUNT(DISTINCT collection.card_id) AS unique_cards"
-            " FROM collection JOIN cards ON cards.id = collection.card_id GROUP BY cards.set_code")}
+            " FROM collection JOIN cards ON cards.id = collection.card_id WHERE collection.user_id = ?"
+            " GROUP BY cards.set_code", (owner(),))}
         indexed = set(indexed_sets(settings))
         out = []
         for r in c.execute("SELECT * FROM sets ORDER BY released_at DESC, code"):
@@ -1324,14 +1444,16 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/sets/sync")
     def sync_start():
+        require_admin()  # o catálogo (sets, cartas, preços) é de todos
         try:
-            sync_job.start()
+            sync_job.start(me())
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
         return sync_job.status()
 
     @app.post("/api/sets/{code}/icon")
     async def set_icon(code: str, request: Request):
+        require_admin()
         data = await request.body()
         if len(data) > 8 * 1024 * 1024:
             raise HTTPException(413, "Imagem grande demais (máximo 8 MB).")
@@ -1345,22 +1467,151 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.delete("/api/sets/{code}/icon")
     def unset_icon(code: str):
+        require_admin()
         try:
             reset_icon(settings, code)
         except (OSError, ValueError, KeyError) as e:
             raise HTTPException(502, f"Ícone removido, mas não consegui buscar o automático ({e}).") from e
         return {"ok": True}
 
+    # --- contas: entrar com o Google, sair, compartilhar -----------------------------------------
+
+    logins: dict[str, dict] = {}  # entradas esperando o código ser digitado em google.com/device
+
+    def user_json(u: auth.User) -> dict:
+        return {"id": u.id, "email": u.email, "name": u.name, "picture": u.picture}
+
+    def https(request: Request) -> bool:
+        return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+
+    @app.get("/api/auth/me")
+    def auth_me(request: Request):
+        """Quem está logado (ou ninguém: a página mostra a entrada), com quem ele compartilhou e quem compartilhou
+        com ele."""
+        c = con()
+        user = auth.request_user(c, settings, session_cookie(request.headers.get("cookie")))
+        if user is None:
+            return {"user": None, "google": youtube.client(settings) is not None}
+        return {"user": user_json(user), "admin": auth.is_admin(c, settings, user), "my_shares": auth.shares(c, user.id),
+                "shared_with_me": [user_json(u) for u in auth.shared_with(c, user)]}
+
+    @app.post("/api/auth/start")
+    def auth_start():
+        """Pede o código ao Google: a página mostra o código para digitar em google.com/device."""
+        try:
+            info = auth.start_login(settings)
+        except LookupError as e:
+            raise HTTPException(409, str(e)) from e
+        except (RuntimeError, OSError) as e:
+            raise HTTPException(502, str(e)) from e
+        now = time.time()
+        for key in [k for k, v in logins.items() if v["expires_at"] < now]:
+            logins.pop(key)
+        if len(logins) >= 50:  # a entrada é aberta: um teto para ninguém encher a memória (e o Google) de pedidos
+            raise HTTPException(429, "Muitas entradas esperando o código. Tente de novo em alguns minutos.")
+        login_id = uuid.uuid4().hex
+        logins[login_id] = {"device_code": info["device_code"], "interval": float(info.get("interval", 5)), "next": 0.0,
+                            "expires_at": now + float(info.get("expires_in", 1800))}
+        return {"id": login_id, "user_code": info["user_code"],
+                "verification_url": info.get("verification_url") or info.get("verification_uri"),
+                "expires_at": logins[login_id]["expires_at"], "interval": logins[login_id]["interval"]}
+
+    @app.post("/api/auth/poll")
+    def auth_poll(body: LoginBody, request: Request):
+        """A página pergunta se o código já foi digitado; quando foi, abre a sessão (cookie de 30 dias)."""
+        pending = logins.get(body.id)
+        if pending is None or pending["expires_at"] < time.time():
+            logins.pop(body.id, None)
+            raise HTTPException(410, "O código expirou. Peça outro.")
+        if time.time() < pending["next"]:  # o Google pede um intervalo entre as consultas
+            return {"status": "pending"}
+        pending["next"] = time.time() + pending["interval"]
+        try:
+            info = auth.poll_login(settings, pending["device_code"])
+        except PermissionError as e:
+            logins.pop(body.id, None)
+            raise HTTPException(403, str(e)) from e
+        except TimeoutError as e:
+            logins.pop(body.id, None)
+            raise HTTPException(410, str(e)) from e
+        except (RuntimeError, OSError) as e:
+            raise HTTPException(502, str(e)) from e
+        if info is None:
+            return {"status": "pending"}
+        logins.pop(body.id, None)
+        c = con()
+        if not auth.allowed(c, settings, info["email"]):
+            raise HTTPException(403, f"A conta {info['email']} não tem acesso a este cardline. Peça para quem cuida dele "
+                                     "compartilhar a coleção com você.")
+        user = auth.upsert_user(c, info["email"], info["name"], info["picture"])
+        auth.adopt(c, settings)  # sem administrador definido, o primeiro a entrar fica com os dados de antes
+        resp = JSONResponse({"status": "done", "user": user_json(user)})
+        resp.set_cookie(auth.COOKIE, auth.new_session(c, user.id), max_age=auth.SESSION_DAYS * 86400, path="/",
+                        httponly=True, samesite="lax", secure=https(request))
+        return resp
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request):
+        auth.end_session(con(), session_cookie(request.headers.get("cookie")))
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(auth.COOKIE, path="/")
+        return resp
+
+    @app.get("/api/shares")
+    def shares_list():
+        c, user = con(), viewer().user
+        return {"mine": auth.shares(c, user.id), "with_me": [user_json(u) for u in auth.shared_with(c, user)]}
+
+    @app.post("/api/shares")
+    def share_add(body: ShareBody):
+        """Deixa outro e-mail ver os seus dados (só ver: pipelines, coleção, lacrados e Resumo)."""
+        email = body.email.strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise HTTPException(400, "Informe um e-mail válido.")
+        if email == viewer().user.email:
+            raise HTTPException(400, "Esse é o seu próprio e-mail.")
+        auth.share(con(), me(), email)
+        return {"mine": auth.shares(con(), me())}
+
+    @app.delete("/api/shares/{email}")
+    def share_remove(email: str):
+        auth.unshare(con(), me(), email)
+        return {"mine": auth.shares(con(), me())}
+
     # --- arquivos ------------------------------------------------------------------------------
 
-    app.mount("/runs", StaticFiles(directory=settings.runs_dir), name="runs")
+    def file_user(request: Request) -> auth.User | None:
+        """Arquivos (vídeos, recortes, logos) ficam fora da API: a sessão é conferida aqui."""
+        return auth.request_user(con(), settings, session_cookie(request.headers.get("cookie")))
+
+    @app.get("/runs/{run_id}/{path:path}")
+    def run_file(run_id: int, path: str, request: Request, k: str | None = None):
+        """Arquivo de uma pipeline: para o dono e para quem ele compartilhou; o Instagram usa o link assinado."""
+        row = con().execute("SELECT dir, user_id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Arquivo não encontrado.")
+        if not auth.signed(settings, f"{run_id}/{path}", k):
+            user = file_user(request)
+            if user is None or not auth.can_view(con(), user, row["user_id"]):
+                raise HTTPException(404, "Arquivo não encontrado.")
+        folder = (settings.root / row["dir"]).resolve()
+        target = (folder / path).resolve()
+        if not target.is_relative_to(folder) or not target.is_file():
+            raise HTTPException(404, "Arquivo não encontrado.")
+        return FileResponse(target)
+
+    @app.get("/logos/{name}")
+    def logo_file(name: str, request: Request):
+        user = file_user(request)
+        path = logo.path(dataclasses.replace(settings, account=user.id), name) if user else None
+        if path is None:
+            raise HTTPException(404, "Logo não encontrado.")
+        return FileResponse(path)
     app.mount("/img", StaticFiles(directory=settings.images_dir, check_dir=False), name="img")
     (settings.cache_dir / "sets").mkdir(parents=True, exist_ok=True)
     narration.samples_dir(settings).mkdir(parents=True, exist_ok=True)
     app.mount("/vozes", StaticFiles(directory=narration.samples_dir(settings)), name="vozes")
     app.mount("/set-icons", StaticFiles(directory=settings.cache_dir / "sets"), name="set-icons")
-    logo.folder(settings).mkdir(parents=True, exist_ok=True)
-    app.mount("/logos", StaticFiles(directory=logo.folder(settings)), name="logos")
     app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
     return app
 

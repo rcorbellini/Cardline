@@ -104,6 +104,20 @@ def cmd_add(s: Settings, a: argparse.Namespace) -> None:
     add(s, a.card, a.foil, a.qty)
 
 
+def cmd_google(s: Settings, a: argparse.Namespace) -> None:
+    """Salva o cliente OAuth do Google: o mesmo serve para entrar na página e para conectar o YouTube."""
+    from getpass import getpass
+
+    from . import youtube
+
+    client_id = a.client_id or input("ID do cliente (…apps.googleusercontent.com): ")
+    try:
+        youtube.save_client(s, client_id, getpass("Chave secreta do cliente (não aparece ao digitar): "))
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+    print(f"Cliente salvo em {youtube.folder(s) / 'client.json'} (fora do git). Já dá para entrar na página.")
+
+
 def main(argv: list[str] | None = None) -> None:
     from .pipeline import STEP_NAMES
 
@@ -166,6 +180,10 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--foil", action="store_true")
     sp.add_argument("--qty", type=int, default=1)
     sp.set_defaults(func=cmd_add)
+
+    sp = sub.add_parser("google", help="configura o cliente OAuth do Google (entrar na página e conectar o YouTube)")
+    sp.add_argument("client_id", nargs="?", help="ID do cliente (a chave secreta é pedida sem aparecer na tela)")
+    sp.set_defaults(func=cmd_google)
 
     a = p.parse_args(argv)
     a.func(load_settings(), a)

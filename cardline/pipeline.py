@@ -19,6 +19,7 @@ na coleção mudam junto.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -73,8 +74,9 @@ class Skip(Exception):
 
 
 class DuplicateVideo(Exception):
-    def __init__(self, run_id: int):
-        super().__init__(f"Este vídeo já foi processado na pipeline #{run_id}.")
+    def __init__(self, run_id: int | None):  # None: o vídeo é de outra conta (não diz qual pipeline)
+        super().__init__(f"Este vídeo já foi processado na pipeline #{run_id}." if run_id else
+                         "Este vídeo já foi processado por outra conta.")
         self.run_id = run_id
 
 
@@ -117,6 +119,7 @@ def create_run(
     narration: bool = False,
     logo: str | None = None,
     sealed: tuple[int, int] | None = None,
+    user_id: int | None = None,
 ) -> int:
     """Cadastra um run na fila. Com `move`, o vídeo (um upload) passa a morar na pasta do run."""
     if kind not in KINDS:
@@ -128,9 +131,14 @@ def create_run(
     narration = narration and overlay  # narra o vídeo com overlay
     con = db.connect(settings.db_path)
     sha1 = sha1 or sha1_file(video)
-    dup = con.execute("SELECT id FROM runs WHERE video_sha1 = ?", (sha1,)).fetchone()
+    if user_id is None:  # linha de comando: a pipeline é do administrador
+        from .auth import admin
+
+        boss = admin(con, settings)
+        user_id = boss.id if boss else None
+    dup = con.execute("SELECT id, user_id FROM runs WHERE video_sha1 = ?", (sha1,)).fetchone()
     if dup:
-        raise DuplicateVideo(dup["id"])
+        raise DuplicateVideo(dup["id"] if dup["user_id"] in (user_id, None) else None)
     options = {
         "overlay": overlay,
         "verify": bool(settings.verify_model) if verify is None else verify,
@@ -147,9 +155,9 @@ def create_run(
     with con:
         run_id = con.execute(
             "INSERT INTO runs(kind, video, video_name, video_sha1, dir, status, paid, paid_currency, paid_usd, set_hint,"
-            " options, created_at) VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?, ?)",
+            " options, created_at, user_id) VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?, ?, ?)",
             (kind, _stored_path(settings, video), video_name or video.name, sha1, paid, paid_currency if paid else None,
-             to_usd(settings, paid, paid_currency), set_hint or None, json.dumps(options), db.now()),
+             to_usd(settings, paid, paid_currency), set_hint or None, json.dumps(options), db.now(), user_id),
         ).lastrowid
         folder = settings.runs_dir / str(run_id)
         folder.mkdir(parents=True, exist_ok=True)
@@ -307,7 +315,7 @@ def _commit(ctx: RunContext) -> str:
         n = register_packs(ctx.settings, ctx.con, ctx.run_id, scan, ctx.run["paid"], ctx.run["paid_currency"])
         return f"{n} {'booster registrado' if n == 1 else 'boosters registrados'} nos lacrados"
     register(ctx.con, ctx.run_id, scan)
-    db.record_value(ctx.con)
+    db.record_value(ctx.con, ctx.run["user_id"])
     return f"{len(scan['cards'])} cartas registradas na coleção"
 
 
@@ -320,8 +328,9 @@ def _overlay(ctx: RunContext) -> str:
     run = ctx.run
     from . import logo
 
+    owner = dataclasses.replace(ctx.settings, account=run["user_id"])  # o logo é o do dono da pipeline
     render(ctx.settings, load_scan(ctx.dir), ctx.dir / "overlay.mp4", money, ctx.progress, run["paid_usd"],
-           run["paid"], run["paid_currency"], logo.load(ctx.settings, ctx.options.get("logo")))
+           run["paid"], run["paid_currency"], logo.load(owner, ctx.options.get("logo")))
     return "overlay.mp4 pronto" + (f" · capa de {ctx.settings.intro_seconds:g}s" if ctx.settings.intro_seconds > 0 else "")
 
 
@@ -544,7 +553,8 @@ def delete_run(settings: Settings, run_id: int) -> None:
         from .sealed import give_back
 
         give_back(con, taken["id"], taken["qty"])
-    db.record_value(con)  # as cartas dela saíram da coleção
+    if run["user_id"] is not None:
+        db.record_value(con, run["user_id"])  # as cartas dela saíram da coleção do dono
     folder = (settings.root / run["dir"]).resolve()
     if run["dir"] and folder.is_relative_to(settings.runs_dir.resolve()) and folder != settings.runs_dir.resolve():
         shutil.rmtree(folder, ignore_errors=True)

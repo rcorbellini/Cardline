@@ -60,15 +60,21 @@ def products(settings: Settings, con, set_code: str) -> list[dict]:
     return sorted(out, key=lambda p: (rank(p), p["name"]))
 
 
-def items(con) -> list[dict]:
-    """Os lacrados em estoque; `qty` é quanto ainda está fechado (o registrado menos os abertos)."""
+def items(con, user_id: int) -> list[dict]:
+    """Os lacrados em estoque do usuário; `qty` é quanto ainda está fechado (o registrado menos os abertos)."""
     return [{**dict(r), "qty": r["qty"] - r["opened"]} for r in con.execute(
-        "SELECT * FROM sealed WHERE qty > opened ORDER BY COALESCE(usd, 0) * (qty - opened) DESC, name")]
+        "SELECT * FROM sealed WHERE qty > opened AND user_id = ? ORDER BY COALESCE(usd, 0) * (qty - opened) DESC, name",
+        (user_id,))]
 
 
-def boosters(con) -> list[dict]:
+def owner(con, item_id: int) -> int | None:
+    row = con.execute("SELECT user_id FROM sealed WHERE id = ?", (item_id,)).fetchone()
+    return row["user_id"] if row else None
+
+
+def boosters(con, user_id: int) -> list[dict]:
     """Os boosters em estoque, para escolher numa abertura (puxa o set e o valor de registro)."""
-    return [x for x in items(con) if re.match(r"(Sleeved )?Booster Pack$", x["name"])]
+    return [x for x in items(con, user_id) if re.match(r"(Sleeved )?Booster Pack$", x["name"])]
 
 
 def take(con, item_id: int, n: int) -> dict:
@@ -77,27 +83,30 @@ def take(con, item_id: int, n: int) -> dict:
         if not con.execute("UPDATE sealed SET opened = opened + ? WHERE id = ? AND qty - opened >= ?",
                            (n, item_id, n)).rowcount:
             raise LookupError(f"Não há {n} desse booster fechado nos lacrados.")
-    db.record_value(con)
-    return dict(con.execute("SELECT * FROM sealed WHERE id = ?", (item_id,)).fetchone())
+    item = dict(con.execute("SELECT * FROM sealed WHERE id = ?", (item_id,)).fetchone())
+    db.record_value(con, item["user_id"])
+    return item
 
 
 def give_back(con, item_id: int, n: int) -> None:
     with con:
         con.execute("UPDATE sealed SET opened = MAX(0, opened - ?) WHERE id = ?", (n, item_id))
-    db.record_value(con)
+    if (uid := owner(con, item_id)) is not None:
+        db.record_value(con, uid)
 
 
-def add(settings: Settings, con, set_code: str, product_id: int, qty: int, paid: float | None, currency: str) -> int:
+def add(settings: Settings, con, set_code: str, product_id: int, qty: int, paid: float | None, currency: str,
+        user_id: int) -> int:
     product = next((p for p in products(settings, con, set_code) if p["product_id"] == product_id), None)
     if product is None:
         raise LookupError("Produto não encontrado entre os lacrados do set.")
     with con:
         new_id = con.execute(
             "INSERT INTO sealed(product_id, set_code, name, image, qty, paid, paid_currency, paid_usd, usd, price_updated_at,"
-            " added_at, registered_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " added_at, registered_usd, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (product_id, set_code, product["name"], product["image"], qty, paid, currency.upper() if paid else None,
-             to_usd(settings, paid, currency), product["usd"], db.now(), db.now(), product["usd"])).lastrowid
-    db.record_value(con)
+             to_usd(settings, paid, currency), product["usd"], db.now(), db.now(), product["usd"], user_id)).lastrowid
+    db.record_value(con, user_id)
     return new_id
 
 
@@ -113,19 +122,22 @@ def update(settings: Settings, con, item_id: int, qty: int | None, paid: float |
             cur = (currency or row["paid_currency"] or "BRL").upper()
             con.execute("UPDATE sealed SET paid = ?, paid_currency = ?, paid_usd = ? WHERE id = ?",
                         (paid, cur if paid else None, to_usd(settings, paid, cur), item_id))
-    db.record_value(con)
+    db.record_value(con, row["user_id"])
 
 
 def remove(con, item_id: int) -> None:
+    uid = owner(con, item_id)
     with con:
         if not con.execute("DELETE FROM sealed WHERE id = ?", (item_id,)).rowcount:
             raise LookupError("Lacrado não encontrado.")
-    db.record_value(con)
+    db.record_value(con, uid)
 
 
-def refresh_prices(settings: Settings, con, progress=lambda fraction, message=None: None) -> int:
-    """Preço de mercado de hoje dos lacrados da coleção: uma consulta ao tcgcsv por set."""
-    sets = [r[0] for r in con.execute("SELECT DISTINCT set_code FROM sealed WHERE product_id IS NOT NULL")]
+def refresh_prices(settings: Settings, con, progress=lambda fraction, message=None: None,
+                   user_id: int | None = None) -> int:
+    """Preço de mercado de hoje dos lacrados (de um usuário, ou de todos): uma consulta ao tcgcsv por set."""
+    sets = [r[0] for r in con.execute("SELECT DISTINCT set_code FROM sealed WHERE product_id IS NOT NULL"
+                                      " AND (? IS NULL OR user_id = ?)", (user_id, user_id))]
     n = 0
     for i, code in enumerate(sets):
         group, set_name = group_of(con, code)
@@ -138,7 +150,7 @@ def refresh_prices(settings: Settings, con, progress=lambda fraction, message=No
                     con.execute("UPDATE sealed SET usd = ?, price_updated_at = ? WHERE id = ?",
                                 (prices[r["product_id"]], db.now(), r["id"]))
                     n += 1
-    db.record_value(con)
+    db.record_value(con, user_id)  # sem usuário: o preço de mercado mudou para todos
     return n
 
 
@@ -187,6 +199,7 @@ def register_packs(settings: Settings, con, run_id: int, scan: dict, paid: float
     each = round(paid / len(scan["packs"]), 2) if paid and scan["packs"] else None
     each_usd = to_usd(settings, each, currency or "BRL") if each else None
     now = db.now()
+    user_id = con.execute("SELECT user_id FROM runs WHERE id = ?", (run_id,)).fetchone()["user_id"]  # o dono da pipeline
     with con:
         # o item com valor fixo não tem produto do TCGplayer (é assim que a atualização de preços o deixa quieto)
         existing = {(r["set_code"], r["usd"] if r["product_id"] is None else None): r
@@ -204,14 +217,16 @@ def register_packs(settings: Settings, con, run_id: int, scan: dict, paid: float
                             (*values, fixed if fixed is not None else existing[key]["usd"] or registered, existing[key]["id"]))
             else:
                 con.execute("INSERT INTO sealed(product_id, image, qty, paid, paid_currency, paid_usd, registered_usd, usd,"
-                            " set_code, name, price_updated_at, added_at, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (*values, fixed if fixed is not None else registered, code, "Booster Pack", now, now, run_id))
+                            " set_code, name, price_updated_at, added_at, run_id, user_id)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (*values, fixed if fixed is not None else registered, code, "Booster Pack", now, now, run_id,
+                             user_id))
         for key, row in existing.items():
             if key not in groups:  # saiu da identificação: o que já foi aberto fica registrado como aberto
                 if row["opened"]:
                     con.execute("UPDATE sealed SET qty = opened WHERE id = ?", (row["id"],))
                 else:
                     con.execute("DELETE FROM sealed WHERE id = ?", (row["id"],))
-    db.record_value(con)
+    db.record_value(con, user_id)
     return sum(len(v) for v in groups.values())
 

@@ -48,6 +48,7 @@ são atualizados no próprio passo de preços, então o `sync` só precisa rodar
 ## Uso
 
 ```bash
+uv run cardline google        # uma vez: o cliente OAuth do Google (veja "Contas" abaixo)
 uv run cardline serve         # abre a página em http://localhost:8000
 ```
 
@@ -67,8 +68,8 @@ A página fica em `cardline/web/` (HTML, CSS e JavaScript puros, sem build) e é
 uma por vez, cada uma num processo próprio.
 
 A página tem quatro abas: **Resumo** (onde ela abre), **Coleção**, **Pipelines** e **Sets**. No topo ficam sempre o
-seletor US$/R$ (pela cotação do dia), o tema claro/escuro e o botão **+ Nova pipeline**. As capturas
-abaixo são do booster de exemplo.
+seletor US$/R$ (pela cotação do dia), o tema claro/escuro, o botão **+ Nova pipeline** e a sua conta (veja
+[Contas](#contas-entrar-com-o-google-e-compartilhar)). As capturas abaixo são do booster de exemplo.
 
 ### Resumo
 
@@ -225,6 +226,38 @@ O ícone aparece na capa e no painel do vídeo que vai somando o booster, na lis
 detalhe de cada carta. A foto é guardada em resolução cheia (até 1000 px) para a capa, e a página usa uma
 miniatura leve; ícones guardados pela versão anterior, menores, são baixados de novo na próxima sincronização.
 
+### Contas: entrar com o Google e compartilhar
+
+A página pede login com a conta do Google. Cada pipeline, carta, lacrado, atualização e histórico de valor tem
+dono: cada um vê e mexe só no que é seu, e as redes (YouTube, Instagram) e os logos também são de cada conta.
+
+- **Entrar:** **Entrar com o Google** mostra um código; abra google.com/device (no celular ou no computador),
+  entre com a conta e digite o código. É o mesmo fluxo da conexão do YouTube, e por isso funciona pelo IP da rede
+  de casa e pelo túnel, sem https (o botão comum do Google exige https ou localhost). A sessão dura 30 dias e se
+  renova enquanto a página é usada.
+- **Quem entra:** o administrador (`admin_email`), os e-mails de `allowed_emails` (`"*"` libera qualquer conta) e
+  quem recebeu um compartilhamento. O administrador fica com tudo o que existia antes das contas (e com o que a
+  linha de comando cria) e é quem sincroniza os sets, troca os ícones e configura o cliente OAuth. Sem
+  `admin_email`, o primeiro a entrar vira o administrador.
+- **Compartilhar:** no menu da conta (a foto, no topo), **Compartilhar a minha coleção** com um e-mail. A pessoa
+  entra com a conta do Google dela e, em **Ver a coleção de**, escolhe a sua: vê as pipelines, os vídeos, a
+  coleção, os lacrados e o Resumo, sem nenhuma ação (uma faixa avisa que é só visualização). **Remover** tira o
+  acesso na hora.
+
+O login usa o mesmo cliente OAuth do YouTube (tipo "TVs e dispositivos de entrada limitada"; o passo a passo
+está em [Redes](#redes-youtube-instagram-e-tiktok)). Para configurar sem a página, rode `uv run cardline google`
+(a chave secreta é pedida sem aparecer na tela). Enquanto o app do Google Cloud estiver em **Teste**, só entram
+as contas cadastradas como **usuários de teste** (Público-alvo): adicione o e-mail de quem você convidar, ou
+publique o app. Com só as permissões de login (e-mail e nome) o Google não exige verificação; com o YouTube junto,
+aparece o aviso de "app não verificado" na autorização.
+
+Os e-mails ficam em `data/config.toml`, fora do git (o repositório é público):
+
+```toml
+admin_email = "voce@gmail.com"
+allowed_emails = ["amigo@gmail.com"]   # opcional; compartilhar já libera a entrada
+```
+
 ### Redes: YouTube, Instagram e TikTok
 
 O painel **Postar nas redes**, no detalhe de uma abertura, posta o vídeo e vincula cada post à pipeline. O
@@ -254,8 +287,9 @@ O painel **Postar nas redes**, no detalhe de uma abertura, posta o vídeo e vinc
    como **usuário de teste**: sem isso, o Google bloqueia a conexão com "Erro 403: access_denied" (o app está em
    teste). Com o app em "Teste", a autorização vence a cada 7 dias; publicar o app (mesmo sem verificação)
    evita as duas coisas, com um aviso de "app não verificado" na hora de autorizar.
-3. Em **Credenciais**, crie um **ID do cliente OAuth** do tipo **"TVs e dispositivos de entrada limitada"** e cole
-   o ID e a chave na página (ficam em `data/youtube/`, fora do git).
+3. Em **Credenciais**, crie um **ID do cliente OAuth** do tipo **"TVs e dispositivos de entrada limitada"** e
+   configure com `uv run cardline google` (ou cole o ID e a chave na página). Ficam em `data/youtube/`, fora do
+   git, e o mesmo cliente serve para entrar na página.
 4. **Conectar o canal do YouTube**: abra google.com/device (no celular ou no computador) e digite o código.
 
 O vídeo vai com as **tags** de `youtube_tags` (lorcana, disney lorcana, booster, abertura de booster, tcg, br,
@@ -286,7 +320,8 @@ túnel ou configure `public_url`.
 até para mandar aos rascunhos ou ler os números o app precisa ser aprovado. Por isso o TikTok vai pelo
 compartilhamento, e os números são informados à mão.
 
-Quem acessa a página pode postar nas suas redes: com alguma rede conectada, use senha no túnel.
+Cada conta conecta o próprio canal e o próprio Instagram: quem você convidar não posta nas suas redes, e quem
+só vê a sua coleção não vê o painel de postar.
 
 ### No celular e acesso remoto
 
@@ -296,15 +331,22 @@ A página funciona no celular. Por padrão o servidor só aceita conexões da pr
 outro aparelho:
 
 - na rede local: `uv run cardline serve --host 0.0.0.0` e abra `http://IP-da-máquina:8000`;
-- de qualquer lugar: um túnel, por exemplo `ngrok http 8000 --basic-auth "usuario:uma-senha-forte"`.
+- de qualquer lugar: um túnel, por exemplo `ngrok http 8000`.
 
-A página não tem login: quem tiver o endereço consegue enviar vídeos, rodar e excluir pipelines. Use senha
-no túnel, ou só redes de confiança.
+Sem entrar com o Google, a API responde 401 e os arquivos das pipelines (vídeos, recortes) não abrem. O Instagram
+baixa o vídeo por um link assinado, que só serve para aquele arquivo.
 
 ### API
 
+Toda a API, menos `/api/auth/*`, exige a sessão (o cookie `cardline_sessao`) e responde só com os dados de quem
+entrou. Com o cabeçalho `X-Cardline-Owner: <id>`, mostra os dados de quem compartilhou com você, e aí só `GET`.
+
 | Método | Rota | Para quê |
 |---|---|---|
+| GET | `/api/auth/me` | quem entrou (ou `{"user": null}`), se é o administrador, com quem compartilhou e quem compartilhou com ele |
+| POST | `/api/auth/start`, `/api/auth/poll` | entrar: pede o código para google.com/device; `{"id": "…"}` pergunta se já foi digitado e, quando foi, abre a sessão |
+| POST | `/api/auth/logout` | sai (encerra a sessão) |
+| GET / POST / DELETE | `/api/shares`, `/api/shares/{email}` | com quem você compartilha (`{"email": "…"}` adiciona) e quem compartilha com você |
 | GET | `/api/meta` | moedas e cotação, passos, sets, raridades e se o Ollama está disponível |
 | GET | `/api/collection` | cartas da coleção, agrupadas por carta e acabamento, com as cópias |
 | GET | `/api/runs` | pipelines com status, progresso e valores; `duplicates` lista as pipelines com as mesmas cartas e `repeated` conta as cartas repetidas |
@@ -396,7 +438,9 @@ Ollama para conferência. Com `verify_model` preenchido, a opção já vem marca
 (`top-right`, padrão; `top-left`, `bottom-right` ou `bottom-left`) e a opacidade (0,6). `card_sound_volume` e
 `celebration_volume` são os volumes do "ka-ching" de cada carta e dos aplausos (0,25 e 0,3), relativos à voz do
 narrador: 1 é tão alto quanto ela, 0,25 fica ~12 dB abaixo e 0 tira o efeito. `youtube_tags` são as tags dos
-vídeos postados no YouTube (o nome do set entra junto).
+vídeos postados no YouTube (o nome do set entra junto). `admin_email` e `allowed_emails` são das
+[contas](#contas-entrar-com-o-google-e-compartilhar); `data/config.toml` (fora do git) vale por cima do
+`cardline.toml`, para o que é só desta instalação.
 
 ## Como funciona
 
@@ -445,8 +489,11 @@ vídeos postados no YouTube (o nome do set entra junto).
   público e o banco muda a cada atualização de preço), então faça backup desse arquivo.
 - `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg` e tempos `overlay.json`),
   `narrado.mp4` (+ o roteiro e as falas gravadas em `narracao/`) e `pipeline.log` de cada pipeline.
-- `data/youtube/` e `data/instagram/`: cliente OAuth e tokens das redes (só o seu usuário lê; fora do git).
-- `data/logos/`: o logo padrão do vídeo (`padrao.png`) e os enviados na criação das pipelines (fora do git).
+- `data/youtube/` e `data/instagram/`: o cliente OAuth e, em `u<id>/`, os tokens das redes de cada conta (só o seu
+  usuário lê; fora do git).
+- `data/logos/u<id>/`: o logo padrão do vídeo de cada conta (`padrao.png`) e os enviados na criação das
+  pipelines (fora do git).
+- `data/config.toml`: os e-mails das contas; `data/segredo.key`: a chave dos links assinados (fora do git).
 - `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
   que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 

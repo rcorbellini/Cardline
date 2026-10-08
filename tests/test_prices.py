@@ -161,7 +161,7 @@ def test_value_history_backfills_the_days_with_saved_prices(settings):
         con.executemany("INSERT INTO collection(card_id, foil, price_usd, added_at) VALUES (?, ?, ?, ?)",
                         [("crd_a", 0, 1.0, "2026-10-06T14:00:00-03:00"), ("crd_b", 1, 6.0, "2026-10-07T10:00:00-03:00")])
         db._value_history(con)
-    rows = [tuple(r) for r in con.execute("SELECT day, cards_usd, cards FROM value_history ORDER BY day")]
+    rows = [tuple(r) for r in con.execute("SELECT day, cards_usd, cards FROM user_values WHERE user_id = 0 ORDER BY day")]
     # o B (foil) entrou no dia 7 e vale o último preço guardado até ele
     assert rows == [("2026-10-06", 1.0, 1), ("2026-10-07", 7.5, 2)]
 

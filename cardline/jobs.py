@@ -10,10 +10,10 @@ from . import db
 KINDS = {"precos": "Atualização de preços", "redes": "Números das redes", "sync": "Sincronização de sets"}
 
 
-def create(con, kind: str) -> int:
+def create(con, kind: str, user_id: int | None = None) -> int:
     with con:
-        return con.execute("INSERT INTO jobs(kind, status, message, started_at) VALUES (?, 'running', 'Começando', ?)",
-                           (kind, db.now())).lastrowid
+        return con.execute("INSERT INTO jobs(kind, status, message, started_at, user_id) VALUES (?, 'running', 'Começando', ?, ?)",
+                           (kind, db.now(), user_id)).lastrowid
 
 
 def finish(con, job_id: int, status: str, message: str | None, result: dict | None = None, log: str | None = None) -> None:
@@ -32,12 +32,12 @@ def as_json(r, with_log: bool = False) -> dict:
     return out
 
 
-def recent(con, limit: int = 100) -> list[dict]:
-    return [as_json(r) for r in con.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,))]
+def recent(con, user_id: int, limit: int = 100) -> list[dict]:
+    return [as_json(r) for r in con.execute("SELECT * FROM jobs WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))]
 
 
-def get(con, job_id: int) -> dict | None:
-    r = con.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+def get(con, job_id: int, user_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM jobs WHERE id = ? AND user_id = ?", (job_id, user_id)).fetchone()
     return as_json(r, with_log=True) if r else None
 
 

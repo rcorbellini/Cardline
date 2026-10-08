@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from cardline import db, instagram, pipeline, social
+from cardline import auth, db, instagram, pipeline, social
 from cardline.config import Settings
 from cardline.server import create_app
 
@@ -261,7 +261,9 @@ def test_views_by_day_add_up_the_last_read_of_each_post(settings):
             (b, "youtube", "2026-10-08T09:00:00-03:00", 20, 0),   # o B entra no dia em que foi lido
             (a, "youtube", "2026-10-08T09:30:00-03:00", 120, 0),
         ])
-    assert social.views_by_day(con) == [
+    user = auth.upsert_user(con, "eu@teste.dev")
+    auth.adopt(con, settings)  # as pipelines (criadas sem dono) ficam com ele
+    assert social.views_by_day(con, user.id) == [
         {"day": "2026-10-06", "views": {"youtube": 80}},
         {"day": "2026-10-07", "views": {"youtube": 80, "tiktok": 300}},
         {"day": "2026-10-08", "views": {"youtube": 140, "tiktok": 300}},

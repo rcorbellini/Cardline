@@ -1,7 +1,7 @@
 """Logo no vídeo com overlay: semitransparente num canto, do começo ao fim (capa e resumo incluídos).
 
-Os logos ficam em data/logos (fora do git): `padrao.png` é o padrão das pipelines novas, e os enviados na
-criação de uma pipeline ganham o nome pelo conteúdo (o mesmo arquivo enviado de novo não duplica).
+Os logos ficam em data/logos/u<id>, um por usuário (fora do git): `padrao.png` é o padrão das pipelines novas
+dele, e os enviados na criação de uma pipeline ganham o nome pelo conteúdo (o mesmo arquivo não duplica).
 """
 
 from __future__ import annotations
@@ -21,7 +21,9 @@ CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
 
 
 def folder(settings: Settings) -> Path:
-    return settings.data_dir / "logos"
+    """data/logos/u<id>: os logos de cada usuário (o padrão dele é padrao.png)."""
+    base = settings.data_dir / "logos"
+    return base / f"u{settings.account}" if settings.account is not None else base
 
 
 def path(settings: Settings, name: str | None) -> Path | None:
