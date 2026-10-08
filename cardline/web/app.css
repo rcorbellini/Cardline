@@ -506,3 +506,37 @@ svg .tick.down { fill: var(--down); }
 a.netbadge { border-radius: 6px; }
 a.netbadge:hover { background: var(--panel-2); }
 .netbadge.pending { opacity: .5; outline: 1px dashed var(--muted); outline-offset: -1px; border-radius: 6px; }
+
+/* Lacrados */
+.coltabs { margin: 14px 0 0; }
+.sealedintro { margin: 0; flex: 1 1 320px; font-size: 13px; }
+.sealedform { margin: 8px 0 16px; max-width: none; }
+.sealedpick { display: flex; align-items: center; gap: 12px; min-height: 0; }
+.sealedpick img { width: 72px; height: 72px; object-fit: contain; border-radius: 8px; background: var(--panel-2); }
+.sealedlist { display: grid; gap: 10px; padding-bottom: 48px; }
+.sealeditem { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto auto; gap: 6px 14px; align-items: center; padding: 10px 14px; }
+.sealeditem img, .sealeditem .noimg { width: 64px; height: 64px; object-fit: contain; border-radius: 8px; background: var(--panel-2); }
+.sinfo { display: grid; gap: 2px; min-width: 0; font-size: 13px; }
+.sinfo b { font-size: 14px; }
+.sqty { display: flex; align-items: center; gap: 8px; }
+.sqty .iconbtn { width: 32px; height: 32px; padding: 0; font-size: 18px; line-height: 1; }
+.sqty b { min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; }
+.sval { display: grid; justify-items: end; gap: 2px; font-size: 13px; }
+.sval b { font-size: 16px; }
+.sact { grid-column: 2 / -1; display: flex; gap: 14px; justify-content: flex-end; font-size: 13px; }
+@media (max-width: 560px) {
+  .sealeditem { grid-template-columns: 56px minmax(0, 1fr) auto; }
+  .sealeditem img, .sealeditem .noimg { width: 56px; height: 56px; }
+  .sqty { grid-column: 2; }
+  .sval { grid-column: 3; grid-row: 1; }
+}
+.sealedtiles { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 6px 0 12px; }
+.sealedtiles div { display: grid; gap: 2px; }
+.sealedtiles small { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.sealedtiles b { font-size: 20px; }
+.sealedtop { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.sealedtop li { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 13px; }
+.sealedtop img, .sealedtop .noimg { width: 44px; height: 44px; object-fit: contain; border-radius: 6px; background: var(--panel-2); }
+.sealedtop span { display: grid; min-width: 0; }
+.sealedtop b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+

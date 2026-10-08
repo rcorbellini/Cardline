@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, instagram, logo, narration, pipeline, rarity, social, youtube
+from . import db, instagram, logo, narration, pipeline, rarity, sealed, social, youtube
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
 from .config import Settings
@@ -139,6 +139,20 @@ class Task:
         except Exception as e:  # noqa: BLE001 - qualquer falha vira mensagem na página
             detail = e.detail if isinstance(e, HTTPException) else str(e)
             self.state.update(running=False, ok=False, message=detail, finished_at=db.now())
+
+
+class SealedBody(BaseModel):
+    set_code: str
+    product_id: int  # produto no TCGplayer (da lista /api/sealed/products)
+    qty: int = 1
+    paid: float | None = None  # por unidade
+    paid_currency: str = "BRL"
+
+
+class SealedPatch(BaseModel):
+    qty: int | None = None
+    paid: float | None = None  # por unidade; null apaga
+    paid_currency: str | None = None
 
 
 class RerunBody(BaseModel):
@@ -1018,6 +1032,63 @@ def create_app(settings: Settings) -> FastAPI:
         except OSError as e:
             raise HTTPException(502, f"Não consegui buscar os preços no Lorcast ({e}).") from e
 
+    def sealed_json(r: dict) -> dict:
+        return {**r, "value_usd": r["usd"] * r["qty"] if r["usd"] is not None else None,
+                "paid_total_usd": r["paid_usd"] * r["qty"] if r["paid_usd"] is not None else None}
+
+    @app.get("/api/sealed")
+    def sealed_list():
+        """Os lacrados da coleção, com o valor de hoje (preço de mercado × quantidade) e o pago."""
+        out = [sealed_json(r) for r in sealed.items(con())]
+        paid = [x for x in out if x["paid_total_usd"] is not None]
+        return {"items": out, "qty": sum(x["qty"] for x in out),
+                "value_usd": sum(x["value_usd"] or 0 for x in out),
+                "paid_usd": sum(x["paid_total_usd"] for x in paid) if paid else None,
+                "value_of_paid_usd": sum(x["value_usd"] or 0 for x in paid) if paid else None}
+
+    @app.get("/api/sealed/products")
+    def sealed_products(set_code: str = Query(..., alias="set")):
+        """Os lacrados do set à venda no TCGplayer, com o preço de hoje."""
+        try:
+            return sealed.products(settings, con(), set_code)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except (OSError, ValueError, KeyError) as e:
+            raise HTTPException(502, f"Não consegui buscar os produtos no TCGplayer ({e}).") from e
+
+    @app.post("/api/sealed", status_code=201)
+    def sealed_add(body: SealedBody):
+        if body.qty < 1 or (body.paid is not None and body.paid < 0):
+            raise HTTPException(400, "Quantidade (1 ou mais) e valor pago (não negativo) inválidos.")
+        if body.paid_currency.upper() not in CURRENCIES:
+            raise HTTPException(400, "Moeda deve ser USD ou BRL.")
+        try:
+            return {"id": sealed.add(settings, con(), body.set_code, body.product_id, body.qty, body.paid, body.paid_currency)}
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except (OSError, ValueError, KeyError) as e:
+            raise HTTPException(502, f"Não consegui buscar o produto no TCGplayer ({e}).") from e
+
+    @app.patch("/api/sealed/{item_id}")
+    def sealed_edit(item_id: int, body: SealedPatch):
+        if (body.qty is not None and body.qty < 1) or (body.paid is not None and body.paid < 0):
+            raise HTTPException(400, "Quantidade (1 ou mais) e valor pago (não negativo) inválidos.")
+        if body.paid_currency and body.paid_currency.upper() not in CURRENCIES:
+            raise HTTPException(400, "Moeda deve ser USD ou BRL.")
+        try:
+            sealed.update(settings, con(), item_id, body.qty, body.paid, body.paid_currency, "paid" in body.model_fields_set)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        return {"ok": True}
+
+    @app.delete("/api/sealed/{item_id}")
+    def sealed_remove(item_id: int):
+        try:
+            sealed.remove(con(), item_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        return {"ok": True}
+
     @app.get("/api/history")
     def history():
         """As séries por dia do Resumo: o valor da coleção e as visualizações nas redes (por dia de leitura)."""
@@ -1035,10 +1106,15 @@ def create_app(settings: Settings) -> FastAPI:
         """Atualiza os preços de hoje em segundo plano (uma consulta ao Lorcast por set da coleção)."""
         def work(progress):
             try:
-                done = refresh_prices(settings, collection_sets(), progress)["sets"]
+                done = refresh_prices(settings, collection_sets(), lambda f, m=None: progress(0.8 * f, m))["sets"]
             except OSError as e:
                 raise RuntimeError(f"Não consegui buscar os preços no Lorcast ({e}).") from e
-            return f"Preços de hoje atualizados ({len(done)} {'set' if len(done) == 1 else 'sets'})."
+            try:  # os lacrados: preço do TCGplayer via tcgcsv
+                n = sealed.refresh_prices(settings, db.connect(settings.db_path), lambda f, m=None: progress(0.8 + 0.2 * f, m))
+            except (OSError, ValueError, KeyError, LookupError) as e:
+                return f"Preços das cartas atualizados; os dos lacrados não ({e})."
+            return (f"Preços de hoje atualizados ({len(done)} {'set' if len(done) == 1 else 'sets'}"
+                    + (f" e {n} {'lacrado' if n == 1 else 'lacrados'}" if n else "") + ").")
 
         try:
             return tasks["prices"].start(work)

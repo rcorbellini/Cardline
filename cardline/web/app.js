@@ -1174,6 +1174,122 @@ async function startTask(name, query = '') {
 $('#refresh-prices').onclick = () => startTask('prices');
 $('#yt-refresh').onclick = () => startTask('social');
 
+// ---- lacrados: boosters, caixas e decks fechados, cotados pelo TCGplayer ----
+S.sealed = null;
+let colTab = store.get('coltab', 'cartas');
+function renderColTabs() {
+  document.querySelectorAll('[data-coltab]').forEach(b => b.setAttribute('aria-pressed', b.dataset.coltab === colTab));
+  $('#col-cartas').hidden = colTab !== 'cartas';
+  $('#col-lacrados').hidden = colTab !== 'lacrados';
+  $('#sealed-count').textContent = S.sealed?.qty ? `(${S.sealed.qty})` : '';
+}
+document.querySelectorAll('[data-coltab]').forEach(b => b.onclick = () => {
+  colTab = b.dataset.coltab; store.set('coltab', colTab); renderColTabs();
+  if (colTab === 'lacrados') loadSealed();
+});
+async function loadSealed() {
+  try { S.sealed = await api('/api/sealed'); } catch (e) { console.warn(e); return; }
+  renderSealed(); renderSealedResumo(); renderColTabs();
+}
+const paidEach = x => x.paid == null ? null : `${sym(x.paid_currency)} ${nf.format(x.paid)}`;
+function sealedResult(value, paid) {  // valor de hoje sobre o pago
+  if (paid == null || value == null) return '';
+  return `<span class="${cls(value - paid)}">${money(value - paid, true)} (${pctTxt(value, paid)})</span>`;
+}
+function renderSealed() {
+  const d = S.sealed;
+  if (!d) return;
+  patch($('#sealed-sum'), d.items.length ? `<b>${d.qty}</b> ${d.qty === 1 ? 'item' : 'itens'} · <b class="num">${money(d.value_usd)}</b> hoje` +
+    (d.paid_usd != null ? ` · pago ${money(d.paid_usd)} · ${sealedResult(d.value_of_paid_usd, d.paid_usd)}` : '') : '');
+  patch($('#sealed-list'), d.items.length ? d.items.map(x => `
+    <article class="panel sealeditem">
+      ${x.image ? `<img src="${esc(x.image)}" alt="" loading="lazy">` : '<span class="noimg"></span>'}
+      <div class="sinfo"><b>${esc(x.name)}</b><span class="muted">${esc(setTitle(x.set_code))}</span>
+        <span class="muted">${money(x.usd)} cada${paidEach(x) ? ` · pago ${paidEach(x)} cada` : ''}</span></div>
+      <div class="sqty" role="group" aria-label="Quantidade de ${esc(x.name)}">
+        <button class="iconbtn" data-sealed-qty="${x.id}" data-delta="-1" ${x.qty <= 1 ? 'disabled' : ''} aria-label="Um a menos">−</button>
+        <b>${x.qty}</b><button class="iconbtn" data-sealed-qty="${x.id}" data-delta="1" aria-label="Um a mais">+</button></div>
+      <div class="sval"><b class="num">${money(x.value_usd)}</b>${sealedResult(x.value_usd, x.paid_total_usd)}</div>
+      <div class="sact"><button class="linkbtn" data-sealed-paid="${x.id}">${x.paid == null ? 'Informar o pago' : 'Editar o pago'}</button>
+        <button class="linkbtn" data-sealed-del="${x.id}">Remover</button></div>
+    </article>`).join('') : '<p class="empty">Nenhum lacrado ainda. Use “+ Adicionar lacrado”.</p>');
+}
+function renderSealedResumo() {
+  const d = S.sealed;
+  if (!d) return;
+  if (!d.items.length) { patch($('#sealed-resumo'), '<p class="muted chartempty">Nenhum lacrado na coleção. Adicione em Coleção → Lacrados.</p>'); return; }
+  const all = d.items.every(x => x.paid != null);  // o resultado compara só o que tem valor pago
+  const tiles = [['Valor hoje', money(d.value_usd)], ['Itens', d.qty],
+    ...(d.paid_usd != null ? [[all ? 'Pago' : 'Pago (dos informados)', money(d.paid_usd)], ['Resultado', sealedResult(d.value_of_paid_usd, d.paid_usd)]] : [])];
+  patch($('#sealed-resumo'), `<div class="sealedtiles">${tiles.map(([k, v]) => `<div><small>${k}</small><b class="num">${v}</b></div>`).join('')}</div>
+    <ul class="sealedtop">${d.items.slice(0, 5).map(x => `<li>${x.image ? `<img src="${esc(x.image)}" alt="" loading="lazy">` : '<span class="noimg"></span>'}
+      <span><b>${esc(x.name)}</b><small class="muted">${esc(setTitle(x.set_code))} · ${x.qty}×</small></span><b class="num">${money(x.value_usd)}</b></li>`).join('')}</ul>
+    ${d.items.length > 5 ? `<p class="muted small">e mais ${d.items.length - 5} na Coleção → Lacrados.</p>` : ''}`);
+}
+$('#sealed-goto').onclick = () => { colTab = 'lacrados'; store.set('coltab', colTab); };
+let sealedProducts = [];
+async function loadSealedProducts() {
+  const sel = $('#sealed-product');
+  sel.disabled = true; sel.innerHTML = '<option>Buscando os produtos…</option>';
+  try {
+    sealedProducts = await api(`/api/sealed/products?set=${encodeURIComponent($('#sealed-set').value)}`);
+    sel.innerHTML = sealedProducts.length ? sealedProducts.map(p => `<option value="${p.product_id}">${esc(p.name)}${p.usd != null ? ` · ${money(p.usd)}` : ''}</option>`).join('')
+      : '<option>Nenhum lacrado deste set no TCGplayer</option>';
+    sel.disabled = !sealedProducts.length;
+  } catch (e) { sealedProducts = []; sel.innerHTML = `<option>${esc(e.message)}</option>`; }
+  pickSealedProduct();
+}
+function pickSealedProduct() {
+  const p = sealedProducts.find(x => String(x.product_id) === $('#sealed-product').value);
+  $('#sealed-preview').hidden = !p?.image;
+  if (p?.image) $('#sealed-preview').src = p.image;
+  $('#sealed-price').textContent = p ? (p.usd != null ? `Preço de mercado hoje: ${money(p.usd)} cada` : 'Sem preço de mercado no TCGplayer agora') : '';
+  $('#sealed-save').disabled = !p;
+}
+$('#sealed-new').onclick = () => {
+  if (!$('#sealed-set').options.length) {  // o set escolhido da última vez continua
+    const sets = [...S.meta.sets].reverse().sort((a, b) => (b.booster ? 1 : 0) - (a.booster ? 1 : 0));
+    $('#sealed-set').innerHTML = sets.map(s => `<option value="${esc(s.code)}">${esc(s.name)}</option>`).join('');
+  }
+  $('#sealed-form').hidden = false; $('#sealed-error').hidden = true;
+  loadSealedProducts();
+};
+$('#sealed-set').onchange = loadSealedProducts;
+$('#sealed-product').onchange = pickSealedProduct;
+$('#sealed-cancel').onclick = () => { $('#sealed-form').hidden = true; };
+$('#sealed-form').onsubmit = async ev => {
+  ev.preventDefault();
+  const raw = $('#sealed-paid').value.trim(), paid = raw ? parseMoney(raw) : null;
+  if (raw && paid == null) { $('#sealed-error').textContent = 'Valor pago inválido.'; $('#sealed-error').hidden = false; return; }
+  try {
+    await api('/api/sealed', json({ set_code: $('#sealed-set').value, product_id: +$('#sealed-product').value,
+      qty: Math.max(1, parseInt($('#sealed-qty').value, 10) || 1), paid, paid_currency: $('#sealed-cur').value }));
+    $('#sealed-form').hidden = true; $('#sealed-qty').value = 1; $('#sealed-paid').value = '';
+    await loadSealed();
+  } catch (e) { $('#sealed-error').textContent = e.message; $('#sealed-error').hidden = false; }
+};
+$('#sealed-list').addEventListener('click', async ev => {
+  const b = ev.target.closest('[data-sealed-qty], [data-sealed-paid], [data-sealed-del]');
+  if (!b) return;
+  const id = b.dataset.sealedQty || b.dataset.sealedPaid || b.dataset.sealedDel, x = S.sealed.items.find(i => String(i.id) === id);
+  try {
+    if (b.dataset.sealedQty) await api(`/api/sealed/${id}`, json({ qty: x.qty + +b.dataset.delta }, 'PATCH'));
+    if (b.dataset.sealedPaid) {
+      const cur = x.paid_currency || 'BRL';
+      const raw = prompt(`Quanto pagou por unidade de “${x.name}” (${sym(cur)})? Deixe vazio para apagar.`, x.paid != null ? nf.format(x.paid) : '');
+      if (raw === null) return;
+      const paid = raw.trim() ? parseMoney(raw) : null;
+      if (raw.trim() && paid == null) { alert('Valor inválido.'); return; }
+      await api(`/api/sealed/${id}`, json({ paid, paid_currency: cur }, 'PATCH'));
+    }
+    if (b.dataset.sealedDel) {
+      if (!confirm(`Remover “${x.name}” (${x.qty}×) dos lacrados?`)) return;
+      await api(`/api/sealed/${id}`, { method: 'DELETE' });
+    }
+    await loadSealed();
+  } catch (e) { alert(e.message); }
+});
+
 // ---- sets: base de coleções, ícones e sincronização ----
 S.sets = [];
 let syncTimer = null;
@@ -1726,6 +1842,7 @@ async function route() {
   if (view === 'sets') loadSets();
   ytSync();
   if (view === 'resumo') { refreshSocialStats(1800); pollTasks(); loadHistory(); }
+  if (view === 'resumo' || view === 'colecao') loadSealed();
   document.querySelectorAll('nav.tabs a').forEach(a => {
     const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -1742,6 +1859,7 @@ window.addEventListener('hashchange', route);
 function renderAll() {
   buildEntries();
   renderCurrency(); renderStats(); renderChart(); renderValueChart(); renderSetChart(); renderSocialChart(); renderViewsChart();
+  renderSealed(); renderSealedResumo(); renderColTabs();
   const view = currentView();
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();
@@ -1763,6 +1881,7 @@ async function refresh(collectionToo = false) {
     }
     if (S.runId) S.run = await api(`/api/runs/${S.runId}`);
     if (currentView() === 'resumo') S.history = await api('/api/history');
+    if (['resumo', 'colecao'].includes(currentView())) S.sealed = await api('/api/sealed');
     renderAll();
   } catch (e) { console.warn(e); }
   timer = setTimeout(refresh, prevActive.size ? 1500 : 8000);

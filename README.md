@@ -80,8 +80,9 @@ abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e v
 (também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
 
 O gráfico **Valor da coleção por data** ganha um ponto por dia sempre que os preços são atualizados (botão ou
-sincronização) ou a coleção muda (pipeline registrada ou excluída, carta avulsa); várias atualizações no mesmo
-dia viram um ponto só, o da última. Os dias de antes do gráfico existir vieram do histórico de preços que o
+sincronização) ou a coleção muda (pipeline registrada ou excluída, carta avulsa, lacrado); várias atualizações
+no mesmo dia viram um ponto só, o da última. Com lacrados, eles aparecem como uma segunda linha. O painel
+**Lacrados** mostra o valor de hoje, os itens, o pago e o resultado, e os itens de maior valor. Os dias de antes do gráfico existir vieram do histórico de preços que o
 cardline já guardava.
 
 O gráfico **Valor médio do booster por coleção** mostra, para cada set, quanto vale em média um booster aberto
@@ -181,6 +182,12 @@ estão valendo. A tinta é escolhida pelo ícone de cada uma, desenhado a partir
 vórtice (Ametista), onda (Esmeralda), fogo (Rubi), olho (Safira) e fortaleza (Aço). Clicar numa carta abre a
 imagem grande, os preços normal e foil, o link do TCGplayer e cada cópia: de qual pipeline veio (com link) e
 quanto valia na abertura e hoje.
+
+**Lacrados** (ao lado de **Cartas**, no topo da Coleção) guarda boosters, caixas, decks, baús e outros produtos
+fechados. **+ Adicionar lacrado**: escolha o set e o produto (a lista vem do TCGplayer, via tcgcsv.com, já com o
+preço de mercado), a quantidade e, se quiser, quanto pagou por unidade. Cada item mostra o valor de hoje
+(preço × quantidade) e o resultado sobre o pago; a quantidade muda no − / +. Os preços dos lacrados são
+atualizados junto com os das cartas (**↻ Atualizar preços**), e o Resumo tem um painel próprio para eles.
 
 ### Sets
 
@@ -290,6 +297,9 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo), `{"narration": true}` e/ou `{"logo": "padrao.png"}` (`null` tira); só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
+| GET / POST | `/api/sealed` | lacrados com valor de hoje e pago; `{"set_code": "1", "product_id": 482406, "qty": 2, "paid": 35, "paid_currency": "BRL"}` adiciona |
+| PATCH / DELETE | `/api/sealed/{id}` | `{"qty": 3}` e/ou `{"paid": 30}` (`null` apaga o pago); DELETE remove |
+| GET | `/api/sealed/products?set=1` | os lacrados do set no TCGplayer, com o preço de mercado de hoje |
 | GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) e `views` (visualizações por rede) |
 | GET | `/api/tasks` | tarefas de fundo do Resumo (`prices`, `social`): rodando, progresso e a mensagem do fim |
 | POST | `/api/tasks/prices`, `/api/tasks/social?max_age=1800` | atualiza os preços / os números das redes em segundo plano (uma de cada vez) |

@@ -48,6 +48,14 @@
       <div class="chartwrap" id="value-chart"></div>
       <details class="charttable" id="value-tabledetails"><summary>Ver tabela</summary><div id="value-table"></div></details>
     </section>
+    <section class="panel chartcard" id="sealed-card" aria-labelledby="sealed-title">
+      <div class="charthead">
+        <div><h2 id="sealed-title">Lacrados</h2>
+          <p class="muted">Boosters, caixas e decks fechados da coleção, pelo preço de mercado do TCGplayer</p></div>
+        <a class="linkbtn" href="#/colecao" id="sealed-goto">Ver e adicionar</a>
+      </div>
+      <div id="sealed-resumo"></div>
+    </section>
     <section class="panel chartcard" id="set-card" aria-labelledby="set-title">
       <div class="charthead">
         <div><h2 id="set-title">Valor médio do booster por coleção</h2>
@@ -81,32 +89,58 @@
   </section>
 
   <section id="view-colecao" class="view" hidden>
-    <div class="filters">
-      <input type="search" id="q" placeholder="Buscar nome, subtítulo ou número (ex.: 1/169)" aria-label="Buscar">
-      <select id="sort" aria-label="Ordenar">
-        <option value="value">Maior valor</option><option value="value-asc">Menor valor</option>
-        <option value="total">Maior valor total (qtd × preço)</option><option value="name">Nome</option>
-        <option value="number">Set e número</option><option value="recent">Mais recentes</option><option value="qty">Quantidade</option>
-      </select>
-      <div class="seg" role="group" aria-label="Visualização">
-        <button data-view="grid" aria-pressed="true">Grade</button><button data-view="list" aria-pressed="false">Lista</button>
-      </div>
-      <button class="filtertoggle" id="filter-toggle" aria-expanded="false" aria-controls="morefilters" title="Mostrar os filtros">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.2 7.4V18l-3.6 1.6v-7.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-        <span class="sr">Filtros</span><span class="fcount" id="filter-count" hidden></span>
-      </button>
-      <div class="morefilters" id="morefilters" hidden>
-        <select id="set" aria-label="Set"></select>
-        <select id="rarity" aria-label="Raridade"></select>
-        <select id="foil" aria-label="Acabamento">
-          <option value="all">Normal e foil</option><option value="foil">Só foil</option><option value="normal">Só normal</option>
-        </select>
-        <input type="number" id="min" min="0" step="0.5" placeholder="Preço mín." aria-label="Preço mínimo">
-        <div class="inkchips" id="inks" role="group" aria-label="Tinta"></div>
-      </div>
+    <div class="seg coltabs" role="group" aria-label="O que mostrar da coleção">
+      <button data-coltab="cartas" aria-pressed="true">Cartas</button><button data-coltab="lacrados" aria-pressed="false">Lacrados <span id="sealed-count"></span></button>
     </div>
-    <div class="resultbar"><span id="count"></span><button class="linkbtn" id="clear">Limpar filtros</button></div>
-    <div id="results"></div>
+    <div id="col-cartas">
+      <div class="filters">
+        <input type="search" id="q" placeholder="Buscar nome, subtítulo ou número (ex.: 1/169)" aria-label="Buscar">
+        <select id="sort" aria-label="Ordenar">
+          <option value="value">Maior valor</option><option value="value-asc">Menor valor</option>
+          <option value="total">Maior valor total (qtd × preço)</option><option value="name">Nome</option>
+          <option value="number">Set e número</option><option value="recent">Mais recentes</option><option value="qty">Quantidade</option>
+        </select>
+        <div class="seg" role="group" aria-label="Visualização">
+          <button data-view="grid" aria-pressed="true">Grade</button><button data-view="list" aria-pressed="false">Lista</button>
+        </div>
+        <button class="filtertoggle" id="filter-toggle" aria-expanded="false" aria-controls="morefilters" title="Mostrar os filtros">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.2 7.4V18l-3.6 1.6v-7.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          <span class="sr">Filtros</span><span class="fcount" id="filter-count" hidden></span>
+        </button>
+        <div class="morefilters" id="morefilters" hidden>
+          <select id="set" aria-label="Set"></select>
+          <select id="rarity" aria-label="Raridade"></select>
+          <select id="foil" aria-label="Acabamento">
+            <option value="all">Normal e foil</option><option value="foil">Só foil</option><option value="normal">Só normal</option>
+          </select>
+          <input type="number" id="min" min="0" step="0.5" placeholder="Preço mín." aria-label="Preço mínimo">
+          <div class="inkchips" id="inks" role="group" aria-label="Tinta"></div>
+        </div>
+      </div>
+      <div class="resultbar"><span id="count"></span><button class="linkbtn" id="clear">Limpar filtros</button></div>
+      <div id="results"></div>
+    </div>
+    <div id="col-lacrados" hidden>
+      <div class="toolbar"><p class="muted sealedintro">Boosters, caixas, decks e baús fechados, pelo preço de mercado do TCGplayer
+        (atualizado junto com os preços das cartas).</p><button class="btn" id="sealed-new">+ Adicionar lacrado</button></div>
+      <form class="panel form sealedform" id="sealed-form" hidden>
+        <h2>Adicionar lacrado</h2>
+        <div class="fields">
+          <label>Set<select id="sealed-set"></select></label>
+          <label>Produto<select id="sealed-product" disabled><option>Escolha o set</option></select></label>
+          <label>Quantidade<input type="number" id="sealed-qty" min="1" step="1" value="1"></label>
+          <label>Pago por unidade (opcional)
+            <span class="inline"><input type="text" id="sealed-paid" inputmode="decimal" placeholder="ex.: 34,90">
+            <select id="sealed-cur"><option value="BRL">R$</option><option value="USD">US$</option></select></span></label>
+        </div>
+        <div class="sealedpick"><img id="sealed-preview" alt="" hidden><span class="muted" id="sealed-price"></span></div>
+        <div class="actions"><button class="btn" type="submit" id="sealed-save">Adicionar</button>
+          <button class="btn ghost" type="button" id="sealed-cancel">Cancelar</button></div>
+        <p class="error" id="sealed-error" hidden></p>
+      </form>
+      <div class="resultbar"><span id="sealed-sum"></span></div>
+      <div id="sealed-list" class="sealedlist"></div>
+    </div>
   </section>
 
   <section id="view-pipelines" class="view" hidden></section>

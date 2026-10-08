@@ -123,6 +123,21 @@ CREATE TABLE IF NOT EXISTS value_history (  -- valor da coleção por dia: um po
     recorded_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sealed (  -- produtos lacrados da coleção (booster, caixa, deck...), cotados pelo TCGplayer
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id       INTEGER,         -- produto no TCGplayer
+    set_code         TEXT,
+    name             TEXT NOT NULL,   -- "Booster Box", "Starter Deck (Amber & Amethyst)"...
+    image            TEXT,            -- foto no TCGplayer
+    qty              INTEGER NOT NULL DEFAULT 1,
+    paid             REAL,            -- quanto pagou por unidade (opcional)
+    paid_currency    TEXT,
+    paid_usd         REAL,
+    usd              REAL,            -- preço de mercado por unidade
+    price_updated_at TEXT,
+    added_at         TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS scheduled_posts (  -- o que o cardline publica na hora marcada (a rede não programa sozinha)
     run_id     INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     network    TEXT NOT NULL,
@@ -326,10 +341,12 @@ def record_value(con: sqlite3.Connection) -> None:
     Chamado quando os preços mudam (atualizar preços, sincronizar) e quando a coleção muda (pipeline registrada,
     excluída, carta avulsa), para o último ponto do gráfico ser o valor da coleção que o Resumo mostra."""
     rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id").fetchall()
+    sealed = con.execute("SELECT SUM(qty * usd) FROM sealed WHERE usd IS NOT NULL").fetchone()[0]  # None sem lacrados
     with con:
-        con.execute("INSERT INTO value_history(day, cards_usd, cards, recorded_at) VALUES (?, ?, ?, ?) ON CONFLICT(day)"
-                    " DO UPDATE SET cards_usd = excluded.cards_usd, cards = excluded.cards, recorded_at = excluded.recorded_at",
-                    (now()[:10], sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), len(rows), now()))
+        con.execute("INSERT INTO value_history(day, cards_usd, sealed_usd, cards, recorded_at) VALUES (?, ?, ?, ?, ?)"
+                    " ON CONFLICT(day) DO UPDATE SET cards_usd = excluded.cards_usd, sealed_usd = excluded.sealed_usd,"
+                    " cards = excluded.cards, recorded_at = excluded.recorded_at",
+                    (now()[:10], sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), sealed, len(rows), now()))
 
 
 def _value_history(con: sqlite3.Connection) -> None:
