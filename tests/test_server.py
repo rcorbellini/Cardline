@@ -113,3 +113,15 @@ def test_private_files_never_go_to_a_shared_cache(client, tmp_path):
     assert client.get("/api/runs").headers["cache-control"] == "no-store"
     assert client.get("/").headers["cache-control"] == "no-cache"  # a página revalida: atualizações aparecem na hora
     assert client.get("/app.js").headers["cache-control"] == "no-cache"
+
+
+def test_cloudflare_visitors_go_to_https_on_the_bare_domain(client):
+    def via_cloudflare(url, scheme, host):
+        return client.get(url, headers={"cf-visitor": f'{{"scheme":"{scheme}"}}', "host": host}, follow_redirects=False)
+
+    r = via_cloudflare("/#/resumo", "http", "cardiline.com.br")
+    assert r.status_code == 308 and r.headers["location"] == "https://cardiline.com.br/"
+    r = via_cloudflare("/api/auth/me?x=1", "https", "www.cardiline.com.br")
+    assert r.status_code == 308 and r.headers["location"] == "https://cardiline.com.br/api/auth/me?x=1"
+    assert via_cloudflare("/api/auth/me", "https", "cardiline.com.br").status_code == 200
+    assert client.get("/api/auth/me").status_code == 200  # pela rede de casa, nada muda

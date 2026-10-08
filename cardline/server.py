@@ -26,7 +26,7 @@ from pathlib import Path
 from http.cookies import SimpleCookie
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -369,6 +369,26 @@ class CacheRules:
         await self.app(scope, receive, send_with_rule)
 
 
+class CanonicalHost:
+    """Quem chega pelo Cloudflare vai sempre para https e para o domínio sem "www." (a sessão fica num endereço
+    só). O acesso direto, pela rede de casa, não muda."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        visitor, host = headers.get("cf-visitor", ""), headers.get("host", "")
+        insecure = '"http"' in visitor.replace(" ", "")
+        if visitor and (insecure or host.startswith("www.")):
+            query = scope.get("query_string", b"").decode("latin-1")
+            target = f"https://{host.removeprefix('www.')}{scope.get('path', '/')}{'?' + query if query else ''}"
+            return await RedirectResponse(target, 308)(scope, receive, send)
+        await self.app(scope, receive, send)
+
+
 class PostJobs:
     """Publicações pela API em segundo plano (envio do YouTube, processamento do Instagram); uma por vez."""
 
@@ -462,6 +482,7 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="cardline", lifespan=lifespan)
     app.add_middleware(AuthGate, settings=settings)
     app.add_middleware(CacheRules)  # por fora: vale também para as recusas do porteiro
+    app.add_middleware(CanonicalHost)
 
     def con():
         return db.connect(settings.db_path)
