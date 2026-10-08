@@ -640,3 +640,20 @@ a.netbadge:hover { background: var(--panel-2); }
 .sharelist li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .sharelist li span { overflow: hidden; text-overflow: ellipsis; }
 .viewbanner .avatar { background: var(--panel); }
+
+/* jogos: Lorcana, Magic e Pokémon */
+.gameswitch button { font-weight: 650; }
+.langtag {
+  display: inline-block; padding: 0 5px; border-radius: 5px; font: 700 11px/16px system-ui, sans-serif; letter-spacing: .04em;
+  vertical-align: 2px; background: color-mix(in srgb, var(--info) 18%, transparent); color: var(--info);
+}
+.gamechip { font-size: 14px; font-weight: 650; padding: 2px 10px; border-radius: 999px; background: var(--accent-soft); vertical-align: 3px; }
+.setpt { margin: -2px 0 2px; color: var(--muted); font-size: 13px; }
+.seticonbox img.setsymbol { width: 64px; height: 64px; object-fit: contain; padding: 6px; }
+:root[data-theme="dark"] .seticonbox img.setsymbol.mono { filter: invert(1); }  /* o símbolo do Scryfall é preto */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .seticonbox img.setsymbol.mono { filter: invert(1); } }
+.setsfind { display: grid; gap: 6px; margin: 4px 0 8px; }
+.setsfind input { max-width: 420px; }
+.setsfind p { margin: 0; font-size: 14px; }
+#new-form h2 { display: flex; align-items: center; gap: 10px; }
+@media (max-width: 560px) { .brand .gameswitch { order: 10; width: 100%; } .brand .gameswitch button { flex: 1; } }

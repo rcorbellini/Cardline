@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, instagram, jobs as job_log, logo, narration, pipeline, rarity, sealed, social, youtube
+from . import auth, db, games, instagram, jobs as job_log, logo, narration, pipeline, rarity, sealed, social, youtube
 from . import packs as packs_mod
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
@@ -94,19 +94,22 @@ class SyncJob:
         self.started_at = self.finished_at = None
         self.code: int | None = None
         self.job: int | None = None  # a linha desta sincronização na aba Pipelines
+        self.sets: list[str] = []  # os sets sendo baixados (vazio: a sincronização inteira)
 
     @property
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, user_id: int | None = None) -> None:
+    def start(self, user_id: int | None = None, sets: list[str] | None = None) -> None:
+        """`cardline sync` inteiro, ou só os sets pedidos (baixar um set de Magic ou Pokémon)."""
         if self.running:
-            raise RuntimeError("A sincronização já está rodando.")
+            raise RuntimeError("Já tem uma sincronização rodando; espere ela terminar.")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sets = sets or []
         with open(self.log_path, "wb") as log:
             self.proc = subprocess.Popen(
-                [sys.executable, "-m", "cardline", "sync"], cwd=self.settings.root, stdout=log,
-                stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                [sys.executable, "-m", "cardline", "sync", *(["--sets", ",".join(sets)] if sets else [])],
+                cwd=self.settings.root, stdout=log, stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
         self.started_at, self.finished_at, self.code = db.now(), None, None
         self.job = job_log.create(db.connect(self.settings.db_path), "sync", user_id)
@@ -128,7 +131,7 @@ class SyncJob:
         lines = self.log_path.read_text(errors="replace").splitlines()[-40:] if self.log_path.exists() else []
         return {
             "running": self.running, "started_at": self.started_at, "finished_at": self.finished_at,
-            "ok": None if self.code is None else self.code == 0,
+            "ok": None if self.code is None else self.code == 0, "sets": self.sets,
             "log": "\n".join(line.rsplit("\r", 1)[-1] for line in lines),
         }
 
@@ -531,13 +534,27 @@ def create_app(settings: Settings) -> FastAPI:
 
     def card_json(r) -> dict:
         local = image_path(settings, r["set_code"], r["id"])
+        local_pt = image_path(settings, r["set_code"], r["id"], "pt")
+        img = lambda p: f"/img/{p.relative_to(settings.images_dir).as_posix()}" if p.exists() else None  # noqa: E731
         return {
-            "name": r["name"], "version": r["version"], "set": r["set_code"], "number": r["number"],
-            "sort": r["sort_number"], "rarity": r["rarity"], "ink": r["ink"], "type": r["type"], "cost": r["cost"],
-            "img": r["image_normal"], "img_large": r["image_large"],
-            "local": f"/img/{r['set_code']}/{r['id']}.avif" if local.exists() else None,
+            "game": r["game"], "name": r["name"], "name_pt": r["name_pt"], "version": r["version"], "set": r["set_code"],
+            "number": r["number"], "sort": r["sort_number"], "rarity": r["rarity"], "ink": r["ink"], "type": r["type"],
+            "cost": r["cost"], "img": r["image_normal"], "img_large": r["image_large"], "img_pt": r["image_pt"],
+            "local": img(local), "local_pt": img(local_pt),
             "tcg": r["tcgplayer_url"], "usd": r["usd"], "usd_foil": r["usd_foil"],
         }
+
+    def game_json(g: games.Game, c=None) -> dict:
+        updated = c.execute("SELECT MAX(prices_updated_at) FROM cards WHERE game = ?", (g.key,)).fetchone()[0] if c else None
+        return {"key": g.key, "name": g.name, "short": g.short, "color_label": g.color_label, "foil_label": g.foil_label,
+                "prices_updated_at": updated,
+                "pack_size": games.pack_size(settings, g), "langs": list(g.langs),
+                "rarities": [[k, label, color] for k, (label, color) in g.rarities.items()],
+                "colors": [[k, label, color] for k, (label, color) in g.colors.items()],
+                "foil_only": sorted(g.foil_only)}
+
+    def set_booster(r) -> bool:
+        return bool(r["booster"]) if r["booster"] is not None else is_booster_set(r["code"])
 
     def ollama_available() -> bool:
         if time.monotonic() - ollama["checked"] > 30:
@@ -597,7 +614,8 @@ def create_app(settings: Settings) -> FastAPI:
         priced = scan is not None and any("price_usd" in x for x in cards)
         steps = {r["name"]: dict(r) for r in c.execute("SELECT * FROM run_steps WHERE run_id = ?", (run["id"],))}
         out = {
-            "id": run["id"], "kind": run["kind"], "status": run["status"], "step": run["step"], "progress": run["progress"],
+            "id": run["id"], "kind": run["kind"], "game": run["game"], "status": run["status"], "step": run["step"],
+            "progress": run["progress"],
             "message": run["message"], "error": (run["error"] or "").strip().splitlines()[-1:] or None,
             "video_name": run["video_name"], "created_at": run["created_at"], "recorded_at": run["recorded_at"],
             "started_at": run["started_at"], "finished_at": run["finished_at"], "resume_from": run["resume_from"],
@@ -628,6 +646,7 @@ def create_app(settings: Settings) -> FastAPI:
             out["cards"] = [
                 {
                     "n": n, "uid": card_uid(x), "card": x["card_id"], "foil": x["foil"], "foil_reason": x.get("foil_reason"),
+                    "lang": x.get("lang"),
                     "pack": x["pack"], "slot": x["slot"], "t": x["t"], "price_open": x.get("price_usd"),
                     "price_now": db.price_usd(rows[x["card_id"]], x["foil"]),
                     "crop": f"{url}/{x['crop']}" if x.get("crop") else None, "inliers": x.get("inliers"),
@@ -675,8 +694,13 @@ def create_app(settings: Settings) -> FastAPI:
             "rates": rates, "rate_day": fx[1] if fx else None, "pack_size": settings.pack_size,
             "steps": [{"name": n, "label": label} for n, label in pipeline.STEPS],
             "kinds": [{"name": k, "label": label, "steps": names} for k, (label, names) in pipeline.KINDS.items()],
-            "sets": [{"code": r["code"], "name": r["name"], "booster": is_booster_set(r["code"]), "icon": icon_url(r)}
-                     for r in c.execute("SELECT code, name, icon FROM sets ORDER BY released_at, code")],
+            "games": [game_json(g, c) for g in games.GAMES.values()],
+            # Lorcana inteiro; de Magic e Pokémon, os sets já baixados (são centenas)
+            "sets": [{"code": r["code"], "game": r["game"], "short": games.short_code(r["code"]), "name": r["name"],
+                      "name_pt": r["name_pt"], "booster": set_booster(r), "icon": icon_url(r)}
+                     for r in c.execute("SELECT * FROM sets WHERE game = 'lorcana' OR code IN"
+                                        " (SELECT DISTINCT set_code FROM cards WHERE game != 'lorcana')"
+                                        " ORDER BY released_at, code")],
             "rarities": [[k, label, color] for k, (label, color) in rarity.RARITIES.items()],
             "inks": [[k, label, color] for k, (label, color) in rarity.INKS.items()],
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
@@ -699,8 +723,8 @@ def create_app(settings: Settings) -> FastAPI:
             "SELECT * FROM cards WHERE id IN (SELECT card_id FROM collection WHERE user_id = ?)", (owner(),))}
         owned: dict = {}
         for r in rows:
-            key = (r["card_id"], bool(r["foil"]))
-            entry = owned.setdefault(key, {"card": r["card_id"], "foil": key[1], "qty": 0, "copies": [],
+            key = (r["card_id"], bool(r["foil"]), r["lang"])
+            entry = owned.setdefault(key, {"card": r["card_id"], "foil": key[1], "lang": r["lang"], "qty": 0, "copies": [],
                                            "price": db.price_usd(card_rows[r["card_id"]], key[1])})
             entry["qty"] += 1
             entry["copies"].append({"run": r["run_id"], "pack": r["pack"], "slot": r["slot"], "t": r["video_time"],
@@ -775,9 +799,12 @@ def create_app(settings: Settings) -> FastAPI:
         set_hint: str | None = None, overlay: bool = True, verify: bool | None = None, currency: str | None = None,
         kind: str = "abertura", narration: bool = False, logo_name: str | None = Query(None, alias="logo"),
         sealed_id: int | None = None, sealed_qty: int = 1, upload_id: str | None = Query(None, alias="upload"),
+        game: str = "lorcana",
     ):
         if kind not in pipeline.KINDS:
-            raise HTTPException(400, "Tipo de pipeline deve ser abertura ou cadastro.")
+            raise HTTPException(400, "Tipo de pipeline deve ser abertura, cadastro ou lacrados.")
+        if game not in games.GAMES:
+            raise HTTPException(400, "Jogo deve ser lorcana, magic ou pokemon.")
         if logo_name and not logo.path(acct(), logo_name):
             raise HTTPException(400, "Logo não encontrado; envie a imagem de novo.")
         if sealed_id and sealed.owner(con(), sealed_id) != me():
@@ -814,7 +841,7 @@ def create_app(settings: Settings) -> FastAPI:
                     settings, tmp, video_name=Path(filename).name, sha1=sha1.hexdigest(), paid=paid,
                     paid_currency=paid_currency, set_hint=set_hint, overlay=overlay, verify=verify,
                     currency=currency, move=True, kind=kind, narration=narration, logo=logo_name or None,
-                    sealed=(sealed_id, max(1, sealed_qty)) if sealed_id else None, user_id=me(),
+                    sealed=(sealed_id, max(1, sealed_qty)) if sealed_id else None, user_id=me(), game=game,
                 )
             except pipeline.DuplicateVideo as e:
                 raise HTTPException(409, {"message": str(e), "run_id": e.run_id}) from e
@@ -1361,6 +1388,12 @@ def create_app(settings: Settings) -> FastAPI:
         jobs.jobs.pop((run_id, network), None)
         return {"ok": True}
 
+    def everything(c, uid: int) -> tuple[float, float | None]:
+        """Cartas e lacrados da coleção somando os jogos (o antes e o depois de atualizar os preços)."""
+        values = [db.collection_value(c, uid, g) for g in games.GAMES]
+        sealed_values = [v[1] for v in values if v[1] is not None]
+        return sum(v[0] for v in values), sum(sealed_values) if sealed_values else None
+
     def collection_sets(user_id: int) -> list[str]:
         return [r[0] for r in con().execute(
             "SELECT DISTINCT cards.set_code FROM collection JOIN cards ON cards.id = collection.card_id"
@@ -1379,9 +1412,9 @@ def create_app(settings: Settings) -> FastAPI:
                 "paid_total_usd": r["paid_usd"] * r["qty"] if r["paid_usd"] is not None else None}
 
     @app.get("/api/sealed")
-    def sealed_list():
-        """Os lacrados da coleção, com o valor de hoje (preço de mercado × quantidade) e o pago."""
-        out = [sealed_json(r) for r in sealed.items(con(), owner())]
+    def sealed_list(game: str | None = None):
+        """Os lacrados da coleção (de um jogo, ou todos), com o valor de hoje (preço de mercado × quantidade) e o pago."""
+        out = [sealed_json(r) for r in sealed.items(con(), owner()) if game is None or games.of_code(r["set_code"]).key == game]
         paid = [x for x in out if x["paid_total_usd"] is not None]
         return {"items": out, "qty": sum(x["qty"] for x in out),
                 "value_usd": sum(x["value_usd"] or 0 for x in out),
@@ -1389,9 +1422,9 @@ def create_app(settings: Settings) -> FastAPI:
                 "value_of_paid_usd": sum(x["value_usd"] or 0 for x in paid) if paid else None}
 
     @app.get("/api/sealed/boosters")
-    def sealed_boosters():
-        """Os boosters fechados da coleção, para escolher numa abertura."""
-        return [sealed_json(r) for r in sealed.boosters(con(), me())]
+    def sealed_boosters(game: str | None = None):
+        """Os boosters fechados da coleção (de um jogo), para escolher numa abertura."""
+        return [sealed_json(r) for r in sealed.boosters(con(), me()) if game is None or games.of_code(r["set_code"]).key == game]
 
     @app.get("/api/sealed/products")
     def sealed_products(set_code: str = Query(..., alias="set")):
@@ -1442,12 +1475,12 @@ def create_app(settings: Settings) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/history")
-    def history():
-        """As séries por dia do Resumo: o valor da coleção e as visualizações nas redes (por dia de leitura)."""
+    def history(game: str = "lorcana"):
+        """As séries por dia do Resumo de um jogo: o valor da coleção e as visualizações nas redes (por dia de leitura)."""
         c = con()
         return {"value": [dict(r) for r in c.execute("SELECT day, cards_usd, sealed_usd, cards FROM user_values"
-                                                     " WHERE user_id = ? ORDER BY day", (owner(),))],
-                "views": social.views_by_day(c, owner())}
+                                                     " WHERE user_id = ? AND game = ? ORDER BY day", (owner(), game))],
+                "views": social.views_by_day(c, owner(), game)}
 
     def live_job(j: dict) -> dict:
         """A linha da atualização com o andamento de agora, se ela ainda estiver rodando."""
@@ -1481,23 +1514,23 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/tasks/prices")
     def start_prices():
-        """Atualiza os preços de hoje em segundo plano (uma consulta ao Lorcast por set da coleção)."""
+        """Atualiza os preços de hoje em segundo plano (uma consulta à fonte do jogo por set da coleção)."""
         uid = me()  # a tarefa roda numa thread, sem o usuário da requisição
 
         def work(progress):
             c = db.connect(settings.db_path)
-            before = db.collection_value(c, uid)
+            before = everything(c, uid)
             names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
             try:
                 done = refresh_prices(settings, collection_sets(uid), lambda f, m=None: progress(0.8 * f, m))["sets"]
             except OSError as e:
-                raise RuntimeError(f"Não consegui buscar os preços no Lorcast ({e}).") from e
+                raise RuntimeError(f"Não consegui buscar os preços agora ({e}).") from e
             note, n = "", 0
             try:  # os lacrados: preço do TCGplayer via tcgcsv
                 n = sealed.refresh_prices(settings, c, lambda f, m=None: progress(0.8 + 0.2 * f, m), uid)
             except (OSError, ValueError, KeyError, LookupError) as e:
                 note = f"; os dos lacrados não vieram ({e})"
-            after = db.collection_value(c, uid)
+            after = everything(c, uid)
             result = {"sets": [names.get(x, x) for x in done], "sealed": n, "cards_before": before[0],
                       "cards_after": after[0], "sealed_before": before[1], "sealed_after": after[1]}
             return (f"Preços de hoje atualizados ({len(done)} {'set' if len(done) == 1 else 'sets'}"
@@ -1543,24 +1576,40 @@ def create_app(settings: Settings) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/sets")
-    def sets_list():
-        """Sets do catálogo com ícone, cartas no catálogo, na coleção e se já são reconhecidos em vídeo."""
+    def sets_list(game: str = "lorcana"):
+        """Sets do jogo com ícone, cartas no catálogo, na coleção e se já são reconhecidos em vídeo. De Magic e Pokémon,
+        os de booster e os já baixados (os outros são centenas: promos, tokens, kits...)."""
         c = con()
         catalog = {r["set_code"]: r["n"] for r in c.execute("SELECT set_code, COUNT(*) AS n FROM cards GROUP BY set_code")}
         owned = {r["set_code"]: (r["copies"], r["unique_cards"]) for r in c.execute(
             "SELECT cards.set_code, COUNT(*) AS copies, COUNT(DISTINCT collection.card_id) AS unique_cards"
             " FROM collection JOIN cards ON cards.id = collection.card_id WHERE collection.user_id = ?"
             " GROUP BY cards.set_code", (owner(),))}
-        indexed = set(indexed_sets(settings))
+        indexed = set(indexed_sets(settings, game))
         out = []
-        for r in c.execute("SELECT * FROM sets ORDER BY released_at DESC, code"):
+        for r in c.execute("SELECT * FROM sets WHERE game = ? ORDER BY released_at DESC, code", (game,)):
+            if game != "lorcana" and not r["booster"] and not catalog.get(r["code"]):
+                continue
             icon = icon_url(r)
             copies, unique = owned.get(r["code"], (0, 0))
-            out.append({"code": r["code"], "name": r["name"], "released_at": r["released_at"],
-                        "booster": is_booster_set(r["code"]), "icon": icon, "icon_source": r["icon_source"] if icon else None,
-                        "cards": catalog.get(r["code"], 0), "owned": copies, "owned_unique": unique,
+            out.append({"code": r["code"], "short": games.short_code(r["code"]), "name": r["name"], "name_pt": r["name_pt"],
+                        "released_at": r["released_at"], "booster": set_booster(r), "icon": icon,
+                        "icon_source": r["icon_source"] if icon else None, "cards": catalog.get(r["code"], 0),
+                        "official": r["card_count"], "symbol": r["symbol"], "owned": copies, "owned_unique": unique,
                         "recognized": r["code"] in indexed})
         return out
+
+    @app.post("/api/sets/{code}/download")
+    def set_download(code: str):
+        """Baixa um set de Magic ou Pokémon: cartas, preços, imagens (inglês e português) e o reconhecimento."""
+        require_admin()
+        if con().execute("SELECT 1 FROM sets WHERE code = ?", (code,)).fetchone() is None:
+            raise HTTPException(404, "Set não encontrado; sincronize a lista de sets antes.")
+        try:
+            sync_job.start(me(), [code])
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+        return sync_job.status()
 
     @app.get("/api/sets/sync")
     def sync_status():

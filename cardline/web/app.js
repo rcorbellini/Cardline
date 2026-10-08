@@ -9,8 +9,8 @@ const store = {
 // atualiza o HTML de um container só quando mudou (não reinicia vídeo, foco, <details>...)
 const patch = (el, html) => { if (el._html === html) return false; el.innerHTML = html; el._html = html; return true; };
 
-const S = { meta: null, col: { cards: {}, owned: [] }, runs: [], run: null, runId: null, cur: 'USD', file: null, xhr: null,
-            me: null, viewAs: null };
+const S = { meta: null, col: { cards: {}, owned: [] }, runs: [], runsAll: [], run: null, runId: null, cur: 'USD', file: null,
+            xhr: null, me: null, viewAs: null, game: 'lorcana' };
 const RO = () => !!S.viewAs;  // vendo a coleção de quem compartilhou com você: só visualização
 
 const OWN = /^\/api\/(auth|shares)\//;  // a conta e os compartilhamentos são sempre de quem entrou
@@ -52,13 +52,25 @@ const PENCIL = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="tru
 const STATUS = { queued: 'Na fila', running: 'Rodando', done: 'Concluída', failed: 'Falhou', interrupted: 'Interrompida', stale: 'Desatualizada' };
 const STEP_ICON = { pending: '', running: '•', done: '✓', skipped: '–', failed: '!', stale: '↻' };
 const active = r => r.status === 'queued' || r.status === 'running';
-let RAR = {}, INK = {};  // preenchidos quando /api/meta chega
-const rar = r => RAR[r] || { label: r || '?', color: '#999', rank: -1 };
-const inkLabel = ink => (ink || '—').split('/').map(i => INK[i]?.label || i).join(' / ');
-function img(c, large) {
-  const src = large ? (c.img_large || c.img) : c.img;
-  const fb = c.local ? ` data-fallback="${esc(c.local)}" onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;delete this.dataset.fallback}"` : '';
-  return `<img loading="lazy" src="${esc(src)}" alt="${esc(c.name)}${c.version ? ' - ' + esc(c.version) : ''}"${fb}>`;
+// ---- jogos: Lorcana, Magic e Pokémon; raridades, cores e rótulos de cada um vêm de /api/meta ----
+let GAMES = {};
+const G = (g = S.game) => GAMES[g] || GAMES.lorcana;
+const gameOf = code => /^mtg-/.test(code || '') ? 'magic' : /^pkm-/.test(code || '') ? 'pokemon' : 'lorcana';
+const ofGame = r => (r.game || 'lorcana') === S.game;
+const rar = (r, g = S.game) => G(g).rar[r] || { label: r || '?', color: '#999', rank: -1 };
+const inkLabel = (ink, g = S.game) => (ink || '—').split('/').map(i => G(g).ink[i]?.label || i).join(' / ');
+const foilTag = (g = S.game) => G(g).foil_label === 'Foil' ? 'FOIL' : 'REVERSE';
+const cardName = (c, lang) => lang === 'pt' && c.name_pt ? c.name_pt : c.name;  // a cópia em português, com o nome dela
+const LANG_PT = '<span class="langtag" title="Cópia em português">PT</span>';
+const TYPE_PT = { Pokemon: 'Pokémon', Trainer: 'Treinador', Energy: 'Energia', Basic: 'Básico', Stage1: 'Estágio 1', Stage2: 'Estágio 2',
+  Supporter: 'Apoiador', Tool: 'Ferramenta', Stadium: 'Estádio', Special: 'Especial', Normal: 'Básica', MEGA: 'Mega', VMAX: 'VMAX', VSTAR: 'VSTAR' };
+const typeLabel = t => (t || '—').split(' · ').map(x => S.game === 'pokemon' ? TYPE_PT[x] || x : x).join(' · ');
+function img(c, large, lang) {
+  const pt = lang === 'pt' && (c.img_pt || c.local_pt);
+  const src = pt ? (c.img_pt || c.local_pt) : large ? (c.img_large || c.img) : c.img;
+  const local = pt ? c.local_pt : c.local;
+  const fb = local ? ` data-fallback="${esc(local)}" onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;delete this.dataset.fallback}"` : '';
+  return `<img loading="lazy" src="${esc(src)}" alt="${esc(cardName(c, lang))}${c.version ? ' - ' + esc(c.version) : ''}"${fb}>`;
 }
 
 // ---- tema e moeda ----
@@ -82,10 +94,10 @@ $('#currency').onclick = e => {
 // ---- dados da coleção ----
 let entries = [];
 function buildEntries() {
-  entries = S.col.owned.map(o => {
-    const c = S.col.cards[o.card];
+  entries = S.col.owned.filter(o => (S.col.cards[o.card].game || 'lorcana') === S.game).map(o => {
+    const c = S.col.cards[o.card], code = shortCode(c.set);
     return { ...o, c, value: (o.price ?? 0) * o.qty, last: o.copies.reduce((m, x) => x.added > m ? x.added : m, ''),
-             text: norm(`${c.name} ${c.version || ''} ${c.set}/${c.number} ${c.set}-${c.number}`) };
+             text: norm(`${c.name} ${c.name_pt || ''} ${c.version || ''} ${code}/${c.number} ${code}-${c.number}`) };
   });
 }
 
@@ -103,14 +115,15 @@ function renderStats() {
   const breakdown = parts.length > 1 ? parts.map(([k, label]) => `${money(origin[k])} ${label}`).join(' · ') : '';
   patch($('#stats'), [
     ['main', 'Valor da coleção', money(total), breakdown], ['', 'Cartas', qty], ['', 'Únicas', new Set(entries.map(e => e.card)).size],
-    ['', 'Foils', entries.filter(e => e.foil).reduce((s, e) => s + e.qty, 0)],
+    ['', G().foil_label === 'Foil' ? 'Foils' : 'Reverse holos', entries.filter(e => e.foil).reduce((s, e) => s + e.qty, 0)],
     ['', 'Investido em boosters', paidRuns.length ? money(invested) : '—'],
     ['', 'Resultado das aberturas', paidRuns.length ? `<span class="${cls(result)}">${money(result, true)}</span>` : '—'],
   ].map(([c, k, v, sub]) => `<div class="stat ${c}"><small>${k}</small><b class="num">${v}</b>${sub ? `<span class="breakdown">${sub}</span>` : ''}</div>`).join(''));
   const brl = S.meta.rates.BRL;
-  $('#updated').textContent = `Preços de mercado TCGplayer via Lorcast, atualizados em ${dt(S.meta.prices_updated_at)}` +
+  const source = { lorcana: 'Lorcast', magic: 'Scryfall', pokemon: 'TCGdex' }[S.game];
+  $('#updated').textContent = `Preços de mercado TCGplayer via ${source}, atualizados em ${dt(G().prices_updated_at || S.meta.prices_updated_at)}` +
     (brl ? ` · US$ 1 = R$ ${nf.format(brl)} (${S.meta.rate_day.split('-').reverse().join('/')})` : '') + '.';
-  const n = S.runs.filter(active).length + S.jobs.filter(j => j.status === 'running').length;
+  const n = S.runsAll.filter(active).length + S.jobs.filter(j => j.status === 'running').length;
   $('#active-badge').hidden = !n;
   $('#active-badge').textContent = n ? `${n} rodando` : '';
 }
@@ -137,19 +150,29 @@ const INK_GLYPH = {
   Sapphire: '<path d="M4.8 12c2-3.4 4.4-5 7.2-5s5.2 1.6 7.2 5c-2 3.4-4.4 5-7.2 5s-5.2-1.6-7.2-5z"/><path d="M12 9.6l2.4 2.4-2.4 2.4-2.4-2.4z"/>',
   Steel: '<path d="M7 17.6V9.4h1.9V11h1.6V9.4h3V11h1.6V9.4H17v8.2z"/><path d="M11 17.6v-2.5a1 1 0 0 1 2 0v2.5"/>',
 };
-function inkIcon(k, color) {
+function inkIcon(k, color, label = k) {
+  if (!INK_GLYPH[k]) {  // Magic (W U B R G C) e Pokémon (tipos): um círculo com a inicial
+    const dark = ['W', 'C', 'Lightning', 'Colorless', 'Metal'].includes(k);
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.6" fill="${color}"/>
+      <text x="12" y="16.2" text-anchor="middle" font-size="11.5" font-weight="800" font-family="system-ui,sans-serif"
+        fill="${dark ? '#1d1a14' : '#fff'}">${esc((k.length === 1 ? k : label).slice(0, 1).toUpperCase())}</text></svg>`;
+  }
   const ink = k === 'Amber' || k === 'Steel' ? '#1d1a14' : '#fff';  // desenho com contraste sobre a cor da tinta
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="12,1.4 21.7,7 21.7,17 12,22.6 2.3,17 2.3,7" fill="${color}"/>
     <g fill="none" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${INK_GLYPH[k] || ''}</g></svg>`;
 }
 let filtersOpen = store.get('filtersOpen', false);
 function setupFilters() {
-  const sets = [...new Set(entries.map(e => e.c.set))].sort((a, b) => (+a || 999) - (+b || 999) || a.localeCompare(b));
-  const setName = Object.fromEntries(S.meta.sets.map(s => [s.code, s.name]));
-  $('#set').innerHTML = '<option value="">Todos os sets</option>' + sets.map(s => `<option value="${esc(s)}">${esc(s)} · ${esc(setName[s] || s)}</option>`).join('');
-  const rars = S.meta.rarities.map(r => r[0]).filter(r => entries.some(e => e.c.rarity === r));
-  $('#rarity').innerHTML = '<option value="">Todas as raridades</option>' + rars.map(r => `<option value="${r}">${esc(rar(r).label)}</option>`).join('');
-  $('#inks').innerHTML = S.meta.inks.map(([k, label, color]) => `<button class="inkchip" data-ink="${k}" aria-pressed="false" aria-label="${esc(label)}" title="${esc(label)}">${inkIcon(k, color)}</button>`).join('');
+  const order = Object.fromEntries(S.meta.sets.map((s, i) => [s.code, i]));  // ordem de lançamento
+  const sets = [...new Set(entries.map(e => e.c.set))].sort((a, b) => (order[a] ?? 999) - (order[b] ?? 999) || a.localeCompare(b));
+  $('#set').innerHTML = '<option value="">Todos os sets</option>' + sets.map(s => `<option value="${esc(s)}">${esc(shortCode(s))} · ${esc(setTitle(s))}</option>`).join('');
+  const rars = G().rarities.map(r => r[0]).filter(r => entries.some(e => e.c.rarity === r));
+  $('#rarity').innerHTML = '<option value="">Todas as raridades</option>' + rars.map(r => `<option value="${esc(r)}">${esc(rar(r).label)}</option>`).join('');
+  const fl = G().foil_label.toLowerCase();
+  $('#q').placeholder = `Buscar nome${S.game === 'lorcana' ? ', subtítulo' : ''} ou número (ex.: ${{ lorcana: '1/169', magic: 'FRA/12', pokemon: 'sv01/25' }[S.game]})`;
+  $('#foil').innerHTML = `<option value="all">Normal e ${fl}</option><option value="foil">Só ${fl}</option><option value="normal">Só normal</option>`;
+  $('#inks').setAttribute('aria-label', G().color_label);
+  $('#inks').innerHTML = G().colors.map(([k, label, color]) => `<button class="inkchip" data-ink="${esc(k)}" aria-pressed="false" aria-label="${esc(label)}" title="${esc(label)}">${inkIcon(k, color, label)}</button>`).join('');
   document.querySelectorAll('[data-ink]').forEach(b => b.onclick = () => {
     const k = b.dataset.ink; F.inks = F.inks.includes(k) ? F.inks.filter(x => x !== k) : [...F.inks, k]; renderCollection();
   });
@@ -186,20 +209,20 @@ function renderCollection() {
   if (F.view === 'grid') {
     patch(out, '<div class="grid">' + list.map(e => `
       <button class="tile${e.foil ? ' foil' : ''}" data-entry="${entries.indexOf(e)}">
-        <div class="art">${img(e.c)}</div>
-        ${e.qty > 1 ? `<span class="qty">×${e.qty}</span>` : ''}${e.foil ? '<span class="foiltag">FOIL</span>' : ''}
+        <div class="art">${img(e.c, false, e.lang)}</div>
+        ${e.qty > 1 ? `<span class="qty">×${e.qty}</span>` : ''}${e.foil ? `<span class="foiltag">${foilTag()}</span>` : ''}
         <div class="meta">
-          <div class="name">${esc(e.c.name)}</div>${e.c.version ? `<div class="ver">${esc(e.c.version)}</div>` : ''}
+          <div class="name">${esc(cardName(e.c, e.lang))}${e.lang === 'pt' ? ` ${LANG_PT}` : ''}</div>${e.c.version ? `<div class="ver">${esc(e.c.version)}</div>` : ''}
           <div class="row"><span class="rar" style="--c:${rar(e.c.rarity).color}"><i></i>${esc(rar(e.c.rarity).label)}</span>
           <span class="price num">${money(e.price)}</span></div>
         </div>
       </button>`).join('') + '</div>');
   } else {
-    patch(out, `<div class="tablewrap"><table class="list"><thead><tr><th>Carta</th><th>Set/Nº</th><th>Raridade</th><th>Tinta</th>
+    patch(out, `<div class="tablewrap"><table class="list"><thead><tr><th>Carta</th><th>Set/Nº</th><th>Raridade</th><th>${esc(G().color_label)}</th>
       <th class="r">Qtd</th><th class="r">Preço</th><th class="r">Total</th></tr></thead><tbody>` + list.map(e => `
-      <tr data-entry="${entries.indexOf(e)}"><td><b>${esc(e.c.name)}</b>${e.c.version ? ` <span class="muted">${esc(e.c.version)}</span>` : ''}
-        ${e.foil ? ' <span class="foilpill">FOIL</span>' : ''}</td>
-      <td class="num">${esc(e.c.set)}/${esc(e.c.number)}</td>
+      <tr data-entry="${entries.indexOf(e)}"><td><b>${esc(cardName(e.c, e.lang))}</b>${e.c.version ? ` <span class="muted">${esc(e.c.version)}</span>` : ''}
+        ${e.lang === 'pt' ? ` ${LANG_PT}` : ''}${e.foil ? ` <span class="foilpill">${foilTag()}</span>` : ''}</td>
+      <td class="num">${esc(shortCode(e.c.set))}/${esc(e.c.number)}</td>
       <td><span class="rar" style="--c:${rar(e.c.rarity).color}"><i></i>${esc(rar(e.c.rarity).label)}</span></td>
       <td>${esc(inkLabel(e.c.ink))}</td><td class="r num">${e.qty}</td><td class="r price">${money(e.price)}</td><td class="r num">${money(e.value)}</td></tr>`).join('') +
       '</tbody></table></div>');
@@ -209,9 +232,9 @@ $('#results').addEventListener('click', ev => { const el = ev.target.closest('[d
 
 // ---- detalhe da carta ----
 function openCard(e) {
-  const c = e.c, r = rar(c.rarity);
+  const c = e.c, r = rar(c.rarity), fl = G().foil_label;
   const copies = e.copies.map(x => {
-    const run = S.runs.find(r => r.id === x.run);
+    const run = S.runsAll.find(r => r.id === x.run);
     const cadastro = run?.kind === 'cadastro';
     const link = `<a href="#/pipelines/${x.run}" onclick="document.getElementById('dlg').close()">${cadastro ? 'Cadastro' : 'Abertura'} #${x.run}</a>`;
     const where = x.run
@@ -223,16 +246,17 @@ function openCard(e) {
   $('#dlgbody').innerHTML = `
     <button class="iconbtn close" onclick="document.getElementById('dlg').close()" aria-label="Fechar">✕</button>
     <div class="body">
-      <div class="art${e.foil ? ' foil' : ''}">${img(c, true)}</div>
+      <div class="art${e.foil ? ' foil' : ''}">${img(c, true, e.lang)}</div>
       <div>
-        <h2>${esc(c.name)}</h2><p class="sub">${esc(c.version || '')}</p>
+        <h2>${esc(cardName(c, e.lang))}${e.lang === 'pt' ? ` ${LANG_PT}` : ''}</h2>
+        <p class="sub">${esc(c.version || (e.lang === 'pt' && c.name_pt && c.name_pt !== c.name ? `em inglês: ${c.name}` : ''))}</p>
         <dl class="facts">
           <dt>Set</dt><dd><span class="setref">${setIcon(c.set, 'seticon small')}${esc(setTitle(c.set))}</span> · nº ${esc(c.number)}</dd>
-          <dt>Raridade</dt><dd><span class="rar" style="--c:${r.color};font-size:14px;color:var(--text)"><i></i>${esc(r.label)}</span>${e.foil ? ' <span class="foilpill">FOIL</span>' : ''}</dd>
-          <dt>Tinta</dt><dd>${esc(inkLabel(c.ink))}</dd>
-          <dt>Tipo</dt><dd>${esc(c.type || '—')}${c.cost != null ? ` · custo ${c.cost}` : ''}</dd>
+          <dt>Raridade</dt><dd><span class="rar" style="--c:${r.color};font-size:14px;color:var(--text)"><i></i>${esc(r.label)}</span>${e.foil ? ` <span class="foilpill">${foilTag()}</span>` : ''}</dd>
+          <dt>${esc(G().color_label)}</dt><dd>${esc(inkLabel(c.ink))}</dd>
+          <dt>${S.game === 'pokemon' ? 'Categoria' : 'Tipo'}</dt><dd>${esc(typeLabel(c.type))}${c.cost != null ? ` · custo ${c.cost}` : ''}</dd>
           <dt>Preço normal</dt><dd class="num">${money(c.usd)}</dd>
-          <dt>Preço foil</dt><dd class="num">${money(c.usd_foil)}</dd>
+          <dt>Preço ${esc(fl.toLowerCase())}</dt><dd class="num">${money(c.usd_foil)}</dd>
           ${e.qty ? `<dt>Na coleção</dt><dd class="num">${e.qty} · total ${money(e.value)}</dd>` : ''}
         </dl>
         ${copies ? `<b>Cópias</b><ul class="copies">${copies}</ul>` : ''}
@@ -249,12 +273,14 @@ $('#dlg').addEventListener('click', ev => {
 // ---- lista de pipelines ----
 function statusChip(r) { return `<span class="status ${r.status}">${STATUS[r.status] || r.status}</span>`; }
 // selo hexagonal de quem não tem ícone: o texto encolhe com o tamanho do código (P1, D23, Coconut...)
-const setHex = (code, cls = '') => `<span class="sethex ${cls}" style="--n:${Math.max(2, String(code).length)}" aria-hidden="true">${esc(code)}</span>`;
+const shortCode = code => S.meta.sets.find(x => x.code === code)?.short || String(code).replace(/^(mtg|pkm)-/, '');
+const setHex = (code, cls = '') => { const t = shortCode(code); return `<span class="sethex ${cls}" style="--n:${Math.max(2, t.length)}" aria-hidden="true">${esc(t)}</span>`; };
 function setIcon(code, cls = 'seticon') {
   const set = S.meta.sets.find(x => x.code === code);
   return set?.icon ? `<img class="${cls}" src="${esc(set.icon)}" alt="" title="${esc(set.name)}" loading="lazy">` : setHex(code, cls);
 }
-const setTitle = code => S.meta.sets.find(x => x.code === code)?.name || `set ${code}`;
+const setTitle = code => S.meta.sets.find(x => x.code === code)?.name || `set ${shortCode(code)}`;
+const gameSets = () => S.meta.sets.filter(x => x.game === S.game);  // de Magic e Pokémon, os já baixados
 const KIND_LABEL = { abertura: 'Abertura de booster', cadastro: 'Cadastro de coleção', lacrados: 'Registro de lacrados' };
 function kindChip(r) { return `<span class="kindchip ${r.kind}">${KIND_LABEL[r.kind] || r.kind}</span>`; }
 function dupChip(r) {  // as mesmas cartas de outra pipeline (ordem, foil e repetidas não contam)
@@ -267,7 +293,7 @@ function resultHtml(r) {
   return `<span><small>Resultado</small><b class="${cls(d)}">${money(d, true)} (${pctTxt(r.value_now, r.paid_usd)})</b></span>`;
 }
 function queueLabel(r) {  // o servidor roda uma pipeline por vez, na ordem em que entraram na fila
-  const ahead = S.runs.filter(x => x.id !== r.id && (x.status === 'running'
+  const ahead = S.runsAll.filter(x => x.id !== r.id && (x.status === 'running'
     || (x.status === 'queued' && (x.created_at < r.created_at || (x.created_at === r.created_at && x.id < r.id))))).length;
   return ahead ? `Na fila · ${ahead} na frente` : 'Na fila · começa em seguida';
 }
@@ -342,13 +368,13 @@ function renderRuns() {
     <div class="seg" role="group" aria-label="Tipo de pipeline">${filters.map(([k, label]) =>
       `<button data-runkind="${k}" aria-pressed="${runKind === k}">${label}</button>`).join('')}</div>
     <span class="spacer"></span><a class="btn" href="#/nova" data-write>+ Nova pipeline</a></div>`;
-  const runs = runKind === 'atualizacao' ? [] : S.runs.filter(r => runKind === 'todas' || r.kind === runKind);
+  const runs = runKind === 'atualizacao' ? [] : S.runs.filter(r => runKind === 'todas' || r.kind === runKind);  // do jogo escolhido
   const jobs = ['todas', 'atualizacao'].includes(runKind) ? S.jobs : [];
   const list = [...runs.map(r => ({ r, t: new Date(r.created_at) })), ...jobs.map(j => ({ j, t: new Date(j.started_at) }))]
     .sort((a, b) => b.t - a.t);  // pipelines e atualizações juntas, da mais nova
   if (!list.length) {
     patch($('#view-pipelines'), head + `<p class="empty">${runKind === 'atualizacao' ? 'Nenhuma atualização ainda: use ↻ Atualizar preços no Resumo ou Sincronizar em Sets.'
-      : S.runs.length ? 'Nenhuma pipeline deste tipo.' : 'Nenhuma pipeline ainda. Envie um vídeo em <a href="#/nova">Nova pipeline</a>.'}</p>`);
+      : S.runs.length ? 'Nenhuma pipeline deste tipo.' : `Nenhuma pipeline de ${esc(G().short)} ainda. Envie um vídeo em <a href="#/nova">Nova pipeline</a>.`}</p>`);
     return;
   }
   patch($('#view-pipelines'), head + '<div class="runs">' + list.map(({ r, j }) => j ? jobCard(j) : `
@@ -407,7 +433,7 @@ function renderRun() {
       : `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}`) +
     (r.options?.sealed ? ` · ${r.options.sealed.qty > 1 ? `${r.options.sealed.qty} boosters` : 'booster'} dos lacrados (${esc(setTitle(r.options.sealed.set))})` : ''));
 
-  const twins = (r.duplicates || []).map(id => S.runs.find(x => x.id === id) || { id });
+  const twins = (r.duplicates || []).map(id => S.runsAll.find(x => x.id === id) || { id });
   $('#r-dup').hidden = !twins.length;
   patch($('#r-dup'), twins.length ? `<b>Pipeline repetida:</b> as cartas identificadas são as mesmas da ${twins.map(o =>
     `<a href="#/pipelines/${o.id}">#${o.id}</a>${o.video_name ? ` (${esc(o.video_name)}, ${dt(o.recorded_at || o.created_at)})` : ''}`).join(' e da ')}.
@@ -477,22 +503,22 @@ function renderRun() {
   patch($('#r-sanitize'), cards.length && !RO() ? `<button class="btn ghost small" data-action="sanitize" ${nrep && editable ? '' : 'disabled'}
     title="${nrep ? `Tira ${nrep === 1 ? 'a carta repetida' : `as ${nrep} cartas repetidas`}, deixando a primeira aparição de cada uma` : 'Nenhuma carta repetida'}">Sanitizar${nrep ? ` (${nrep})` : ''}</button>` : '');
   patch($('#r-cards'), cards.length ? cards.map(x => {
-    const c = r.card_info[x.card], rr = rar(c.rarity);
+    const c = r.card_info[x.card], rr = rar(c.rarity, r.game);
     const check = x.check?.status === 'divergente'
       ? `<span class="warn" title="${esc(x.check.model)} leu: ${esc(x.check.name)} · ${esc(x.check.number)}">⚠ conferir</span>` : '';
-    const name = `#${x.n}, ${esc(c.name)}`;
+    const name = `#${x.n}, ${esc(cardName(c, x.lang))}`;
     return `<li class="swipe${x === best ? ' best' : ''}" data-uid="${esc(x.uid)}">
       ${editable ? `<div class="swipe-act left"><button data-action="edit-card" data-uid="${esc(x.uid)}" aria-label="Editar a carta ${name}">${PENCIL}<span>Editar</span></button></div>
       <div class="swipe-act right"><button data-action="remove-card" data-uid="${esc(x.uid)}" aria-label="Remover a carta ${name}">${TRASH}<span>Remover</span></button></div>` : ''}
       <div class="pull${editable ? ' draggable' : ''}" data-card="${esc(x.card)}" data-foil="${x.foil}" title="${x === best ? 'Melhor carta' : ''}">
       <span class="n">#${x.n}</span>
       ${x.crop ? `<img loading="lazy" src="${esc(x.crop)}" alt="Recorte do vídeo" draggable="false">` : '<span class="noimg">sem recorte</span>'}
-      ${img(c)}
-      <div class="info"><div><b>${esc(c.name)}</b></div><div class="ver">${esc(c.version || ' ')}</div>
-        <div class="line"><span class="rar" style="--c:${rr.color}"><i></i>${esc(rr.label)}</span>${x.foil ? '<span class="foilpill">FOIL</span>' : ''}
+      ${img(c, false, x.lang)}
+      <div class="info"><div><b>${esc(cardName(c, x.lang))}</b>${x.lang === 'pt' ? ` ${LANG_PT}` : ''}</div><div class="ver">${esc(c.version || ' ')}</div>
+        <div class="line"><span class="rar" style="--c:${rr.color}"><i></i>${esc(rr.label)}</span>${x.foil ? `<span class="foilpill">${foilTag(r.game)}</span>` : ''}
           <span class="price num" style="color:var(--text)">${money(x.price_now ?? x.price_open)}</span>${x.manual ? '<span>· corrigida</span>' : ''}${check}
           ${x.repeat_of ? `<span class="warn" title="A mesma carta já apareceu antes no vídeo; Sanitizar tira esta e deixa a #${x.repeat_of}">↺ repete a #${x.repeat_of}</span>` : ''}</div>
-        <div class="line" title="${x.inliers ? `${x.inliers} pontos casados com a imagem oficial` : 'inserida manualmente'}">${esc(c.set)}/${esc(c.number)} · ${x.t != null ? x.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 's' : '—'}</div>
+        <div class="line" title="${x.inliers ? `${x.inliers} pontos casados com a imagem oficial` : 'inserida manualmente'}">${esc(shortCode(c.set))}/${esc(c.number)} · ${x.t != null ? x.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 's' : '—'}</div>
       </div></div></li>`;
   }).join('') : `<p class="muted">${active(r) ? 'As cartas aparecem aqui quando a identificação terminar.' : 'Nenhuma carta identificada.'}</p>`);
 
@@ -502,13 +528,13 @@ function renderRun() {
     ${removed.length ? `<div class="removed"><b>Removidas (${removed.length})</b><ul>${removed.map(x => {
       const c = r.card_info[x.card];
       return `<li>${x.crop ? `<img loading="lazy" src="${esc(x.crop)}" alt="">` : '<span class="noimg"></span>'}
-        <span>${esc(c.name)}${c.version ? ` <span class="muted">${esc(c.version)}</span>` : ''}${x.foil ? ' <span class="foilpill">FOIL</span>' : ''}</span>
+        <span>${esc(c.name)}${c.version ? ` <span class="muted">${esc(c.version)}</span>` : ''}${x.foil ? ` <span class="foilpill">${foilTag(r.game)}</span>` : ''}</span>
         ${editable ? `<button class="btn ghost small" data-action="restore-card" data-uid="${esc(x.uid)}">Restaurar</button>` : ''}</li>`;
     }).join('')}</ul></div>` : ''}
     ${RO() ? '' : `<div class="reprocess${pending ? ' pending' : ''}">
       <p>${active(r) ? 'A pipeline está rodando; as cartas ficam editáveis quando ela terminar.'
         : pending ? `Edições pendentes: preços${cadastro ? ' e coleção' : ', coleção e vídeo'} só mudam depois de reprocessar.`
-        : cadastro ? 'Deslize uma carta para a direita para marcar se é foil ou para a esquerda para remover, depois reprocesse.'
+        : cadastro ? `Deslize uma carta para a direita para marcar se é ${G(r.game).foil_label.toLowerCase()} ou para a esquerda para remover, depois reprocesse.`
         : 'Deslize uma carta para a direita para editar ou para a esquerda para remover, depois reprocesse.'}</p>
       <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
     </div>`}` : '');
@@ -523,7 +549,7 @@ function renderRun() {
 }
 
 // ---- registro de lacrados: os boosters da pilha, com correção de set, remoção e inclusão ----
-const boosterSets = () => S.meta.sets.filter(x => x.booster).slice().reverse();
+const boosterSets = () => gameSets().filter(x => x.booster).slice().reverse();
 function renderPacks(r, editable) {
   const packs = r.pack_items || [], removed = r.removed || [], pending = r.status === 'stale';
   patch($('#r-cards-sub'), packs.length ? (editable ? 'deslize um booster para editar ou remover' : 'recorte do vídeo') : '');
@@ -873,23 +899,23 @@ document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#dlg
 document.addEventListener('pointerdown', ev => { if (swipe.open && !swipe.open.contains(ev.target)) closeSwipe(); });
 
 // ---- editar carta (por enquanto, só se é foil) ----
-const FOIL_ONLY = ['Enchanted', 'Epic', 'Iconic'];
+
 function editCard(uid) {
   const r = S.run, x = r.cards.find(card => card.uid === uid);
   if (!x) return;
-  const c = r.card_info[x.card], fixed = FOIL_ONLY.includes(c.rarity);
+  const g = G(r.game), c = r.card_info[x.card], fixed = g.foil_only.includes(c.rarity), fl = g.foil_label;
   $('#dlgbody').innerHTML = `
     <form class="editcard" id="edit-form">
       <button class="iconbtn close" type="button" data-close aria-label="Fechar">✕</button>
       <h2>Editar carta #${x.n}</h2>
       <div class="editpreview">
-        ${x.crop ? `<img src="${esc(x.crop)}" alt="Recorte do vídeo">` : ''}${img(c)}
-        <div><b>${esc(c.name)}</b><div class="muted">${esc(c.version || '')}</div>
-          <div class="muted">${esc(rar(c.rarity).label)} · ${esc(c.set)}/${esc(c.number)}</div></div>
+        ${x.crop ? `<img src="${esc(x.crop)}" alt="Recorte do vídeo">` : ''}${img(c, false, x.lang)}
+        <div><b>${esc(cardName(c, x.lang))}</b>${x.lang === 'pt' ? ` ${LANG_PT}` : ''}<div class="muted">${esc(c.version || '')}</div>
+          <div class="muted">${esc(rar(c.rarity, r.game).label)} · ${esc(shortCode(c.set))}/${esc(c.number)}</div></div>
       </div>
-      <label class="toggle"><input type="checkbox" id="edit-foil" ${x.foil ? 'checked' : ''} ${fixed ? 'disabled' : ''}><span>Foil</span></label>
-      <p class="muted">${fixed ? `${esc(rar(c.rarity).label)} é sempre foil.`
-        : r.kind === 'cadastro' ? 'Marque se esta cópia é foil. O preço do cadastro é recalculado para o acabamento escolhido quando você reprocessar.'
+      <label class="toggle"><input type="checkbox" id="edit-foil" ${x.foil ? 'checked' : ''} ${fixed ? 'disabled' : ''}><span>${esc(fl)}</span></label>
+      <p class="muted">${fixed ? `${esc(rar(c.rarity, r.game).label)} é sempre ${esc(fl.toLowerCase())}.`
+        : r.kind === 'cadastro' || r.game !== 'lorcana' ? `Marque se esta cópia é ${esc(fl.toLowerCase())}. O preço ${r.kind === 'cadastro' ? 'do cadastro' : 'da abertura'} é recalculado para o acabamento escolhido quando você reprocessar.`
         : 'Um booster tem uma foil: marcar esta carta tira a marcação automática de outra do mesmo booster. O preço da abertura é recalculado para o acabamento escolhido quando você reprocessar.'}</p>
       <div class="actions"><button class="btn" id="edit-save" ${fixed ? 'disabled' : ''}>Salvar</button>
         <button class="btn ghost" type="button" data-close>Cancelar</button></div>
@@ -937,8 +963,12 @@ function editPaid() {
 
 // ---- nova pipeline ----
 function prepareNew() {
-  const sets = S.meta.sets.filter(s => s.booster).reverse();
-  $('#new-set').innerHTML = '<option value="">Detectar automaticamente</option>' + sets.map(s => `<option value="${esc(s.code)}">${esc(s.code)} · ${esc(s.name)}</option>`).join('');
+  const sets = gameSets().filter(s => s.booster).reverse();
+  $('#new-game').textContent = G().short;
+  $('#new-set').innerHTML = '<option value="">Detectar automaticamente</option>' + sets.map(s => `<option value="${esc(s.code)}">${esc(s.short)} · ${esc(s.name)}</option>`).join('');
+  $('#new-nosets').hidden = sets.length > 0;
+  $('#new-nosets').innerHTML = sets.length ? '' : `Nenhum set de ${esc(G().short)} baixado ainda: o reconhecimento precisa das imagens.
+    ${S.me?.admin ? 'Baixe os sets que você vai abrir na aba <a href="#/sets">Sets</a>.' : 'Peça para o administrador baixar os sets na aba Sets.'}`;
   setNewCurrency(S.meta.currency);
   const v = S.meta.verify;
   $('#opt-verify').disabled = !v.available;
@@ -963,7 +993,7 @@ $('#opt-overlay').addEventListener('change', syncNarrationOption);
 // ---- booster dos lacrados: o valor de registro e o set vêm dele, e ele sai do estoque ----
 let sealedBoosters = [];
 async function loadSealedBoosters() {
-  try { sealedBoosters = await api('/api/sealed/boosters'); } catch { sealedBoosters = []; }
+  try { sealedBoosters = await api(`/api/sealed/boosters?game=${S.game}`); } catch { sealedBoosters = []; }
   $('#from-sealed-box').hidden = !sealedBoosters.length || newKind() !== 'abertura';
   $('#from-sealed').innerHTML = '<option value="">Nenhum: não veio dos lacrados</option>' + sealedBoosters.map(x =>
     `<option value="${x.id}">${esc(setTitle(x.set_code))} · ${esc(x.name)} (${x.qty} ${x.qty === 1 ? 'fechado' : 'fechados'})</option>`).join('');
@@ -1092,7 +1122,7 @@ $('#new-form').onsubmit = async ev => {
   const paid = paidRaw ? parseMoney(paidRaw) : null;
   if (paidRaw && paid == null) { newError('Valor pago inválido.'); return; }
   const kind = newKind();
-  const params = new URLSearchParams({ filename: S.file.name, kind, verify: $('#opt-verify').checked });
+  const params = new URLSearchParams({ filename: S.file.name, kind, verify: $('#opt-verify').checked, game: S.game });
   if (kind === 'abertura' || kind === 'lacrados') {
     params.set('paid_currency', newCurrency);
     params.set('overlay', $('#opt-overlay').checked);
@@ -1375,7 +1405,7 @@ function renderViewsChart() {
 }
 watchWidth($('#views-chart'), renderViewsChart);
 async function loadHistory() {
-  try { S.history = await api('/api/history'); } catch (e) { console.warn(e); return; }
+  try { S.history = await api(`/api/history?game=${S.game}`); } catch (e) { console.warn(e); return; }
   renderValueChart(); renderViewsChart();
 }
 
@@ -1441,7 +1471,7 @@ document.querySelectorAll('[data-coltab]').forEach(b => b.onclick = () => {
   if (colTab === 'lacrados') loadSealed();
 });
 async function loadSealed() {
-  try { S.sealed = await api('/api/sealed'); } catch (e) { console.warn(e); return; }
+  try { S.sealed = await api(`/api/sealed?game=${S.game}`); } catch (e) { console.warn(e); return; }
   renderSealed(); renderSealedResumo(); renderColTabs();
 }
 const paidEach = x => x.paid == null ? null : `${sym(x.paid_currency)} ${nf.format(x.paid)}`;
@@ -1500,9 +1530,10 @@ function pickSealedProduct() {
   $('#sealed-save').disabled = !p;
 }
 $('#sealed-new').onclick = () => {
-  if (!$('#sealed-set').options.length) {  // o set escolhido da última vez continua
-    const sets = [...S.meta.sets].reverse().sort((a, b) => (b.booster ? 1 : 0) - (a.booster ? 1 : 0));
+  if (!$('#sealed-set').options.length || $('#sealed-set').dataset.game !== S.game) {  // o set escolhido da última vez continua
+    const sets = gameSets().reverse().sort((a, b) => (b.booster ? 1 : 0) - (a.booster ? 1 : 0));
     $('#sealed-set').innerHTML = sets.map(s => `<option value="${esc(s.code)}">${esc(s.name)}</option>`).join('');
+    $('#sealed-set').dataset.game = S.game;
   }
   $('#sealed-form').hidden = false; $('#sealed-error').hidden = true;
   loadSealedProducts();
@@ -1545,56 +1576,88 @@ $('#sealed-list').addEventListener('click', async ev => {
 
 // ---- sets: base de coleções, ícones e sincronização ----
 S.sets = [];
-let syncTimer = null;
+let syncTimer = null, syncState = null, setsQuery = '';
 async function loadSets() {
-  try { S.sets = await api('/api/sets'); } catch (e) { console.warn(e); }
+  const game = S.game;
+  try { S.sets = await api(`/api/sets?game=${game}`); S.setsGame = game; } catch (e) { console.warn(e); }
   renderSets();
   pollSync();
 }
 function renderSets() {
+  const lorcana = S.game === 'lorcana';
+  $('.setsintro').hidden = !lorcana;  // o texto sobre o ícone dos sets é de Lorcana
+  if (!S.sets || S.setsGame !== S.game) { patch($('#sets-grid'), '<p class="empty">Carregando…</p>'); return; }
   const fmtDay = d => d ? d.split('-').reverse().join('/') : '—';
+  const busy = syncState?.running, loading = new Set(busy ? syncState.sets || [] : []);
+  const icon = x => x.icon ? `<img src="${esc(x.icon)}" alt="Booster de ${esc(x.name)}" loading="lazy">`
+    : x.symbol ? `<img class="setsymbol${/\.svg/.test(x.symbol) ? ' mono' : ''}" src="${esc(x.symbol)}" alt="Símbolo de ${esc(x.name)}" loading="lazy">` : setHex(x.code, 'big');
   const card = x => `
     <article class="panel setcard${x.booster ? '' : ' minor'}">
-      <div class="seticonbox">${x.icon ? `<img src="${esc(x.icon)}" alt="Booster de ${esc(x.name)}" loading="lazy">` : setHex(x.code, 'big')}</div>
+      <div class="seticonbox">${icon(x)}</div>
       <div class="setinfo">
-        <h3>${esc(x.name)}</h3>
-        <p class="muted">Set ${esc(x.code)} · ${fmtDay(x.released_at)}${x.booster ? '' : ' · promo/outros'}</p>
-        <p class="setstats"><span>${x.cards} cartas no catálogo</span>
+        <h3>${esc(x.name)}</h3>${x.name_pt && x.name_pt !== x.name ? `<p class="setpt">${esc(x.name_pt)}</p>` : ''}
+        <p class="muted">Set ${esc(x.short)} · ${x.released_at > new Date().toISOString().slice(0, 10) ? 'lança em ' : ''}${fmtDay(x.released_at)}${x.booster ? '' : ' · promo/outros'}${!lorcana && !x.cards && x.official ? ` · ${x.official} cartas` : ''}</p>
+        ${lorcana || x.cards ? `<p class="setstats"><span>${x.cards} cartas no catálogo</span>
           <span>${x.owned ? `${x.owned} na coleção (${x.owned_unique} únicas)` : 'nenhuma na coleção'}</span></p>
         <p class="${x.recognized ? 'ok' : 'muted'}">${x.recognized ? '✓ reconhecido em vídeo' : x.booster ? 'ainda não reconhecido em vídeo: sincronize' : 'não reconhecido em vídeo (sem booster)'}</p>
         <div class="seticonactions">
           <button class="linkbtn" data-icon-upload="${esc(x.code)}" data-admin>Trocar ícone</button>
           ${x.icon_source === 'manual' ? `<button class="linkbtn" data-icon-reset="${esc(x.code)}" data-admin>${x.booster ? 'Usar a foto do booster' : 'Voltar ao selo'}</button>` : ''}
           <span class="muted">${x.icon_source === 'manual' ? 'ícone enviado por você' : x.icon ? 'foto do booster (TCGplayer)' : 'selo com o número do set'}</span>
-        </div>
+        </div>` : `<p class="muted">Ainda não baixado: sem cartas, preços nem reconhecimento.</p>
+        <div class="seticonactions">${loading.has(x.code) ? '<span class="muted">Baixando…</span>'
+          : `<button class="btn small" data-set-download="${esc(x.code)}" data-admin ${busy ? 'disabled' : ''}>Baixar</button>`}</div>`}
       </div>
     </article>`;
-  const boosters = S.sets.filter(x => x.booster), others = S.sets.filter(x => !x.booster);
-  patch($('#sets-grid'), S.sets.length ? `<h3 class="setsgroup">Sets de booster</h3><div class="setsgrid-inner">${boosters.map(card).join('')}</div>
-    <h3 class="setsgroup">Promos e outros</h3><div class="setsgrid-inner">${others.map(card).join('')}</div>` : '<p class="empty">Carregando…</p>');
+  const q = norm(setsQuery.trim());
+  const shown = S.sets.filter(x => !q || norm(`${x.name} ${x.name_pt || ''} ${x.short}`).includes(q));
+  const intro = lorcana ? '' : `<div class="setsfind"><input type="search" id="sets-q" value="${esc(setsQuery)}" placeholder="Buscar set (nome ou código)" aria-label="Buscar set">
+    <p class="muted">Baixe os sets que você abre: o cardline busca as cartas, os preços e as imagens em inglês e português e
+      monta o reconhecimento em vídeo (1 a 3 minutos por set).${S.game === 'magic' ? ' Magic só saiu em português até Modern Horizons 3 (2024).' : ''}</p></div>`;
+  const groups = lorcana
+    ? [['Sets de booster', shown.filter(x => x.booster)], ['Promos e outros', shown.filter(x => !x.booster)]]
+    : [['Baixados', shown.filter(x => x.cards)], ['Sets de booster', shown.filter(x => !x.cards)]];
+  const html = groups.filter(([, list]) => list.length).map(([title, list]) =>
+    `<h3 class="setsgroup">${title}</h3><div class="setsgrid-inner">${list.map(card).join('')}</div>`).join('');
+  const grid = $('#sets-grid'), focused = document.activeElement?.id === 'sets-q', caret = focused ? document.activeElement.selectionStart : 0;
+  patch(grid, intro + (html || '<p class="empty">Nenhum set com esse nome.</p>'));
+  if (focused) { const el = $('#sets-q'); el.focus(); el.setSelectionRange(caret, caret); }  // a busca não perde o foco
 }
+$('#sets-grid').addEventListener('input', ev => { if (ev.target.id === 'sets-q') { setsQuery = ev.target.value; renderSets(); } });
 async function pollSync() {
   clearTimeout(syncTimer);
   let st;
   try { st = await api('/api/sets/sync'); } catch { return; }
+  const was = syncState;
+  syncState = st;
   const box = $('#sync-status'), btn = $('#sync-sets');
   btn.disabled = st.running;
   btn.textContent = st.running ? 'Sincronizando…' : 'Sincronizar';
   if (st.running || st.finished_at) {
     const last = ((st.log || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '').replace(/\s+/g, ' ').trim();
+    const what = st.sets?.length ? `Baixando ${st.sets.map(shortCode).join(', ')}` : 'Sincronizando';
     box.hidden = false;
     box.className = `syncstatus ${st.running ? 'running' : st.ok ? 'ok' : 'failed'}`;
-    box.textContent = st.running ? `Sincronizando: ${last}` : st.ok ? `Sincronizado em ${dt(st.finished_at)}.` : `A sincronização falhou: ${last}`;
+    box.textContent = st.running ? `${what}: ${last}` : st.ok ? `${st.sets?.length ? 'Set baixado' : 'Sincronizado'} em ${dt(st.finished_at)}.` : `A sincronização falhou: ${last}`;
   }
+  if (Boolean(was?.running) !== Boolean(st.running)) renderSets();
   if (st.running) { S.syncSeen = true; syncTimer = setTimeout(pollSync, 1500); return; }
   if (S.syncSeen) {  // acabou de terminar: sets, cartas, preços e ícones podem ter mudado
     S.syncSeen = false;
     S.meta = await api('/api/meta');
-    S.sets = await api('/api/sets');
+    S.sets = await api(`/api/sets?game=${S.game}`); S.setsGame = S.game;
     renderSets();
     await refresh(true);
   }
 }
+$('#sets-grid').addEventListener('click', async ev => {
+  const b = ev.target.closest('[data-set-download]');
+  if (!b) return;
+  b.disabled = true;
+  try { await api(`/api/sets/${encodeURIComponent(b.dataset.setDownload)}/download`, { method: 'POST' }); }
+  catch (e) { alert(e.message); }
+  pollSync();
+});
 $('#sync-sets').onclick = async () => {
   try { await api('/api/sets/sync', { method: 'POST' }); } catch (e) { alert(e.message); }
   pollSync();
@@ -1618,7 +1681,7 @@ $('#icon-file').onchange = async ev => {
 };
 async function reloadIcons() {
   S.meta = await api('/api/meta');
-  S.sets = await api('/api/sets');
+  S.sets = await api(`/api/sets?game=${S.game}`); S.setsGame = S.game;
   renderAll();
 }
 
@@ -2280,9 +2343,29 @@ async function route() {
   if (S.jobId) { try { S.job = await api(`/api/jobs/${S.jobId}`); } catch (e) { patch($('#view-job'), `<p class="empty">${esc(e.message)}</p>`); return; } }
   if (view === 'nova') prepareNew();
   if (runId) { try { S.run = await api(`/api/runs/${runId}`); } catch (e) { patch($('#view-run'), `<p class="empty">${esc(e.message)}</p>`); return; } }
+  if (S.run && S.run.id === runId && (S.run.game || 'lorcana') !== S.game) setGame(S.run.game, true);
   renderAll();
 }
 window.addEventListener('hashchange', route);
+
+// ---- o jogo escolhido: vale para o Resumo, a Coleção, as Pipelines, os Sets e a nova pipeline ----
+function renderGameSwitch() {
+  $('#game-switch').innerHTML = S.meta.games.map(g => `<button data-game="${g.key}" aria-pressed="${g.key === S.game}">${esc(g.short)}</button>`).join('');
+  $('#brand-sub').textContent = `Coleção · ${G().name}`;
+}
+function setGame(key, quiet = false) {
+  if (!GAMES[key] || key === S.game) return;
+  S.game = key;
+  store.set('game', key);
+  F = { ...F, set: '', rarity: '', inks: [] };  // os filtros de um jogo não valem no outro
+  S.runs = S.runsAll.filter(ofGame);
+  S.history = null; S.sealed = null; S.sets = null;
+  buildEntries(); setupFilters(); renderGameSwitch();
+  if (quiet) return;
+  if (['run', 'job'].includes(currentView())) { location.hash = '#/pipelines'; return; }
+  route();
+}
+$('#game-switch').onclick = e => { const b = e.target.closest('[data-game]'); if (b) setGame(b.dataset.game); };
 
 function renderAll() {
   buildEntries();
@@ -2300,10 +2383,11 @@ let timer = null, prevActive = new Set();
 async function refresh(collectionToo = false) {
   clearTimeout(timer);
   try {
-    S.runs = await api('/api/runs');
+    S.runsAll = await api('/api/runs');
+    S.runs = S.runsAll.filter(ofGame);  // as pipelines do jogo escolhido
     S.jobs = await api('/api/jobs');
     if (S.jobId) S.job = await api(`/api/jobs/${S.jobId}`);
-    const now = new Set(S.runs.filter(active).map(r => r.id));
+    const now = new Set(S.runsAll.filter(active).map(r => r.id));
     const finished = [...prevActive].some(id => !now.has(id));
     prevActive = now;
     if (collectionToo || finished) {
@@ -2311,8 +2395,8 @@ async function refresh(collectionToo = false) {
       buildEntries(); setupFilters();
     }
     if (S.runId) S.run = await api(`/api/runs/${S.runId}`);
-    if (currentView() === 'resumo') S.history = await api('/api/history');
-    if (['resumo', 'colecao'].includes(currentView())) S.sealed = await api('/api/sealed');
+    if (currentView() === 'resumo') S.history = await api(`/api/history?game=${S.game}`);
+    if (['resumo', 'colecao'].includes(currentView())) S.sealed = await api(`/api/sealed?game=${S.game}`);
     renderAll();
   } catch (e) { console.warn(e); }
   if (S.loggedOut) return;
@@ -2332,8 +2416,12 @@ async function refresh(collectionToo = false) {
   applyAccount();
   $('#app').hidden = false;
   S.meta = await api('/api/meta');
-  RAR = Object.fromEntries(S.meta.rarities.map(([k, label, color], rank) => [k, { label, color, rank }]));
-  INK = Object.fromEntries(S.meta.inks.map(([k, label, color]) => [k, { label, color }]));
+  GAMES = Object.fromEntries(S.meta.games.map(g => [g.key, { ...g,
+    rar: Object.fromEntries(g.rarities.map(([k, label, color], rank) => [k, { label, color, rank }])),
+    ink: Object.fromEntries(g.colors.map(([k, label, color]) => [k, { label, color }])) }]));
+  S.game = store.get('game', 'lorcana');
+  if (!GAMES[S.game]) S.game = 'lorcana';
+  renderGameSwitch();
   S.cur = store.get('currency', S.meta.currency);
   if (!(S.cur in S.meta.rates)) S.cur = 'USD';
   S.col = await api('/api/collection');

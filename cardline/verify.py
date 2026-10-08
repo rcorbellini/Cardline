@@ -14,7 +14,7 @@ import unicodedata
 import urllib.request
 from pathlib import Path
 
-from . import db
+from . import db, games
 from .config import Settings
 
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
@@ -22,6 +22,13 @@ PROMPT = (
     "This is a photo of a Disney Lorcana trading card. Return JSON with: name (the big title) and "
     "collector_number (the bottom-left line, like '169/204 • EN • 1')."
 )
+PROMPTS = {
+    "lorcana": PROMPT,
+    "magic": "This is a photo of a Magic: The Gathering card (English or Portuguese). Return JSON with: name (the "
+             "card name at the top) and collector_number (the small number at the bottom left, like '123/281').",
+    "pokemon": "This is a photo of a Pokémon trading card (English or Portuguese). Return JSON with: name (the card "
+               "name at the top) and collector_number (the number at the bottom, like '025/198').",
+}
 SCHEMA = {
     "type": "object",
     "properties": {"name": {"type": "string"}, "collector_number": {"type": "string"}},
@@ -34,9 +41,9 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower())
 
 
-def _read_card(model: str, image: Path) -> dict:
+def _read_card(model: str, image: Path, prompt: str = PROMPT) -> dict:
     body = {
-        "model": model, "prompt": PROMPT, "images": [base64.b64encode(image.read_bytes()).decode()],
+        "model": model, "prompt": prompt, "images": [base64.b64encode(image.read_bytes()).decode()],
         "stream": False, "format": SCHEMA, "think": False, "options": {"temperature": 0},
     }
     req = urllib.request.Request(
@@ -62,10 +69,10 @@ def verify(settings: Settings, run_dir: Path, scan: dict, model: str, progress) 
         progress(i / len(scan["cards"]), f"Conferindo carta {i}/{len(scan['cards'])} com {model}")
         if not c.get("crop"):
             continue
-        read = _read_card(model, run_dir / c["crop"])
+        read = _read_card(model, run_dir / c["crop"], PROMPTS[games.get(scan.get("game")).key])
         m = COLLECTOR.search(read.get("collector_number", ""))
         number = m.group(1).lstrip("0") if m else None
-        name_ok = _norm(read.get("name", "")) == _norm(c["name"])
+        name_ok = _norm(read.get("name", "")) in {_norm(c["name"]), _norm(c.get("name_pt") or "")}
         number_ok = number == c["number"].lstrip("0")
         status = "ok" if name_ok and number_ok else "parcial" if name_ok or number_ok else "divergente"
         c["check"] = {"model": model, "status": status, "name": read.get("name"), "number": read.get("collector_number")}

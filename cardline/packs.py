@@ -21,6 +21,7 @@ from PIL import Image
 
 from . import db
 from .config import Settings, load_settings
+from .games import of_code
 from .index import RefIndex, root_sift
 from .matcher import Matcher
 from .scan import Progress
@@ -41,10 +42,11 @@ SIG = (40, 72)  # recorte pequeno (largura, altura) para comparar a arte
 SCAN_VERSION = 1
 
 
-def reference_sets(con) -> list[tuple[str, str]]:
-    """(código, caminho do ícone) dos sets com a foto do booster do TCGplayer."""
+def reference_sets(con, game: str = "lorcana") -> list[tuple[str, str]]:
+    """(código, caminho do ícone) dos sets do jogo com a foto do booster do TCGplayer."""
     return [(r["code"], r["icon"]) for r in con.execute(
-        "SELECT code, icon FROM sets WHERE icon_source = 'tcgplayer' AND icon IS NOT NULL ORDER BY released_at, code")]
+        "SELECT code, icon FROM sets WHERE icon_source = 'tcgplayer' AND icon IS NOT NULL AND game = ?"
+        " ORDER BY released_at, code", (game,))]
 
 
 def _ref_features(path: Path) -> tuple[np.ndarray, np.ndarray, tuple[int, int]]:
@@ -62,7 +64,8 @@ def _ref_features(path: Path) -> tuple[np.ndarray, np.ndarray, tuple[int, int]]:
 
 def load_index(settings: Settings, refs: list[tuple[str, str]]) -> RefIndex:
     """Índice das fotos dos boosters (em cache; refeito quando um ícone muda)."""
-    path = settings.index_dir / "packs.npz"
+    games = sorted({of_code(code).key for code, _ in refs}) or ["lorcana"]
+    path = settings.index_dir / ("packs.npz" if games == ["lorcana"] else f"packs-{'-'.join(games)}.npz")
     key = json.dumps([(code, icon, (settings.root / icon).stat().st_mtime_ns) for code, icon in refs])
     if path.exists():
         with np.load(path) as z:
@@ -197,13 +200,13 @@ def segment(records: list[dict]) -> list[list[dict]]:
 # --- orquestração ---------------------------------------------------------------------------
 
 
-def scan_video(settings: Settings, video: Path, run_dir: Path, progress: Progress) -> dict:
+def scan_video(settings: Settings, video: Path, run_dir: Path, progress: Progress, game: str = "lorcana") -> dict:
     """Identifica os boosters do vídeo; grava `scan.json` (packs) e `crops/` em `run_dir`."""
     info = probe(video)
     con = db.connect(settings.db_path)
-    refs = reference_sets(con)
+    refs = reference_sets(con, game)
     if not refs:
-        raise RuntimeError("Nenhum set tem a foto do booster ainda; sincronize os sets (aba Sets) antes.")
+        raise RuntimeError("Nenhum set deste jogo tem a foto do booster ainda; baixe os sets na aba Sets antes.")
     load_index(settings, refs)  # monta o cache antes dos processos de trabalho
     (run_dir / "crops").mkdir(parents=True, exist_ok=True)
     for old in (run_dir / "crops").glob("*.jpg"):
@@ -236,7 +239,7 @@ def scan_video(settings: Settings, video: Path, run_dir: Path, progress: Progres
     for i, p in enumerate(packs):
         p["t_end"] = packs[i + 1]["t"] if i + 1 < len(packs) else round(info.duration, 2)
     result = {
-        "version": SCAN_VERSION, "kind": "lacrados",
+        "version": SCAN_VERSION, "kind": "lacrados", "game": game,
         "video": os.path.relpath(video.resolve(), settings.root), "recorded_at": info.creation_time,
         "duration": round(info.duration, 2), "size": [info.width, info.height], "analysis_fps": ANALYSIS_FPS,
         "sets": sorted({p["set"] for p in packs}), "scanned_at": db.now(), "packs": packs, "cards": [],

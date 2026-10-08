@@ -8,33 +8,42 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
-    code         TEXT PRIMARY KEY,
-    id           TEXT NOT NULL,
+    code         TEXT PRIMARY KEY,  -- Lorcana: o do Lorcast ("1"); os outros com prefixo ("mtg-fra", "pkm-sv01")
+    id           TEXT NOT NULL,     -- id na fonte (Lorcast, Scryfall, TCGdex)
     name         TEXT NOT NULL,
     released_at  TEXT,
     icon         TEXT,     -- imagem do set (relativa à raiz do projeto)
     icon_source  TEXT,     -- tcgplayer (foto do booster) | manual (enviada na página)
-    tcg_group_id INTEGER   -- grupo do set no TCGplayer
+    tcg_group_id INTEGER,  -- grupo do set no TCGplayer
+    game         TEXT NOT NULL DEFAULT 'lorcana',  -- lorcana | magic | pokemon
+    booster      INTEGER,  -- sai em booster (os outros: promos, kits, decks...)
+    name_pt      TEXT,     -- o nome do set em português, quando ele saiu em português
+    abbr         TEXT,     -- a sigla do set no TCGplayer
+    symbol       TEXT,     -- endereço do símbolo do set na fonte
+    card_count   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS cards (
     id                TEXT PRIMARY KEY,
+    game              TEXT NOT NULL DEFAULT 'lorcana',
     set_code          TEXT NOT NULL,
     number            TEXT NOT NULL,
     sort_number       INTEGER,
     name              TEXT NOT NULL,
+    name_pt           TEXT,  -- o nome impresso na carta em português
     version           TEXT,
     rarity            TEXT,
-    ink               TEXT,
+    ink               TEXT,  -- a "cor" do jogo: tinta (Lorcana), cores (Magic, "W/U"), tipos (Pokémon)
     type              TEXT,
     cost              INTEGER,
     image_small       TEXT,
     image_normal      TEXT,
     image_large       TEXT,
+    image_pt          TEXT,  -- a imagem da impressão em português (o reconhecimento compara com as duas)
     tcgplayer_url     TEXT,
     usd               REAL,
     usd_foil          REAL,
@@ -75,7 +84,8 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at    TEXT NOT NULL,
     started_at    TEXT,
     finished_at   TEXT,
-    user_id       INTEGER                     -- dono (contas)
+    user_id       INTEGER,                    -- dono (contas)
+    game          TEXT NOT NULL DEFAULT 'lorcana'
 );
 
 CREATE TABLE IF NOT EXISTS run_steps (
@@ -98,7 +108,8 @@ CREATE TABLE IF NOT EXISTS collection (
     video_time REAL,
     price_usd  REAL,                          -- preço no momento da abertura
     added_at   TEXT NOT NULL,
-    user_id    INTEGER                        -- dono (o da pipeline; à mão, quem adicionou)
+    user_id    INTEGER,                       -- dono (o da pipeline; à mão, quem adicionou)
+    lang       TEXT                           -- idioma da cópia (pt); vazio = inglês
 );
 CREATE INDEX IF NOT EXISTS collection_run ON collection(run_id);
 
@@ -117,14 +128,15 @@ CREATE TABLE IF NOT EXISTS posts (  -- o vídeo de uma abertura numa rede
     PRIMARY KEY (run_id, network)
 );
 
-CREATE TABLE IF NOT EXISTS user_values (  -- valor da coleção de cada usuário por dia: a última gravação do dia vale
+CREATE TABLE IF NOT EXISTS user_values (  -- valor da coleção de cada usuário, por jogo e dia: a última gravação do dia vale
     user_id     INTEGER NOT NULL,  -- 0 = de antes das contas (fica com o administrador)
+    game        TEXT NOT NULL DEFAULT 'lorcana',
     day         TEXT NOT NULL,
     cards_usd   REAL NOT NULL,     -- as cartas da coleção pelo preço de mercado de então
     sealed_usd  REAL,              -- os lacrados
     cards       INTEGER NOT NULL,
     recorded_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, day)
+    PRIMARY KEY (user_id, game, day)
 );
 
 CREATE TABLE IF NOT EXISTS users (  -- contas (entrar com o Google)
@@ -269,6 +281,7 @@ MIGRATIONS = {
     9: lambda con: _sealed_origin(con),
     10: lambda con: _add_column(con, "sealed", "opened", "INTEGER NOT NULL DEFAULT 0"),
     11: lambda con: _accounts(con),
+    12: lambda con: _games(con),
 }
 OWNED = ("runs", "collection", "sealed", "jobs")  # tabelas com dono (user_id)
 
@@ -278,45 +291,59 @@ def now() -> str:
 
 
 def upsert_set(con: sqlite3.Connection, s: dict) -> None:
+    """Um set de qualquer jogo; o que a fonte não informa desta vez (sigla, nome em português...) fica como estava."""
     con.execute(
-        "INSERT INTO sets(code, id, name, released_at) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(code) DO UPDATE SET id=excluded.id, name=excluded.name, released_at=excluded.released_at",
-        (s["code"], s["id"], s["name"], s.get("released_at")),
+        "INSERT INTO sets(code, id, name, released_at, game, booster, name_pt, abbr, symbol, card_count)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(code) DO UPDATE SET id=excluded.id, name=excluded.name,"
+        " released_at=COALESCE(excluded.released_at, released_at), game=excluded.game,"
+        " booster=COALESCE(excluded.booster, booster), name_pt=COALESCE(excluded.name_pt, name_pt),"
+        " abbr=COALESCE(excluded.abbr, abbr), symbol=COALESCE(excluded.symbol, symbol),"
+        " card_count=COALESCE(excluded.card_count, card_count)",
+        (s["code"], s["id"], s["name"], s.get("released_at"), s.get("game", "lorcana"),
+         None if s.get("booster") is None else int(s["booster"]), s.get("name_pt"), s.get("abbr"), s.get("symbol"),
+         s.get("card_count")),
     )
 
 
-def upsert_cards(con: sqlite3.Connection, cards: list[dict], fetched_at: str) -> None:
+CARD_COLUMNS = ("id", "game", "set_code", "number", "sort_number", "name", "name_pt", "version", "rarity", "ink", "type",
+                "cost", "image_small", "image_normal", "image_large", "image_pt", "tcgplayer_url", "usd", "usd_foil", "raw")
+KEEP_IF_MISSING = ("name_pt", "image_pt")  # uma atualização só de preços não traz a impressão em português
+
+
+def upsert_card_rows(con: sqlite3.Connection, rows: list[dict], fetched_at: str) -> None:
+    """Cartas já no formato da tabela (as fontes de Magic e Pokémon montam assim), com o preço do dia no histórico."""
     day = fetched_at[:10]
-    for c in cards:
-        prices = c.get("prices") or {}
-        images = (c.get("image_uris") or {}).get("digital") or {}
-        ink = c.get("ink") or "/".join(c.get("inks") or []) or None
-        number = str(c["collector_number"])
-        m = re.match(r"\d+", number)
-        con.execute(
-            """INSERT INTO cards(id, set_code, number, sort_number, name, version, rarity, ink, type, cost,
-                                 image_small, image_normal, image_large, tcgplayer_url,
-                                 usd, usd_foil, prices_updated_at, raw)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                 set_code=excluded.set_code, number=excluded.number, sort_number=excluded.sort_number,
-                 name=excluded.name, version=excluded.version, rarity=excluded.rarity, ink=excluded.ink,
-                 type=excluded.type, cost=excluded.cost, image_small=excluded.image_small,
-                 image_normal=excluded.image_normal, image_large=excluded.image_large,
-                 tcgplayer_url=excluded.tcgplayer_url, usd=excluded.usd, usd_foil=excluded.usd_foil,
-                 prices_updated_at=excluded.prices_updated_at, raw=excluded.raw""",
-            (
-                c["id"], c["set"]["code"], number, int(m.group()) if m else None,
-                c["name"], c.get("version"), c.get("rarity"), ink, " · ".join(c.get("type") or []),
-                c.get("cost"), images.get("small"), images.get("normal"), images.get("large"),
-                (c.get("purchase_uris") or {}).get("tcgplayer"),
-                prices.get("usd"), prices.get("usd_foil"), fetched_at, json.dumps(c),
-            ),
-        )
-        con.execute(
-            "INSERT OR REPLACE INTO price_history(card_id, day, usd, usd_foil) VALUES (?, ?, ?, ?)",
-            (c["id"], day, prices.get("usd"), prices.get("usd_foil")),
-        )
+    names = ", ".join(CARD_COLUMNS)
+    updates = ", ".join(f"{c}=COALESCE(excluded.{c}, {c})" if c in KEEP_IF_MISSING else f"{c}=excluded.{c}"
+                        for c in CARD_COLUMNS[1:])
+    sql = (f"INSERT INTO cards({names}, prices_updated_at) VALUES ({', '.join('?' * (len(CARD_COLUMNS) + 1))})"
+           f" ON CONFLICT(id) DO UPDATE SET {updates}, prices_updated_at=excluded.prices_updated_at")
+    for r in rows:
+        con.execute(sql, [r.get(c) for c in CARD_COLUMNS] + [fetched_at])
+        con.execute("INSERT OR REPLACE INTO price_history(card_id, day, usd, usd_foil) VALUES (?, ?, ?, ?)",
+                    (r["id"], day, r.get("usd"), r.get("usd_foil")))
+
+
+def lorcast_row(c: dict) -> dict:
+    """Uma carta do Lorcast no formato da tabela."""
+    prices = c.get("prices") or {}
+    images = (c.get("image_uris") or {}).get("digital") or {}
+    number = str(c["collector_number"])
+    m = re.match(r"\d+", number)
+    return {
+        "id": c["id"], "game": "lorcana", "set_code": c["set"]["code"], "number": number,
+        "sort_number": int(m.group()) if m else None, "name": c["name"], "version": c.get("version"),
+        "rarity": c.get("rarity"), "ink": c.get("ink") or "/".join(c.get("inks") or []) or None,
+        "type": " · ".join(c.get("type") or []), "cost": c.get("cost"), "image_small": images.get("small"),
+        "image_normal": images.get("normal"), "image_large": images.get("large"),
+        "tcgplayer_url": (c.get("purchase_uris") or {}).get("tcgplayer"),
+        "usd": prices.get("usd"), "usd_foil": prices.get("usd_foil"), "raw": json.dumps(c),
+    }
+
+
+def upsert_cards(con: sqlite3.Connection, cards: list[dict], fetched_at: str) -> None:
+    """Cartas do Lorcast (Lorcana)."""
+    upsert_card_rows(con, [lorcast_row(c) for c in cards], fetched_at)
 
 
 def card(con: sqlite3.Connection, card_id: str) -> sqlite3.Row | None:
@@ -336,13 +363,14 @@ def resolve_card(con: sqlite3.Connection, ref: str) -> sqlite3.Row:
         row = card(con, ref)
         if row:
             return row
-    m = re.fullmatch(r"([A-Za-z0-9]+)\s*[/-]\s*(\w+)", ref)
+    m = re.fullmatch(r"([A-Za-z0-9.-]+?)\s*/\s*(\w+)", ref) or re.fullmatch(r"([A-Za-z0-9]+)\s*-\s*(\w+)", ref)
     if m:
-        row = con.execute(
-            "SELECT * FROM cards WHERE set_code = ? COLLATE NOCASE AND number = ?", m.groups()
-        ).fetchone()
-        if row:
-            return row
+        code, number = m.groups()
+        for candidate in (code, f"mtg-{code.lower()}", f"pkm-{code}"):  # o código como o jogo escreve (FRA, sv01)
+            row = con.execute("SELECT * FROM cards WHERE set_code = ? COLLATE NOCASE AND (number = ? OR"
+                              " ltrim(number, '0') = ltrim(?, '0'))", (candidate, number, number)).fetchone()
+            if row:
+                return row
     name, _, version = (p.strip() for p in ref.partition(" - "))
     rows = con.execute(
         "SELECT * FROM cards WHERE name LIKE ? AND (? = '' OR version LIKE ?) ORDER BY set_code, sort_number",
@@ -385,19 +413,25 @@ def price_usd(row: sqlite3.Row | dict, foil: bool) -> float | None:
 
 
 def record_value(con: sqlite3.Connection, user_id: int | None = None) -> None:
-    """Grava o valor da coleção de hoje pelos preços atuais (um ponto por dia: a última gravação do dia vale).
+    """Grava o valor da coleção de hoje pelos preços atuais, por jogo (um ponto por dia: a última gravação do dia vale).
 
     Chamado quando os preços mudam (atualizar preços, sincronizar: aí sem `user_id`, para todos) e quando a coleção
     de alguém muda (pipeline registrada ou excluída, carta avulsa, lacrado), para o último ponto do gráfico ser o
-    valor que o Resumo mostra."""
+    valor que o Resumo mostra. Um jogo que a pessoa nunca usou não ganha pontos zerados."""
+    from .games import GAMES
+
     users = [user_id] if user_id is not None else [r[0] for r in con.execute("SELECT id FROM users")]
     for uid in users:
-        cards_usd, sealed, n = collection_value(con, uid)
-        with con:
-            con.execute("INSERT INTO user_values(user_id, day, cards_usd, sealed_usd, cards, recorded_at) VALUES (?, ?, ?, ?, ?, ?)"
-                        " ON CONFLICT(user_id, day) DO UPDATE SET cards_usd = excluded.cards_usd, sealed_usd = excluded.sealed_usd,"
-                        " cards = excluded.cards, recorded_at = excluded.recorded_at",
-                        (uid, now()[:10], cards_usd, sealed, n, now()))
+        for game in GAMES:
+            cards_usd, sealed, n = collection_value(con, uid, game)
+            if not n and sealed is None and con.execute("SELECT 1 FROM user_values WHERE user_id = ? AND game = ?",
+                                                        (uid, game)).fetchone() is None:
+                continue
+            with con:
+                con.execute("INSERT INTO user_values(user_id, game, day, cards_usd, sealed_usd, cards, recorded_at)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, game, day) DO UPDATE SET"
+                            " cards_usd = excluded.cards_usd, sealed_usd = excluded.sealed_usd, cards = excluded.cards,"
+                            " recorded_at = excluded.recorded_at", (uid, game, now()[:10], cards_usd, sealed, n, now()))
 
 
 def _sealed_origin(con: sqlite3.Connection) -> None:
@@ -407,13 +441,36 @@ def _sealed_origin(con: sqlite3.Connection) -> None:
     con.execute("UPDATE sealed SET registered_usd = usd WHERE registered_usd IS NULL")
 
 
-def collection_value(con: sqlite3.Connection, user_id: int) -> tuple[float, float | None, int]:
-    """(cartas pelo preço de mercado atual, lacrados ou None, quantas cartas) da coleção do usuário."""
+def collection_value(con: sqlite3.Connection, user_id: int, game: str = "lorcana") -> tuple[float, float | None, int]:
+    """(cartas pelo preço de mercado atual, lacrados ou None, quantas cartas) da coleção do usuário num jogo."""
     rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id"
-                       " WHERE c.user_id = ?", (user_id,)).fetchall()
-    sealed = con.execute("SELECT SUM((qty - opened) * usd) FROM sealed WHERE usd IS NOT NULL AND qty > opened"
-                         " AND user_id = ?", (user_id,)).fetchone()[0]
+                       " WHERE c.user_id = ? AND k.game = ?", (user_id, game)).fetchall()
+    sealed = con.execute("SELECT SUM((x.qty - x.opened) * x.usd) FROM sealed x JOIN sets s ON s.code = x.set_code"
+                         " WHERE x.usd IS NOT NULL AND x.qty > x.opened AND x.user_id = ? AND s.game = ?",
+                         (user_id, game)).fetchone()[0]
     return sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), sealed, len(rows)
+
+
+def _games(con: sqlite3.Connection) -> None:
+    """Magic e Pokémon: sets, cartas e pipelines ganham o jogo (o que já existe é Lorcana), a cópia ganha o idioma e
+    o histórico de valor passa a ser por jogo."""
+    for table, column, ddl in (
+        ("sets", "game", "TEXT NOT NULL DEFAULT 'lorcana'"), ("sets", "booster", "INTEGER"), ("sets", "name_pt", "TEXT"),
+        ("sets", "abbr", "TEXT"), ("sets", "symbol", "TEXT"), ("sets", "card_count", "INTEGER"),
+        ("cards", "game", "TEXT NOT NULL DEFAULT 'lorcana'"), ("cards", "name_pt", "TEXT"), ("cards", "image_pt", "TEXT"),
+        ("collection", "lang", "TEXT"), ("runs", "game", "TEXT NOT NULL DEFAULT 'lorcana'"),
+    ):
+        _add_column(con, table, column, ddl)
+    con.execute("UPDATE sets SET booster = (code GLOB '[0-9]*' AND code NOT GLOB '*[^0-9]*'), abbr = code"
+                " WHERE game = 'lorcana' AND booster IS NULL")
+    if "game" not in {r[1] for r in con.execute("PRAGMA table_info(user_values)")}:
+        con.execute("ALTER TABLE user_values RENAME TO user_values_old")
+        con.execute("""CREATE TABLE user_values (
+            user_id INTEGER NOT NULL, game TEXT NOT NULL DEFAULT 'lorcana', day TEXT NOT NULL, cards_usd REAL NOT NULL,
+            sealed_usd REAL, cards INTEGER NOT NULL, recorded_at TEXT NOT NULL, PRIMARY KEY (user_id, game, day))""")
+        con.execute("INSERT INTO user_values(user_id, game, day, cards_usd, sealed_usd, cards, recorded_at)"
+                    " SELECT user_id, 'lorcana', day, cards_usd, sealed_usd, cards, recorded_at FROM user_values_old")
+        con.execute("DROP TABLE user_values_old")
 
 
 def _accounts(con: sqlite3.Connection) -> None:

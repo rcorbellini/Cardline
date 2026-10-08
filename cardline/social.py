@@ -15,7 +15,7 @@ import re
 import urllib.request
 from datetime import datetime
 
-from . import db
+from . import db, games
 
 NETWORKS = {"youtube": "YouTube", "instagram": "Instagram", "tiktok": "TikTok"}
 HASHTAGS = {"youtube": "#shorts", "instagram": "#reels", "tiktok": "#fyp"}
@@ -108,12 +108,14 @@ def total_views(con, user_id: int) -> int:
                        " FROM posts p JOIN runs r ON r.id = p.run_id WHERE r.user_id = ?)", (user_id,)).fetchone()[0]
 
 
-def views_by_day(con, user_id: int) -> list[dict]:
+def views_by_day(con, user_id: int, game: str | None = None) -> list[dict]:
     """Visualizações por dia de leitura, somadas por rede: em cada dia, a última leitura de cada post até ele
-    (um post entra no dia da primeira leitura; um post desvinculado sai com os números dele)."""
+    (um post entra no dia da primeira leitura; um post desvinculado sai com os números dele). Com `game`, só os
+    vídeos das pipelines desse jogo."""
     reads = con.execute("SELECT s.run_id, s.network, s.fetched_at, s.views FROM post_stats s"
                         " JOIN posts p ON p.run_id = s.run_id AND p.network = s.network JOIN runs r ON r.id = s.run_id"
-                        " WHERE s.views IS NOT NULL AND r.user_id = ? ORDER BY s.fetched_at", (user_id,)).fetchall()
+                        " WHERE s.views IS NOT NULL AND r.user_id = ? AND (? IS NULL OR r.game = ?) ORDER BY s.fetched_at",
+                        (user_id, game, game)).fetchall()
     latest: dict[tuple[int, str], int] = {}
     out: list[dict] = []
     for i, r in enumerate(reads):
@@ -165,28 +167,38 @@ def interrupted(con) -> None:
                     ("A publicação foi interrompida (o servidor reiniciou). Confira na rede antes de postar de novo.",))
 
 
+def game_tags(scan: dict, tags: list[str] = ()) -> list[str]:
+    """As tags do YouTube: as do cardline.toml para Lorcana; as do jogo para Magic e Pokémon."""
+    game = games.get(scan.get("game"))
+    return list(tags) if game is games.LORCANA else list(game.tags)
+
+
 def suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> dict:
     """Título e legenda sugeridos para o vídeo da abertura (sem spoiler do resultado)."""
+    game = games.get(scan.get("game"))
+    tags = game_tags(scan, tags)
     packs = max((c.get("pack") or 1 for c in scan["cards"]), default=1)
-    sets = list(dict.fromkeys(set_names.get(c["set"], f"set {c['set']}") for c in scan["cards"] if c.get("set"))) or ["Lorcana"]
+    sets = list(dict.fromkeys(set_names.get(c["set"], f"set {c['set']}") for c in scan["cards"] if c.get("set"))) or [game.short]
     what = "um booster" if packs == 1 else f"{packs} boosters"
-    title = f"Abrindo {what} de {' + '.join(sets)} | Disney Lorcana"
-    caption = (f"Abertura de {what} de Disney Lorcana: {', '.join(sets)}.\n"
+    title = f"Abrindo {what} de {' + '.join(sets)} | {game.name}"
+    caption = (f"Abertura de {what} de {game.name}: {', '.join(sets)}.\n"
                "Preço de cada carta pelo mercado (TCGplayer) no dia da abertura. Será que valeu?\n\n"
-               "#lorcana #disneylorcana #tcg #booster")
+               f"{game.hashtags}")
     return {"title": title[:100], "caption": caption, "tags": list(dict.fromkeys([*tags, *sets])),
             "hashtags": HASHTAGS}
 
 
 def sealed_suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> dict:
     """Título e legenda do vídeo de registro de lacrados (sem o valor: ele aparece no fim do vídeo)."""
+    game = games.get(scan.get("game"))
+    tags = game_tags(scan, tags)
     n = len(scan.get("packs", []))
     sets = list(dict.fromkeys(set_names.get(p["set"], f"set {p['set']}") for p in scan.get("packs", [])))
     what = "um booster lacrado" if n == 1 else f"{n} boosters lacrados"
-    title = f"Contando {what} | Disney Lorcana"
-    caption = (f"Registro de {what} de Disney Lorcana: {', '.join(sets[:6])}{' e outros' if len(sets) > 6 else ''}.\n"
+    title = f"Contando {what} | {game.name}"
+    caption = (f"Registro de {what} de {game.name}: {', '.join(sets[:6])}{' e outros' if len(sets) > 6 else ''}.\n"
                "Preço de mercado de cada booster (TCGplayer) no dia do registro. Quanto vale a pilha?\n\n"
-               "#lorcana #disneylorcana #tcg #booster #lacrado")
+               f"{game.hashtags} #lacrado")
     return {"title": title[:100], "caption": caption, "tags": list(dict.fromkeys([*tags, *sets, "lacrado"])),
             "hashtags": HASHTAGS}
 

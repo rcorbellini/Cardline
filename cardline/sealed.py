@@ -1,7 +1,7 @@
 """Produtos lacrados da coleção (boosters, caixas, decks, baús...), cotados pelo TCGplayer via tcgcsv.com.
 
-Cada set do Lorcast tem o grupo dele no TCGplayer (sets.tcg_group_id, preenchido na sincronização dos ícones).
-Os produtos do grupo sem dados de carta (número, raridade) são os lacrados; o preço é o de mercado do dia.
+Cada set tem o grupo dele no TCGplayer (sets.tcg_group_id, preenchido na sincronização dos ícones), na categoria
+do jogo. Os produtos do grupo sem dados de carta (número, raridade) são os lacrados; o preço é o de mercado do dia.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import json
 import re
 import time
 
-from . import db, lorcast
-from .catalog import TCGCSV
+from . import db, games, lorcast
+from .catalog import is_booster_name, tcgcsv
 from .config import Settings
 from .money import to_usd
 
@@ -22,40 +22,42 @@ def _cache(settings: Settings, group: int, what: str):
     return settings.cache_dir / "tcgcsv" / f"{group}-{what}.json"
 
 
-def _fetch(settings: Settings, group: int, what: str, ttl: float = 0) -> list[dict]:
+def _fetch(settings: Settings, group: int, what: str, ttl: float = 0, game: str = "lorcana") -> list[dict]:
     path = _cache(settings, group, what)
     if ttl and path.exists() and time.time() - path.stat().st_mtime < ttl:
         return json.loads(path.read_text())
-    results = json.loads(lorcast.fetch(f"{TCGCSV}/{group}/{what}"))["results"]
+    results = json.loads(lorcast.fetch(f"{tcgcsv(game)}/{group}/{what}"))["results"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(results))
     return results
 
 
-def short_name(name: str, set_name: str | None) -> str:
-    """"Disney Lorcana: The First Chapter Booster Box" → "Booster Box"."""
-    name = re.sub(r"^Disney Lorcana:?\s*", "", name)
+def short_name(name: str, set_name: str | None, game: str = "lorcana") -> str:
+    """"Disney Lorcana: The First Chapter Booster Box" → "Booster Box"; "Reality Fracture - Play Booster" → "Play Booster"."""
+    name = re.sub(games.get(game).product_prefix, "", name, flags=re.I) if games.get(game).product_prefix else name
     if set_name and name.lower().startswith(set_name.lower()):
         name = name[len(set_name):].strip(" -:") or name
     return name
 
 
-def group_of(con, set_code: str) -> tuple[int, str]:
-    row = con.execute("SELECT tcg_group_id, name FROM sets WHERE code = ?", (set_code,)).fetchone()
+def group_of(con, set_code: str) -> tuple[int, str, str]:
+    """O grupo do set no TCGplayer, o nome do set e o jogo."""
+    row = con.execute("SELECT tcg_group_id, name, game FROM sets WHERE code = ?", (set_code,)).fetchone()
     if row is None or row["tcg_group_id"] is None:
         raise LookupError("Este set não tem produtos no TCGplayer (ou os sets ainda não foram sincronizados).")
-    return row["tcg_group_id"], row["name"]
+    return row["tcg_group_id"], row["name"], row["game"]
 
 
 def products(settings: Settings, con, set_code: str) -> list[dict]:
     """Os lacrados do set à venda no TCGplayer, com o preço de mercado de hoje (o booster avulso primeiro)."""
-    group, set_name = group_of(con, set_code)
-    prices = {p["productId"]: p.get("marketPrice") for p in _fetch(settings, group, "prices")
+    group, set_name, game = group_of(con, set_code)
+    prices = {p["productId"]: p.get("marketPrice") for p in _fetch(settings, group, "prices", game=game)
               if p.get("subTypeName") in (None, "Normal")}
-    out = [{"product_id": p["productId"], "name": short_name(p["name"], set_name), "full_name": p["name"],
+    out = [{"product_id": p["productId"], "name": short_name(p["name"], set_name, game), "full_name": p["name"],
             "image": p.get("imageUrl"), "usd": prices.get(p["productId"])}
-           for p in _fetch(settings, group, "products", PRODUCTS_TTL) if not p.get("extendedData")]
-    order = ("Booster Pack", "Booster Box", "Sleeved Booster", "Starter Deck", "Gift Set", "Illumineer's Trove")
+           for p in _fetch(settings, group, "products", PRODUCTS_TTL, game) if not p.get("extendedData")]
+    order = ("Play Booster", "Booster Pack", "Draft Booster", "Set Booster", "Collector Booster", "Booster Box",
+             "Booster Bundle", "Sleeved Booster", "Elite Trainer Box", "Starter Deck", "Gift Set", "Illumineer's Trove")
     rank = lambda p: next((i for i, k in enumerate(order) if p["name"].startswith(k)), len(order))  # noqa: E731
     return sorted(out, key=lambda p: (rank(p), p["name"]))
 
@@ -74,7 +76,7 @@ def owner(con, item_id: int) -> int | None:
 
 def boosters(con, user_id: int) -> list[dict]:
     """Os boosters em estoque, para escolher numa abertura (puxa o set e o valor de registro)."""
-    return [x for x in items(con, user_id) if re.match(r"(Sleeved )?Booster Pack$", x["name"])]
+    return [x for x in items(con, user_id) if re.match(r"(Sleeved )?((Play|Draft|Set|Collector) )?Booster( Pack)?$", x["name"])]
 
 
 def take(con, item_id: int, n: int) -> dict:
@@ -140,9 +142,9 @@ def refresh_prices(settings: Settings, con, progress=lambda fraction, message=No
                                       " AND (? IS NULL OR user_id = ?)", (user_id, user_id))]
     n = 0
     for i, code in enumerate(sets):
-        group, set_name = group_of(con, code)
+        group, set_name, game = group_of(con, code)
         progress(i / max(1, len(sets)), f"Lacrados {i + 1} de {len(sets)}: {set_name}")
-        prices = {p["productId"]: p.get("marketPrice") for p in _fetch(settings, group, "prices")
+        prices = {p["productId"]: p.get("marketPrice") for p in _fetch(settings, group, "prices", game=game)
                   if p.get("subTypeName") in (None, "Normal")}
         with con:
             for r in con.execute("SELECT id, product_id FROM sealed WHERE set_code = ?", (code,)).fetchall():
@@ -159,7 +161,7 @@ def refresh_prices(settings: Settings, con, progress=lambda fraction, message=No
 
 def booster_product(settings: Settings, con, set_code: str) -> dict | None:
     """O booster avulso do set no TCGplayer (todas as artes têm o mesmo produto e preço)."""
-    return next((p for p in products(settings, con, set_code) if p["name"] == "Booster Pack"), None)
+    return next((p for p in products(settings, con, set_code) if is_booster_name(p["name"])), None)
 
 
 def price_packs(settings: Settings, con, scan: dict, progress=lambda fraction, message=None: None) -> tuple[int, list[str]]:

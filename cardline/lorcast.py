@@ -18,12 +18,16 @@ _API_INTERVAL = 0.1  # a documentação pede 50–100 ms entre chamadas
 _last_api_call = 0.0
 
 
-def _fetch(url: str, *, timeout: float = 30, retries: int = 3) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def _fetch(url: str, *, timeout: float = 30, retries: int = 3, headers: dict | None = None) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code < 500 and e.code != 429 or attempt == retries - 1:  # 404 e afins não melhoram tentando de novo
+                raise
+            time.sleep(1.5 * (attempt + 1))
         except (urllib.error.URLError, TimeoutError):
             if attempt == retries - 1:
                 raise
@@ -48,9 +52,9 @@ def fetch_set_cards(set_id: str) -> list[dict]:
     return _api(f"/sets/{set_id}/cards")
 
 
-def fetch(url: str, timeout: float = 60) -> bytes:
-    """GET simples (com novas tentativas) para outras fontes públicas, como o tcgcsv."""
-    return _fetch(url, timeout=timeout)
+def fetch(url: str, timeout: float = 60, headers: dict | None = None) -> bytes:
+    """GET simples (com novas tentativas) para outras fontes públicas, como o tcgcsv, o Scryfall e o TCGdex."""
+    return _fetch(url, timeout=timeout, headers=headers)
 
 
 def download(url: str, dest: Path) -> None:

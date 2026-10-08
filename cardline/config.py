@@ -12,7 +12,7 @@ from pathlib import Path
 class Settings:
     root: Path
     currency: str = "USD"  # USD (preço TCGplayer) ou BRL (convertido pela cotação do dia)
-    pack_size: int = 12  # cartas por booster; agrupa os totais e a detecção de foil
+    pack_size: int = 12  # cartas por booster de Lorcana (Magic: 14, Pokémon: 10); agrupa os totais e a detecção de foil
     analysis_fps: float = 10.0  # frames por segundo analisados no scan
     output_short_side: int = 1080  # lado menor do vídeo com overlay (1080 = 1080x1920 em retrato)
     outro_seconds: float = 4.0  # duração do resumo no fim do vídeo (frame congelado)

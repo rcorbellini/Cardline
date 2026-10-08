@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from . import games
 from .config import Settings
 
 INDEX_VERSION = 4
@@ -27,8 +28,9 @@ ART_BOTTOM = 0.55  # fração da altura da carta ocupada pela arte
 SAME_ART_BITS = 24  # distância de hamming (de 256) para considerar duas artes iguais
 
 
-def image_path(settings: Settings, set_code: str, card_id: str) -> Path:
-    return settings.images_dir / set_code / f"{card_id}.avif"
+def image_path(settings: Settings, set_code: str, card_id: str, lang: str = "en") -> Path:
+    """A imagem oficial da carta; a impressão em português fica ao lado, com "@pt" no nome."""
+    return settings.images_dir / set_code / f"{card_id}{'' if lang == 'en' else '@' + lang}{games.of_code(set_code).image_ext}"
 
 
 def index_path(settings: Settings, set_code: str) -> Path:
@@ -66,8 +68,15 @@ def _features(path: Path) -> tuple[np.ndarray, np.ndarray, tuple[int, int], np.n
     return pts[order], desc, gray.shape[::-1], art_hash(gray)
 
 
-def build_set_index(settings: Settings, set_code: str, card_ids: list[str]) -> Path:
-    paths = [image_path(settings, set_code, cid) for cid in card_ids]
+def _pairs(entries: list) -> list[tuple[str, str]]:
+    """(carta, idioma); um id sozinho é a imagem em inglês."""
+    return [(e, "en") if isinstance(e, str) else (e[0], e[1]) for e in entries]
+
+
+def build_set_index(settings: Settings, set_code: str, entries: list) -> Path:
+    """O índice do set: uma entrada por imagem (a mesma carta pode ter a imagem em inglês e a em português)."""
+    entries = _pairs(entries)
+    paths = [image_path(settings, set_code, cid, lang) for cid, lang in entries]
     keep = [i for i, p in enumerate(paths) if p.exists()]
     with ProcessPoolExecutor(os.cpu_count(), multiprocessing.get_context("spawn")) as ex:
         feats = list(ex.map(_features, [paths[i] for i in keep], chunksize=8))
@@ -78,7 +87,8 @@ def build_set_index(settings: Settings, set_code: str, card_ids: list[str]) -> P
         np.savez(
             fh,
             version=INDEX_VERSION,
-            card_ids=np.array([card_ids[i] for i in keep]),
+            card_ids=np.array([entries[i][0] for i in keep]),
+            langs=np.array([entries[i][1] for i in keep]),
             counts=np.array([len(f[0]) for f in feats], np.int32),
             kp=np.concatenate([f[0] for f in feats]),
             desc=np.concatenate([f[1] for f in feats]),
@@ -89,25 +99,29 @@ def build_set_index(settings: Settings, set_code: str, card_ids: list[str]) -> P
     return out
 
 
-def index_is_fresh(settings: Settings, set_code: str, card_ids: list[str]) -> bool:
+def index_is_fresh(settings: Settings, set_code: str, entries: list) -> bool:
     path = index_path(settings, set_code)
     if not path.exists():
         return False
     with np.load(path) as z:
         if int(z["version"]) != INDEX_VERSION:
             return False
-        indexed = set(z["card_ids"].tolist())
-    available = {cid for cid in card_ids if image_path(settings, set_code, cid).exists()}
+        ids = z["card_ids"].tolist()
+        langs = z["langs"].tolist() if "langs" in z.files else ["en"] * len(ids)  # índices de antes dos idiomas
+    indexed = set(zip(ids, langs))
+    available = {(cid, lang) for cid, lang in _pairs(entries) if image_path(settings, set_code, cid, lang).exists()}
     return available <= indexed
 
 
-def indexed_sets(settings: Settings) -> list[str]:
-    return sorted(p.stem.removeprefix("set-") for p in settings.index_dir.glob("set-*.npz"))
+def indexed_sets(settings: Settings, game: str | None = None) -> list[str]:
+    """Os sets com índice de reconhecimento (de um jogo, ou de todos)."""
+    codes = sorted(p.stem.removeprefix("set-") for p in settings.index_dir.glob("set-*.npz"))
+    return [c for c in codes if game is None or games.of_code(c).key == game]
 
 
 @dataclass
 class RefIndex:
-    card_ids: list[str]
+    card_ids: list[str]  # uma entrada por imagem: a mesma carta aparece uma vez por idioma
     card_sets: list[str]
     kp: np.ndarray  # (N, 2) posição do keypoint na imagem oficial
     desc: np.ndarray  # (N, 128) RootSIFT float32
@@ -115,6 +129,10 @@ class RefIndex:
     offsets: np.ndarray  # (cartas + 1,) início dos keypoints de cada carta
     sizes: np.ndarray  # (cartas, 2) largura/altura da imagem oficial
     groups: np.ndarray  # (cartas,) cartas com a mesma arte compartilham o grupo
+    langs: list[str] | None = None  # o idioma da imagem de cada entrada ("en", "pt")
+
+    def lang(self, i: int) -> str:
+        return self.langs[i] if self.langs else "en"
 
 
 def root_sift(desc: np.ndarray) -> np.ndarray:
@@ -125,17 +143,19 @@ def root_sift(desc: np.ndarray) -> np.ndarray:
 
 def load_index(settings: Settings, set_codes: list[str], per_card: int | None = None) -> RefIndex:
     """Carrega e concatena os índices dos sets; `per_card` limita os keypoints (índice "leve")."""
-    ids, sets, kps, descs, sizes, hashes, counts = [], [], [], [], [], [], []
+    ids, langs, sets, kps, descs, sizes, hashes, counts = [], [], [], [], [], [], [], []
     for code in set_codes:
         path = index_path(settings, code)
         if not path.exists():
             raise SystemExit(f"Índice do set {code} não existe; rode `cardline sync --sets {code}`.")
         with np.load(path) as z:  # cada z[...] relê o array do disco: ler uma vez só
             all_kp, all_desc = z["kp"], z["desc"]
+            entry_langs = z["langs"].tolist() if "langs" in z.files else ["en"] * len(z["card_ids"])
             start = 0
-            for cid, n, size, h in zip(z["card_ids"], z["counts"], z["sizes"], z["hashes"]):
+            for cid, lang, n, size, h in zip(z["card_ids"], entry_langs, z["counts"], z["sizes"], z["hashes"]):
                 take = n if per_card is None else min(n, per_card)
                 ids.append(str(cid))
+                langs.append(str(lang))
                 sets.append(code)
                 kps.append(all_kp[start : start + take])
                 descs.append(all_desc[start : start + take])
@@ -152,12 +172,14 @@ def load_index(settings: Settings, set_codes: list[str], per_card: int | None = 
         owner=np.repeat(np.arange(len(ids), dtype=np.int32), counts_arr),
         offsets=np.concatenate([[0], np.cumsum(counts_arr)]),
         sizes=np.array(sizes, np.int32),
-        groups=_art_groups(np.stack(hashes)),
+        groups=_art_groups(np.stack(hashes), ids),
+        langs=langs,
     )
 
 
-def _art_groups(hashes: np.ndarray) -> np.ndarray:
-    """Union-find das cartas cuja arte é praticamente idêntica (reimpressões entre sets)."""
+def _art_groups(hashes: np.ndarray, ids: list[str] | None = None) -> np.ndarray:
+    """Union-find das cartas cuja arte é praticamente idêntica (reimpressões entre sets); as imagens da mesma carta em
+    idiomas diferentes também ficam juntas (a arte é a mesma, só o texto muda)."""
     n = len(hashes)
     parent = np.arange(n)
 
@@ -171,4 +193,10 @@ def _art_groups(hashes: np.ndarray) -> np.ndarray:
         dist = np.bitwise_count(hashes[i + 1 :] ^ hashes[i]).sum(axis=1)
         for j in np.nonzero(dist <= SAME_ART_BITS)[0] + i + 1:
             parent[find(int(j))] = find(i)
+    first: dict[str, int] = {}
+    for i, cid in enumerate(ids or []):
+        if cid in first:
+            parent[find(i)] = find(first[cid])
+        else:
+            first[cid] = i
     return np.array([find(i) for i in range(n)], np.int32)

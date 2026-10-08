@@ -16,7 +16,14 @@ EXPECTED = {"C": 6, "U": 3, "R": 2}  # por booster de 12 cartas, fora a foil
 RARITY_CLASS = {"Common": "C", "Uncommon": "U", "Rare": "R", "Super_rare": "R", "Legendary": "R"}
 
 
-def assign_foils(cards: list[dict], pack_size: int) -> None:
+def assign_foils(cards: list[dict], pack_size: int, game: str = "lorcana") -> None:
+    """A foil de cada booster de Lorcana. Magic e Pokémon ainda não deduzem (o "foil" fica para a edição): as
+    estruturas dos boosters deles têm mais de um slot especial e precisam de vídeos de verdade para calibrar."""
+    if game != "lorcana":
+        for c in cards:
+            c.setdefault("foil", False)
+            c.setdefault("foil_reason", None)
+        return
     packs: dict[int, list[dict]] = {}
     for c in cards:
         packs.setdefault(c["pack"], []).append(c)

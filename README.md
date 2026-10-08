@@ -1,10 +1,12 @@
 # Cardline
 Pipeline de cartas, abra seu booster e acompanhe o resultado.
 
-Começando por **Disney Lorcana**: você envia o vídeo abrindo o booster e o cardline
+Para **Disney Lorcana**, **Magic: The Gathering** e **Pokémon TCG** (cartas em inglês e em português): você envia o
+vídeo abrindo o booster e o cardline
 
-1. identifica cada carta revelada e o instante em que ela aparece;
-2. busca o preço de mercado atual (TCGplayer, via [Lorcast](https://lorcast.com));
+1. identifica cada carta revelada, o instante em que ela aparece e o idioma da cópia;
+2. busca o preço de mercado atual (TCGplayer, via [Lorcast](https://lorcast.com), [Scryfall](https://scryfall.com) e
+   [TCGdex](https://tcgdex.dev));
 3. registra as cartas na sua coleção, vinculadas à pipeline que as abriu;
 4. compara com o valor pago pelo booster (resultado da abertura);
 5. renderiza o vídeo de volta com overlay: uma capa com o booster e o valor pago, o preço de cada carta quando
@@ -207,6 +209,27 @@ preço de mercado), a quantidade e, se quiser, quanto pagou por unidade. Cada it
 numa pipeline sai do estoque, mas continua registrado nela. Os preços dos lacrados são
 atualizados junto com os das cartas (**↻ Atualizar preços**), e o Resumo tem um painel próprio para eles.
 
+### Jogos: Lorcana, Magic e Pokémon
+
+O seletor no topo da página escolhe o jogo, e tudo segue ele: Resumo, Coleção, Pipelines, Sets e a nova
+pipeline. Cada jogo tem as raridades e as "cores" dele (as tintas de Lorcana, as cores de Magic, os tipos de
+Pokémon) nos filtros e no vídeo, e o tamanho do booster (Lorcana 12 cartas, Magic 14 no Play Booster, Pokémon 10).
+
+| Jogo | Catálogo e imagens | Preços | Idiomas |
+|---|---|---|---|
+| Lorcana | [Lorcast](https://lorcast.com) | TCGplayer (normal e foil) | inglês |
+| Magic | [Scryfall](https://scryfall.com) | TCGplayer (normal e foil) | inglês; português até Modern Horizons 3 (2024), quando a Wizards parou de imprimir em português |
+| Pokémon | [TCGdex](https://tcgdex.dev) | TCGplayer (normal, ou holo nas raras que só saem holo, e reverse holo) | inglês e português |
+
+**Duas línguas:** quando o set saiu em português, o reconhecimento compara com as duas imagens de cada carta. A
+carta é uma só (o mesmo número no set), e a cópia fica marcada com o idioma da imagem que casou melhor: na coleção
+ela aparece com o selo **PT**, o nome e a imagem em português. O preço é o do TCGplayer, que cota a versão em
+inglês. No Pokémon, o "foil" é o **reverse holo**.
+
+**Ainda sem dedução:** em Lorcana a foil de cada booster é deduzida pela estrutura dele. Em Magic e Pokémon, o
+booster tem mais de um slot especial e a ordem varia; por enquanto a foil (reverse holo) é marcada na edição da
+carta, até haver vídeos de verdade para calibrar.
+
 ### Sets
 
 ![Aba Sets: cada set com a foto do booster, data de lançamento, cartas no catálogo e na coleção, se já é reconhecido em vídeo, e o botão Sincronizar](docs/pagina-sets.jpg)
@@ -219,6 +242,10 @@ ficam com um selo hexagonal com o código do set.
 
 - **Sincronizar** roda o `cardline sync` em segundo plano: sets novos, cartas, preços, imagens, índices e
   ícones. Saiu um set novo, é só clicar; a página mostra o andamento e se atualiza no fim.
+- **Magic e Pokémon:** a aba lista os sets de booster (com busca), e **Baixar** traz as cartas, os preços, as
+  imagens nas duas línguas e o reconhecimento de um set (1 a 3 minutos). Só os sets baixados aparecem na nova
+  pipeline e nos lacrados; Sincronizar mantém os baixados em dia. Pela linha de comando:
+  `uv run cardline sync --game magic --sets fra,blb` ou `--game pokemon --sets sv01`.
 - **Trocar ícone** põe uma imagem sua (o logo do set, por exemplo) no lugar da foto do booster. A
   sincronização não troca um ícone escolhido por você, e **Usar a foto do booster** desfaz a troca.
 
@@ -389,7 +416,7 @@ entrou. Com o cabeçalho `X-Cardline-Owner: <id>`, mostra os dados de quem compa
 | GET | `/api/collection` | cartas da coleção, agrupadas por carta e acabamento, com as cópias |
 | GET | `/api/runs` | pipelines com status, progresso e valores; `duplicates` lista as pipelines com as mesmas cartas e `repeated` conta as cartas repetidas |
 | GET | `/api/runs/{id}` | detalhe: passos, cartas e log |
-| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL&narration=true&logo=padrao.png` | cria a pipeline (`kind`: `abertura`, `cadastro` ou `lacrados`; `logo` vazio = sem logo); o corpo da requisição é o vídeo, ou `upload={id}` usa o que chegou em partes |
+| POST | `/api/runs?filename=…&kind=abertura&game=magic&paid=…&paid_currency=BRL&narration=true&logo=padrao.png` | cria a pipeline (`kind`: `abertura`, `cadastro` ou `lacrados`; `game`: `lorcana`, `magic` ou `pokemon`; `logo` vazio = sem logo); o corpo da requisição é o vídeo, ou `upload={id}` usa o que chegou em partes |
 | POST / PUT / DELETE | `/api/uploads`, `/api/uploads/{id}?offset=…` | envio em partes: `{"filename", "size"}` começa (devolve `id` e o tamanho da parte); cada `PUT` leva uma parte (uma parte repetida ou fora de ordem recebe 409 com o tamanho que já chegou); `DELETE` desiste |
 | POST | `/api/logos` | o corpo é a imagem: guarda o logo (PNG, até 600 px) e devolve o nome para `logo=` na criação |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
@@ -399,7 +426,7 @@ entrou. Com o cabeçalho `X-Cardline-Owner: <id>`, mostra os dados de quem compa
 | PATCH / DELETE | `/api/sealed/{id}` | `{"qty": 3}` e/ou `{"paid": 30}` (`null` apaga o pago); DELETE remove |
 | GET | `/api/sealed/boosters` | os boosters fechados, para escolher numa abertura (`sealed_id` e `sealed_qty` na criação) |
 | GET | `/api/sealed/products?set=1` | os lacrados do set no TCGplayer, com o preço de mercado de hoje |
-| GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) e `views` (visualizações por rede) |
+| GET | `/api/history?game=magic` | séries por dia do Resumo do jogo: `value` (valor da coleção) e `views` (visualizações por rede) |
 | GET | `/api/jobs`, `/api/jobs/{id}` | as atualizações disparadas na página (preços, números das redes, sincronização), com o resultado e o log |
 | GET | `/api/tasks` | tarefas de fundo do Resumo (`prices`, `social`): rodando, progresso e a mensagem do fim |
 | POST | `/api/tasks/prices`, `/api/tasks/social?max_age=1800` | atualiza os preços / os números das redes em segundo plano (uma de cada vez) |
@@ -422,7 +449,8 @@ entrou. Com o cabeçalho `X-Cardline-Owner: <id>`, mostra os dados de quem compa
 | PATCH / DELETE | `/api/runs/{id}/packs/{uid}` | registro de lacrados: `{"set": "9"}` corrige o set e `{"value": 40, "currency": "BRL"}` fixa o valor do booster (`null` volta ao mercado); DELETE tira (`/restore` devolve) |
 | POST | `/api/runs/{id}/packs` | `{"set": "9", "t": 48.5}`: inclui um booster que a identificação não pegou |
 | PATCH / DELETE | `/api/runs/{id}/posts/{rede}` | `{"views": 1500, "likes": 120, …}` informa os números à mão; DELETE desvincula |
-| GET | `/api/sets` | sets com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo |
+| GET | `/api/sets?game=pokemon` | sets do jogo com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo (Magic e Pokémon: os de booster e os já baixados) |
+| POST | `/api/sets/{code}/download` | baixa um set de Magic ou Pokémon (cartas, preços, imagens e reconhecimento), em segundo plano |
 | POST | `/api/sets/sync` | inicia o `cardline sync` em segundo plano (um por vez); `GET` na mesma rota mostra o andamento e o log |
 | POST | `/api/sets/{code}/icon` | troca o ícone do set; o corpo da requisição é a imagem |
 | DELETE | `/api/sets/{code}/icon` | volta ao ícone automático (a foto do booster) |
@@ -534,7 +562,8 @@ vídeos postados no YouTube (o nome do set entra junto). `admin_email` e `allowe
   pipelines (fora do git).
 - `data/config.toml`: os e-mails das contas e o `public_url`; `data/segredo.key`: a chave dos links assinados;
   `data/servidor.log`: o log do serviço (fora do git).
-- `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
+- `data/cache/`: imagens (a impressão em português ao lado, com `@pt` no nome), índices e ícones dos sets (`sets/`),
+  regeneráveis com `cardline sync`. Só um ícone
   que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 
 ## Testes

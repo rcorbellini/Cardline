@@ -7,9 +7,9 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from . import db, rarity
+from . import db, games
 from .config import Settings
-from .foil import FOIL_ONLY, assign_foils
+from .foil import assign_foils
 from .money import money_for
 
 
@@ -27,19 +27,27 @@ def register(con: sqlite3.Connection, run_id: int, scan: dict) -> None:
     with con:
         con.execute("DELETE FROM collection WHERE run_id = ?", (run_id,))
         con.executemany(
-            "INSERT INTO collection(card_id, foil, run_id, pack, slot, video_time, price_usd, added_at, user_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO collection(card_id, foil, run_id, pack, slot, video_time, price_usd, added_at, user_id, lang) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (c["card_id"], int(c["foil"]), run_id, c["pack"], c["slot"], c["t"], c.get("price_usd"), scan["scanned_at"],
-                 user_id)
+                 user_id, c.get("lang"))
                 for c in scan["cards"]
             ],
         )
 
 
+def _game(scan: dict) -> games.Game:
+    return games.get(scan.get("game"))
+
+
+def _pack_size(settings: Settings, scan: dict) -> int:
+    return games.pack_size(settings, _game(scan))
+
+
 def _fill(c: dict, row) -> None:
     c.update(
-        card_id=row["id"], set=row["set_code"], number=row["number"], name=row["name"],
+        card_id=row["id"], set=row["set_code"], number=row["number"], name=row["name"], name_pt=row["name_pt"],
         version=row["version"], rarity=row["rarity"], ink=row["ink"],
     )
 
@@ -64,8 +72,9 @@ def _forget_price(c: dict) -> None:
 
 def _set_foil(scan: dict, c: dict, foil: bool) -> bool:
     """Marca ou desmarca a carta como foil à mão; devolve se algum acabamento mudou."""
-    if c["rarity"] in FOIL_ONLY and not foil:
-        raise ValueError(f"{rarity.label(c['rarity'])} é sempre foil.")
+    game = _game(scan)
+    if c["rarity"] in game.foil_only and not foil:
+        raise ValueError(f"{game.rarity_label(c['rarity'])} é sempre {game.foil_label.lower()}.")
     changed = c["foil"] != foil
     c["foil"], c["foil_reason"] = foil, "manual"
     if changed:
@@ -86,7 +95,7 @@ def set_card_foil(settings: Settings, run_dir: Path, uid: str, foil: bool) -> bo
     if c is None:
         raise LookupError("Carta não encontrada nesta pipeline.")
     changed = _set_foil(scan, c, foil)
-    _renumber(scan, settings.pack_size)
+    _renumber(scan, _pack_size(settings, scan))
     save_scan(run_dir, scan)
     return changed
 
@@ -100,7 +109,7 @@ def remove_card(settings: Settings, run_dir: Path, uid: str) -> dict:
     scan["cards"].remove(c)
     c.update(uid=uid, removed_at=db.now())
     scan.setdefault("removed", []).append(c)
-    _renumber(scan, settings.pack_size)
+    _renumber(scan, _pack_size(settings, scan))
     save_scan(run_dir, scan)
     return c
 
@@ -113,7 +122,7 @@ def restore_card(settings: Settings, run_dir: Path, uid: str) -> dict:
     scan["removed"].remove(c)
     c.pop("removed_at", None)
     scan["cards"].append(c)
-    _renumber(scan, settings.pack_size)
+    _renumber(scan, _pack_size(settings, scan))
     save_scan(run_dir, scan)
     return c
 
@@ -140,7 +149,7 @@ def remove_repeated(settings: Settings, run_dir: Path) -> list[dict]:
             c.update(uid=card_uid(c), removed_at=now)
         scan["cards"] = [c for c in scan["cards"] if not any(c is g for g in gone)]
         scan.setdefault("removed", []).extend(gone)
-        _renumber(scan, settings.pack_size)
+        _renumber(scan, _pack_size(settings, scan))
         save_scan(run_dir, scan)
     return gone
 
@@ -156,7 +165,8 @@ def _renumber(scan: dict, pack_size: int) -> None:
     if not booster:  # cadastro: sem booster, a foil é só por raridade ou à mão
         return
     manual = {c["pack"] for c in cards if c.get("foil_reason") == "manual"}  # escolha manual vale para o booster
-    assign_foils([c for c in cards if c["pack"] not in manual], pack_size)
+    if scan.get("game", "lorcana") == "lorcana":  # nos outros jogos a foil fica como a pessoa marcou
+        assign_foils([c for c in cards if c["pack"] not in manual], pack_size)
 
 
 def edit_scan(
@@ -203,9 +213,9 @@ def edit_scan(
                 except ValueError as e:
                     raise SystemExit(str(e)) from e
             action = "Corrigida"
-    if c["rarity"] in FOIL_ONLY:
+    if c["rarity"] in _game(scan).foil_only:
         c["foil"] = True
-    _renumber(scan, settings.pack_size)
+    _renumber(scan, _pack_size(settings, scan))
     save_scan(run_dir, scan)
     where = f" como #{cards.index(c) + 1} (a numeração das seguintes mudou)" if action == "Adicionada" else ""
     return f"{action}{where}: {db.display_name(c)}{' (foil)' if c['foil'] else ''}"
@@ -215,7 +225,7 @@ def add(settings: Settings, card_ref: str, foil: bool, qty: int) -> None:
     """Carta obtida fora de vídeo (troca, compra avulsa...)."""
     con = db.connect(settings.db_path)
     row = db.resolve_card(con, card_ref)
-    foil = foil or row["rarity"] in FOIL_ONLY
+    foil = foil or row["rarity"] in games.get(row["game"]).foil_only
     price = db.price_usd(row, foil)
     from .auth import admin
 

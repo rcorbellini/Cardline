@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import audio, db, rarity
+from . import audio, db, games, rarity
 from .config import Settings
 from .logo import CORNERS
 from .money import Money
@@ -188,12 +188,19 @@ def shine(img: Image.Image, p: float, width: float = 0.09) -> Image.Image:
     return Image.fromarray(a.clip(0, 255).astype(np.uint8), "RGBA")
 
 
+def card_name(c: dict) -> str:
+    """O nome como está na cópia: a impressa em português mostra o nome em português."""
+    return c.get("name_pt") if c.get("lang") == "pt" and c.get("name_pt") else c["name"]
+
+
 class Overlay:
     def __init__(self, scan: dict, money: Money, size: tuple[int, int], pack_size: int, paid_usd: float | None = None,
                  icons: dict[str, Image.Image] | None = None, names: dict[str, str] | None = None,
                  paid: tuple[float, str] | None = None, intro: float = 0.0, logo: Image.Image | None = None,
                  logo_corner: str = "top-right", logo_opacity: float = 0.6):
         self.cards = scan["cards"]
+        self.game = games.get(scan.get("game"))
+        self.foil_text = self.game.foil_label.upper()  # FOIL; no Pokémon, REVERSE HOLO
         self.money = money
         self.paid_usd = paid_usd
         self.paid = paid  # (valor, moeda) como foi informado, para a capa
@@ -237,13 +244,13 @@ class Overlay:
     def _tag(self, c: dict) -> Image.Image:
         u = self.u
         pad = 26 * u
-        name = c["name"]
+        name = card_name(c)
         version = c.get("version") or ""
         price = self.money.fmt(c.get("price_usd"))
         m = Sprite(1, 1)  # só para medir texto
         badge_text, accent = self._badge(c)
         badge_w = m.textlen(badge_text, "SemiBold", 21 * u) + 28 * u
-        foil_w = m.textlen("FOIL", "Bold", 21 * u) + 36 * u if c.get("foil") else 0
+        foil_w = m.textlen(self.foil_text, "Bold", 21 * u) + 36 * u if c.get("foil") else 0
         price_w = m.textlen(price, "ExtraBold", 58 * u)
         name_size = 44 * u
         max_w = self.W - 2 * self.margin
@@ -267,7 +274,8 @@ class Overlay:
         s.text((x + badge_w / 2, y + 19 * u), badge_text, "SemiBold", 21 * u, (14, 18, 34, 255), anchor="mm")
         if foil_w:
             s.paste(rainbow(round(foil_w), round(38 * u), 19 * u), (x + badge_w + 10 * u, y))
-            s.text((x + badge_w + 10 * u + foil_w / 2, y + 19 * u), "FOIL", "Bold", 21 * u, (20, 20, 40, 255), anchor="mm")
+            s.text((x + badge_w + 10 * u + foil_w / 2, y + 19 * u), self.foil_text, "Bold", 21 * u, (20, 20, 40, 255),
+                   anchor="mm")
         s.text((x, y + 50 * u), name, "Bold", name_size, WHITE)
         if version:
             s.text((x, y + 50 * u + name_size * 1.2), version, "Medium", 27 * u, MUTED)
@@ -276,7 +284,7 @@ class Overlay:
 
     def _badge(self, c: dict) -> tuple[str, tuple]:
         """Selo da etiqueta: a raridade da carta, na cor dela."""
-        return rarity.label(c["rarity"]).upper(), rgba(rarity.color(c["rarity"]))
+        return rarity.label(c["rarity"], self.game).upper(), rgba(rarity.color(c["rarity"], self.game))
 
     def _flyer(self, c: dict) -> Image.Image | None:
         if c.get("price_usd") is None:
@@ -399,7 +407,7 @@ class Overlay:
         in_pack = [k for k, c in enumerate(self.cards) if c["pack"] == pack]
         shown = [k for k in in_pack if self.cards[k]["t"] <= t]
         slots = tuple(
-            ("foil" if self.cards[k].get("foil") else rarity.color(self.cards[k]["rarity"])) if k in shown else None
+            ("foil" if self.cards[k].get("foil") else rarity.color(self.cards[k]["rarity"], self.game)) if k in shown else None
             for k in in_pack
         )
         session = None
@@ -588,18 +596,19 @@ class Overlay:
                         fill=(242, 193, 78, 38), outline=(242, 193, 78, 200), width=2 * u)
             mid = y + row_h / 2
             s.d.ellipse([(ox + 40 * u) * SS, (mid - 9 * u) * SS, (ox + 58 * u) * SS, (mid + 9 * u) * SS],
-                        fill=rgba(rarity.color(c["rarity"])))
+                        fill=rgba(rarity.color(c["rarity"], self.game)))
             price = self.money.fmt(c.get("price_usd"))
             price_w = s.textlen(price, "Bold", 32 * u)
-            name = c["name"] + (f" - {c['version']}" if c.get("version") else "")
-            room = w - 80 * u - price_w - 40 * u - (96 * u if c.get("foil") else 0)
+            name = card_name(c) + (f" - {c['version']}" if c.get("version") else "")
+            foil_w = s.textlen(self.foil_text, "Bold", 17 * u) + 36 * u
+            room = w - 80 * u - price_w - 40 * u - (foil_w + 18 * u if c.get("foil") else 0)
             while s.textlen(name, "SemiBold", 29 * u) > room and len(name) > 4:
                 name = name[:-2].rstrip() + "…"
             s.text((ox + 76 * u, mid), name, "SemiBold", 29 * u, WHITE, anchor="lm")
             if c.get("foil"):
                 fx = ox + 76 * u + s.textlen(name, "SemiBold", 29 * u) + 14 * u
-                s.paste(rainbow(round(78 * u), round(30 * u), 15 * u), (fx, mid - 15 * u))
-                s.text((fx + 39 * u, mid), "FOIL", "Bold", 17 * u, (20, 20, 40, 255), anchor="mm")
+                s.paste(rainbow(round(foil_w), round(30 * u), 15 * u), (fx, mid - 15 * u))
+                s.text((fx + foil_w / 2, mid), self.foil_text, "Bold", 17 * u, (20, 20, 40, 255), anchor="mm")
             s.text((ox + w - 40 * u, mid), price, "Bold", 32 * u, price_color(c.get("price_usd")), anchor="rm")
             y += row_h
         if extra:
@@ -781,8 +790,8 @@ def render(
     if sealed:
         ov = SealedOverlay(scan, money, size, paid_usd, icons, names, paid_as, intro, logo, corner, settings.logo_opacity)
     else:
-        ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons, names, paid_as, intro, logo, corner,
-                     settings.logo_opacity)
+        ov = Overlay(scan, money, size, games.pack_size(settings, scan.get("game")), paid_usd, icons, names, paid_as,
+                     intro, logo, corner, settings.logo_opacity)
     tmp = out.with_name(out.stem + ".imagem.part.mp4")  # o vídeo anterior continua válido até o novo ficar pronto
     writer = VideoWriter(tmp, size, FPS)  # o som entra depois, misturado com o "ka-ching" de cada carta
     written = 0

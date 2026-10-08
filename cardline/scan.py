@@ -18,9 +18,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import db
+from . import db, games
 from .config import Settings, load_settings
-from .foil import FOIL_ONLY, assign_foils
+from .foil import assign_foils
 from .index import indexed_sets, load_index
 from .matcher import Matcher
 from .video import VideoInfo, probe, read_frames
@@ -70,11 +70,12 @@ def _analyze(job: tuple[int, np.ndarray]) -> dict:
 # --- orquestração ---------------------------------------------------------------------------
 
 
-def detect_sets(settings: Settings, info: VideoInfo, progress: Progress) -> list[str]:
-    """Descobre de que set(s) são as cartas usando um índice leve com todos os sets e ~40 frames."""
-    available = indexed_sets(settings)
+def detect_sets(settings: Settings, info: VideoInfo, progress: Progress, game: str = "lorcana") -> list[str]:
+    """Descobre de que set(s) são as cartas usando um índice leve com todos os sets do jogo e ~40 frames."""
+    available = indexed_sets(settings, game)
     if not available:
-        raise RuntimeError("Nenhum set indexado; rode `cardline sync` antes.")
+        raise RuntimeError(f"Nenhum set de {games.get(game).short} reconhecido em vídeo ainda: baixe os sets na aba Sets "
+                           "(ou `cardline sync`).")
     if len(available) == 1:
         return available
     ref = load_index(settings, available, per_card=250)  # só keypoints da arte
@@ -98,17 +99,18 @@ def detect_sets(settings: Settings, info: VideoInfo, progress: Progress) -> list
     return sorted(c for c, n in tally.items() if n >= max(2, 0.15 * total)) or [max(tally, key=tally.get)]
 
 
-def _segment(records: list[dict], fps: float) -> list[dict]:
-    """Agrupa os frames em cartas reveladas: cada sequência estável de uma nova carta no topo."""
+def _segment(records: list[dict], fps: float, key=lambda card: card) -> list[dict]:
+    """Agrupa os frames em cartas reveladas: cada sequência estável de uma nova carta no topo. `key` junta as entradas
+    do índice que são a mesma carta (a imagem em inglês e a em português)."""
     runs: list[dict] = []
     for rec in records:
         top = rec["matches"][0] if rec["matches"] else None
         if not top or top["inliers"] < MIN_INLIERS:
             continue  # frame sem carta confiável (mão na frente, borrão): não quebra a sequência
-        if runs and runs[-1]["card"] == top["card"]:
+        if runs and runs[-1]["card"] == key(top["card"]):
             runs[-1]["frames"].append(rec)
         else:
-            runs.append({"card": top["card"], "frames": [rec]})
+            runs.append({"card": key(top["card"]), "frames": [rec]})
     events: list[dict] = []
     for run in runs:
         if len(run["frames"]) < MIN_RUN:
@@ -124,7 +126,7 @@ def _segment(records: list[dict], fps: float) -> list[dict]:
         ev["start"] = first
         for j in range(first - 1, max(prev_end, first - int(BACKFILL_S * fps) - 1), -1):
             top = records[j]["matches"][0] if records[j]["matches"] else None
-            if top and top["card"] == ev["card"]:
+            if top and key(top["card"]) == ev["card"]:
                 ev["start"] = j
             elif top and top["inliers"] >= MIN_INLIERS:
                 break  # outra carta firme no topo
@@ -134,19 +136,25 @@ def _segment(records: list[dict], fps: float) -> list[dict]:
 
 def scan_video(
     settings: Settings, video: Path, run_dir: Path, set_codes: list[str] | None, progress: Progress,
-    kind: str = "abertura",
+    kind: str = "abertura", game: str = "lorcana",
 ) -> dict:
     """Identifica as cartas do vídeo; grava `scan.json`, `track.json` e `crops/` em `run_dir`.
 
-    Numa abertura as cartas são agrupadas em boosters e a foil é deduzida pela estrutura do booster;
-    num cadastro não há booster: só as raridades que existem apenas em foil já entram como foil.
+    Numa abertura as cartas são agrupadas em boosters e a foil é deduzida pela estrutura do booster (Lorcana);
+    num cadastro não há booster: só as raridades que existem apenas em foil já entram como foil. Quando o set tem as
+    imagens em inglês e em português, a carta é uma só e o idioma da cópia é o da imagem que casou melhor.
     """
     info = probe(video)
     (run_dir / "crops").mkdir(parents=True, exist_ok=True)
     for old in (run_dir / "crops").glob("*.jpg"):  # de uma execução anterior
         old.unlink()
-    set_codes = set_codes or detect_sets(settings, info, progress)
+    g = games.get(game)
+    pack_size = games.pack_size(settings, g)
+    set_codes = set_codes or detect_sets(settings, info, progress, game)
     ref = load_index(settings, set_codes)
+    base = {}
+    for i, cid in enumerate(ref.card_ids):
+        base.setdefault(cid, i)  # a primeira entrada de cada carta representa as outras (os outros idiomas)
 
     fps = settings.analysis_fps
     expected = int(info.duration * fps) + 1
@@ -167,10 +175,15 @@ def scan_video(
             progress(0.1 + 0.9 * len(records) / expected, f"Analisando frames ({len(records)}/{expected})")
 
     con = db.connect(settings.db_path)
-    events = _segment(records, fps)
+    events = _segment(records, fps, key=lambda entry: base[ref.card_ids[entry]])
     cards = []
     for n, ev in enumerate(events):
         frames = ev["frames"]
+        by_lang: dict[str, int] = {}
+        for rec in frames:  # o idioma: o das imagens que mais casaram com os frames desta carta
+            top = rec["matches"][0]
+            by_lang[ref.lang(top["card"])] = by_lang.get(ref.lang(top["card"]), 0) + top["inliers"]
+        lang = max(by_lang, key=by_lang.get)
         best = max(frames, key=lambda r: r["matches"][0]["inliers"] * np.sqrt(r["sharpness"]))
         crop_rel = f"crops/{n + 1:02d}.jpg"
         (run_dir / crop_rel).write_bytes(best["crop"].tobytes())
@@ -178,15 +191,19 @@ def scan_video(
         alternatives = {}
         for rec in frames:
             for m in rec["matches"][1:]:
-                alternatives[m["card"]] = max(alternatives.get(m["card"], 0), m["inliers"])
+                if ref.card_ids[m["card"]] != row["id"]:  # a mesma carta em outro idioma não é alternativa
+                    alt = base[ref.card_ids[m["card"]]]
+                    alternatives[alt] = max(alternatives.get(alt, 0), m["inliers"])
         cards.append({
             "uid": f"{n + 1:02d}",
-            "slot": n % settings.pack_size + 1 if kind == "abertura" else n + 1,
-            "pack": n // settings.pack_size + 1 if kind == "abertura" else None,
+            "slot": n % pack_size + 1 if kind == "abertura" else n + 1,
+            "pack": n // pack_size + 1 if kind == "abertura" else None,
             "card_id": row["id"],
+            "lang": lang if lang != "en" else None,
             "set": row["set_code"],
             "number": row["number"],
             "name": row["name"],
+            "name_pt": row["name_pt"],
             "version": row["version"],
             "rarity": row["rarity"],
             "ink": row["ink"],
@@ -203,10 +220,10 @@ def scan_video(
             ],
         })
     if kind == "abertura":
-        assign_foils(cards, settings.pack_size)
+        assign_foils(cards, pack_size, game)
     else:
         for c in cards:
-            if c["rarity"] in FOIL_ONLY:
+            if c["rarity"] in g.foil_only:
                 c["foil"], c["foil_reason"] = True, "raridade"
     for i, c in enumerate(cards):
         c["t_end"] = cards[i + 1]["t"] if i + 1 < len(cards) else round(info.duration, 2)
@@ -214,6 +231,7 @@ def scan_video(
     result = {
         "version": SCAN_VERSION,
         "kind": kind,
+        "game": game,
         "video": os.path.relpath(video.resolve(), settings.root),
         "recorded_at": info.creation_time,
         "duration": round(info.duration, 2),

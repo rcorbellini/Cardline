@@ -12,7 +12,7 @@
   <div class="panel logincard">
     <span class="logo big" aria-hidden="true">C</span>
     <h1>Cardline</h1>
-    <p class="muted">Coleção Disney Lorcana</p>
+    <p class="muted">Lorcana, Magic e Pokémon</p>
     <div id="login-body" aria-live="polite"></div>
   </div>
 </main>
@@ -20,8 +20,9 @@
   <header class="top">
     <div class="brand">
       <a class="logo" href="#/resumo" aria-label="Início">C</a>
-      <div><h1>Cardline</h1><p>Coleção Disney Lorcana</p></div>
+      <div><h1>Cardline</h1><p id="brand-sub">Coleção</p></div>
       <span class="spacer"></span>
+      <div class="seg gameswitch" id="game-switch" role="group" aria-label="Jogo"></div>
       <div class="seg" id="currency" role="group" aria-label="Moeda"></div>
       <button class="iconbtn" id="theme" title="Alternar tema claro/escuro">Tema</button>
       <a class="btn" href="#/nova" data-write>+ Nova pipeline</a>
@@ -124,7 +125,7 @@
             <option value="all">Normal e foil</option><option value="foil">Só foil</option><option value="normal">Só normal</option>
           </select>
           <input type="number" id="min" min="0" step="0.5" placeholder="Preço mín." aria-label="Preço mínimo">
-          <div class="inkchips" id="inks" role="group" aria-label="Tinta"></div>
+          <div class="inkchips" id="inks" role="group" aria-label="Cor"></div>
         </div>
       </div>
       <div class="resultbar"><span id="count"></span><button class="linkbtn" id="clear">Limpar filtros</button></div>
@@ -169,7 +170,8 @@
 
   <section id="view-nova" class="view" hidden>
     <form id="new-form" class="panel form">
-      <h2>Nova pipeline</h2>
+      <h2>Nova pipeline <span class="gamechip" id="new-game"></span></h2>
+      <p class="warnbox" id="new-nosets" hidden></p>
       <fieldset class="kinds">
         <legend>Tipo</legend>
         <label class="kind"><input type="radio" name="kind" value="abertura" checked>

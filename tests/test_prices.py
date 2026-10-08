@@ -60,14 +60,14 @@ def test_price_on_uses_the_last_known_price_up_to_that_day(settings):
 
 def test_reprocessing_keeps_the_price_at_opening(settings, run, monkeypatch):
     ctx = pipeline.RunContext(settings, db.connect(settings.db_path), run)
-    monkeypatch.setattr(pipeline.lorcast, "fetch_set_cards", lambda set_id: [
+    monkeypatch.setattr("cardline.lorcast.fetch_set_cards", lambda set_id: [
         lorcast_card("crd_a", "1", 1.0, 5.0), lorcast_card("crd_b", "2", 2.0, 6.0)])
     pipeline._prices(ctx)
     assert load_scan(ctx.dir)["cards"][0]["price_usd"] == 1.0
 
     # semanas depois o mercado sobe; uma carta é inserida na pipeline e ela é reprocessada
     monkeypatch.setattr(db, "now", lambda: "2026-10-27T12:00:00-03:00")
-    monkeypatch.setattr(pipeline.lorcast, "fetch_set_cards", lambda set_id: [
+    monkeypatch.setattr("cardline.lorcast.fetch_set_cards", lambda set_id: [
         lorcast_card("crd_a", "1", 3.0, 7.0), lorcast_card("crd_b", "2", 4.0, 8.0)])
     scan = load_scan(ctx.dir)
     scan["cards"].append({"uid": "x", "card_id": "crd_b", "set": "1", "number": "2", "name": "Carta 2",

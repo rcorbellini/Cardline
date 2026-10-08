@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import db, lorcast
+from . import db, games
 from .collection import load_scan, register, save_scan
 from .config import Settings
 from .money import money_for, to_usd
@@ -120,10 +120,13 @@ def create_run(
     logo: str | None = None,
     sealed: tuple[int, int] | None = None,
     user_id: int | None = None,
+    game: str = "lorcana",
 ) -> int:
     """Cadastra um run na fila. Com `move`, o vídeo (um upload) passa a morar na pasta do run."""
     if kind not in KINDS:
         raise ValueError(f"Tipo de pipeline desconhecido: {kind}")
+    if game not in games.GAMES:
+        raise ValueError(f"Jogo desconhecido: {game}")
     if kind == "cadastro":  # sem compra e sem vídeo de saída
         paid, overlay = None, False
     if kind == "lacrados":
@@ -155,9 +158,9 @@ def create_run(
     with con:
         run_id = con.execute(
             "INSERT INTO runs(kind, video, video_name, video_sha1, dir, status, paid, paid_currency, paid_usd, set_hint,"
-            " options, created_at, user_id) VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?, ?, ?)",
+            " options, created_at, user_id, game) VALUES (?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
             (kind, _stored_path(settings, video), video_name or video.name, sha1, paid, paid_currency if paid else None,
-             to_usd(settings, paid, paid_currency), set_hint or None, json.dumps(options), db.now(), user_id),
+             to_usd(settings, paid, paid_currency), set_hint or None, json.dumps(options), db.now(), user_id, game),
         ).lastrowid
         folder = settings.runs_dir / str(run_id)
         folder.mkdir(parents=True, exist_ok=True)
@@ -217,17 +220,18 @@ def _scan(ctx: RunContext) -> str:
     if run["kind"] == "lacrados":
         from .packs import scan_video as scan_packs
 
-        result = scan_packs(ctx.settings, ctx.settings.root / run["video"], ctx.dir, ctx.progress)
+        result = scan_packs(ctx.settings, ctx.settings.root / run["video"], ctx.dir, ctx.progress, run["game"])
         with ctx.con:
             ctx.con.execute("UPDATE runs SET recorded_at = ? WHERE id = ?", (result["recorded_at"], ctx.run_id))
         n = len(result["packs"])
         return f"{n} {'booster' if n == 1 else 'boosters'} · {len(result['sets'])} {'set' if len(result['sets']) == 1 else 'sets'}"
     sets = [s.strip() for s in run["set_hint"].split(",")] if run["set_hint"] else None
-    result = scan_video(ctx.settings, ctx.settings.root / run["video"], ctx.dir, sets, ctx.progress, run["kind"])
+    result = scan_video(ctx.settings, ctx.settings.root / run["video"], ctx.dir, sets, ctx.progress, run["kind"],
+                        run["game"])
     with ctx.con:
         ctx.con.execute("UPDATE runs SET recorded_at = ? WHERE id = ?", (result["recorded_at"], ctx.run_id))
-    n, size = len(result["cards"]), ctx.settings.pack_size
-    msg = f"{n} cartas · set {', '.join(result['sets'])}"
+    n, size = len(result["cards"]), games.pack_size(ctx.settings, run["game"])
+    msg = f"{n} cartas · set {', '.join(games.short_code(c) for c in result['sets'])}"
     if run["kind"] == "abertura" and n % size:
         msg += f" · atenção: {n} cartas não fecham boosters de {size}"
     return msg
@@ -277,17 +281,18 @@ def _prices(ctx: RunContext) -> str:
         if missing:
             msg += f" · sem preço agora para o set {', '.join(missing)}"
         return msg
+    from .catalog import fetch_cards
+
     fetched_at, offline = db.now(), []
     for code in sorted({c["set"] for c in scan["cards"]}):
-        ctx.progress(None, f"Buscando preços atuais do set {code}")
-        row = ctx.con.execute("SELECT id FROM sets WHERE code = ?", (code,)).fetchone()
+        ctx.progress(None, f"Buscando preços atuais do set {games.short_code(code)}")
         try:
-            cards = lorcast.fetch_set_cards(row["id"])
+            rows = fetch_cards(ctx.con, code, langs=())  # só os preços
         except OSError:
-            offline.append(code)
+            offline.append(games.short_code(code))
             continue
         with ctx.con:
-            db.upsert_cards(ctx.con, cards, fetched_at)
+            db.upsert_card_rows(ctx.con, rows, fetched_at)
     day, kept = opening_day(ctx.run), 0
     for c in scan["cards"]:
         key = f"{c['card_id']}:{int(c['foil'])}"

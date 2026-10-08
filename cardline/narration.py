@@ -35,7 +35,7 @@ import numpy as np
 
 from .collection import load_scan
 from .config import Settings
-from .rarity import label as rarity_label
+from . import games
 from .video import ffmpeg_exe, probe
 
 XTTS = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -144,14 +144,7 @@ INTROS_FREE = ["Um booster lacrado. E uma fé inabalável.", "Um booster. E muit
                "Mais um booster. O que pode dar errado?"]
 HOPE = ["Calma. As boas vêm no final... é o que dizem.", "Respira. Ainda tem carta.", "Calma... ainda dá tempo de virar."]
 OMENS = ["Comum. O universo está avisando.", "Hmm. Isso não cheira bem.", "Mais uma comum. Mau sinal."]
-REACTIONS = {
-    "Rare": ["Uma rara!", "Opa... uma rara!"],
-    "Super_rare": ["Super rara! Agora vai!", "Super rara?! Calma, coração."],
-    "Legendary": ["Lendária?! Será que eu me enganei?", "Uma lendária! A profecia treme."],
-    "Epic": ["Épica?! Eu preciso sentar."],
-    "Enchanted": ["Encantada?! Isso não estava na profecia!"],
-    "Iconic": ["Icônica?! Isso não estava no roteiro!"],
-}
+REACTIONS = games.LORCANA.reactions  # por jogo: games.Game.reactions
 ENDINGS = {
     "loss": ["Eu avisei.", "Eu avisei... desde o começo.", "A profecia se cumpriu."],
     "profit": ["Tá. Dessa vez eu errei.", "Quem diria... a profecia falhou."],
@@ -159,14 +152,18 @@ ENDINGS = {
     "unknown": ["E assim termina mais uma abertura."],
 }
 
-JOKE_SYSTEM = (
-    "Você escreve UMA fala curta de narrador para um vídeo de abertura de booster de Disney Lorcana. Estilo: "
-    "narrador de trailer, dramático, engraçado e um pouco trágico, humor brasileiro, de quem pressente que o "
-    "booster vai dar errado. Faça trocadilho com o personagem, a versão ou o nome da carta (traduza se a piada "
-    "pedir; use os nomes como são conhecidos no Brasil, ex.: Tinker Bell = Sininho, Goofy = Pateta). Nada em "
-    "inglês além do nome do personagem: traduza a versão e o nome de cartas que não são personagens. No máximo "
-    "9 palavras. Sem números, sem valores, sem falar de lucro ou prejuízo, sem a palavra foil."
-)
+def joke_system(game: games.Game) -> str:
+    return (
+        f"Você escreve UMA fala curta de narrador para um vídeo de abertura de booster de {game.name}. Estilo: "
+        "narrador de trailer, dramático, engraçado e um pouco trágico, humor brasileiro, de quem pressente que o "
+        "booster vai dar errado. Faça trocadilho com o personagem, a versão ou o nome da carta (traduza se a piada "
+        f"pedir; {game.joke_hint}). Nada em "
+        "inglês além do nome do personagem: traduza a versão e o nome de cartas que não são personagens. No máximo "
+        "9 palavras. Sem números, sem valores, sem falar de lucro ou prejuízo, sem a palavra foil."
+    )
+
+
+JOKE_SYSTEM = joke_system(games.LORCANA)
 # piadas já aprovadas (o roteiro do teste); o modelo escreve só para as outras cartas
 CURATED = {
     ("Timon", None): "Hakuna matata... sei.",
@@ -197,6 +194,7 @@ class Timeline:
     paid_currency: str | None
     result: float | None  # (valor das cartas - pago) / pago
     intro: float = 0.0  # segundos de capa antes do vídeo (os instantes das cartas já contam com ela)
+    game: games.Game = games.LORCANA
 
     @property
     def outcome(self) -> str:
@@ -217,11 +215,15 @@ def timeline(settings: Settings, run, folder: Path) -> Timeline:
     if scan.get("kind") == "lacrados":  # cada booster da pilha faz o papel de uma carta
         items = [{**p, "card_id": f"booster:{p['set']}", "foil": False, "rarity": None, "pack": 1} for p in scan["packs"]]
     total = sum(c.get("price_usd") or 0 for c in items)
+    try:
+        game = games.get(run["game"])
+    except (KeyError, IndexError):  # pipeline de antes dos jogos
+        game = games.get(scan.get("game"))
     return Timeline(
         cards=[{**c, "t": c["t"] + intro} for c in items], summary=meta.get("summary") or max(0.0, end - settings.outro_seconds),
         end=end, packs=max((c["pack"] or 1 for c in items), default=1), paid=run["paid"],
         paid_currency=run["paid_currency"], result=(total - run["paid_usd"]) / run["paid_usd"] if run["paid_usd"] else None,
-        intro=intro,
+        intro=intro, game=game,
     )
 
 
@@ -258,7 +260,7 @@ def joke_candidates(tl: Timeline, limit: int) -> list[int]:
         nxt = tl.cards[i + 1]["t"] if i + 1 < len(tl.cards) else tl.summary
         return c["foil"], bool(c.get("version")), min(nxt - c["t"], 3.0)
 
-    idx = [i for i, c in enumerate(tl.cards) if c["rarity"] not in REACTIONS and c["t"] > 4.0]
+    idx = [i for i, c in enumerate(tl.cards) if c["rarity"] not in tl.game.reactions and c["t"] > 4.0]
     return sorted(sorted(idx, key=score, reverse=True)[:limit])
 
 
@@ -276,14 +278,15 @@ def write_jokes(settings: Settings, tl: Timeline, indices: list[int], seed: int,
             continue
         if offline:
             continue
-        tags = [rarity_label(c["rarity"]).lower()] + (["brilhante"] if c["foil"] else [])
+        tags = [tl.game.rarity_label(c["rarity"]).lower()] + (["brilhante"] if c["foil"] else [])
         if i == len(tl.cards) - 1 or tl.cards[i + 1]["pack"] != c["pack"]:
             tags.append("última carta")
-        card = f"{c['name']}{', ' + c['version'] if c.get('version') else ''} ({', '.join(tags)})"
+        name = c.get("name_pt") if c.get("lang") == "pt" and c.get("name_pt") else c["name"]
+        card = f"{name}{', ' + c['version'] if c.get('version') else ''} ({', '.join(tags)})"
         body = {
             "model": settings.narration_writer, "stream": False, "think": False, "format": schema,
             "options": {"temperature": 0.9, "seed": seed + i},
-            "messages": [{"role": "system", "content": JOKE_SYSTEM},
+            "messages": [{"role": "system", "content": joke_system(tl.game)},
                          {"role": "user", "content": f"{JOKE_EXAMPLES}\nCarta: {card}\nResponda em JSON: {{\"fala\": \"...\"}}"}],
         }
         req = urllib.request.Request(f"{host}/api/chat", json.dumps(body).encode(), {"Content-Type": "application/json"})
@@ -333,9 +336,9 @@ def plan(tl: Timeline, jokes: dict[int, str], rng: random.Random, max_jokes: int
     place(0.2, intro, "abertura", 0.0)
     seen: set[str] = set()
     for c in tl.cards:  # a primeira carta de cada raridade alta ganha reação
-        if c["rarity"] in REACTIONS and c["rarity"] not in seen and len(seen) < 3:
+        if c["rarity"] in tl.game.reactions and c["rarity"] not in seen and len(seen) < 3:
             seen.add(c["rarity"])
-            place(c["t"] + 0.25, rng.choice(REACTIONS[c["rarity"]]), "reacao", 1.0)
+            place(c["t"] + 0.25, rng.choice(tl.game.reactions[c["rarity"]]), "reacao", 1.0)
     ranked = sorted(jokes, key=lambda i: (not tl.cards[i]["foil"], tl.cards[i]["t"]))  # a brilhante primeiro
     used = 0
     for i in ranked[:1] if ranked and tl.cards[ranked[0]]["foil"] else []:
@@ -351,7 +354,7 @@ def plan(tl: Timeline, jokes: dict[int, str], rng: random.Random, max_jokes: int
         last = -math.inf
         for text in rng.sample(OMENS, 2):
             for c in tl.cards:
-                if c["rarity"] == "Common" and c["t"] > max(5.0, last + 4.0) and place(c["t"] + 0.25, text, "presagio", 0.8):
+                if c["rarity"] == tl.game.common and c["t"] > max(5.0, last + 4.0) and place(c["t"] + 0.25, text, "presagio", 0.8):
                     last = c["t"]
                     break
     # o desfecho vem com o resumo na tela, depois que a última fala termina (como no "Eu avisei" do teste);
@@ -411,7 +414,7 @@ def write_sealed_script(tl: Timeline, seed: int) -> dict:
 def write_script(settings: Settings, tl: Timeline, seed: int, progress) -> dict:
     rng = random.Random(seed)
     max_jokes = max(2, len(tl.cards) // 3)
-    ready = {i for i, c in enumerate(tl.cards) if curated(c, False) and c["rarity"] not in REACTIONS and c["t"] > 4.0}
+    ready = {i for i, c in enumerate(tl.cards) if curated(c, False) and c["rarity"] not in tl.game.reactions and c["t"] > 4.0}
     jokes = write_jokes(settings, tl, sorted(set(joke_candidates(tl, max_jokes + 2)) | ready), seed, progress)
     lines = plan(tl, jokes, rng, max_jokes)
     approved = {curated(tl.cards[i], i == len(tl.cards) - 1) for i in jokes}

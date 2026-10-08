@@ -20,7 +20,7 @@ def _sets_arg(value: str | None) -> list[str] | None:
 def cmd_sync(s: Settings, a: argparse.Namespace) -> None:
     from .catalog import sync
 
-    sync(s, _sets_arg(a.sets), images=not a.no_images)
+    sync(s, _sets_arg(a.sets), images=not a.no_images, game=a.game)
 
 
 def cmd_serve(s: Settings, a: argparse.Namespace) -> None:
@@ -30,13 +30,15 @@ def cmd_serve(s: Settings, a: argparse.Namespace) -> None:
 
 
 def cmd_process(s: Settings, a: argparse.Namespace) -> None:
+    from .catalog import full_code
     from .pipeline import DuplicateVideo, create_run, execute
 
+    sets = ",".join(full_code(c, a.game) for c in a.set.split(",")) if a.set else None
     try:
         run_id = create_run(
-            s, Path(a.video), paid=a.paid, paid_currency=a.paid_currency, set_hint=a.set,
+            s, Path(a.video), paid=a.paid, paid_currency=a.paid_currency, set_hint=sets,
             overlay=not a.no_overlay, verify=a.verify, currency=a.currency,
-            kind="cadastro" if a.cadastro else "abertura", narration=a.narrar,
+            kind="cadastro" if a.cadastro else "abertura", narration=a.narrar, game=a.game,
         )
     except DuplicateVideo as e:
         raise SystemExit(f"{e} Para reprocessar: cardline run {e.run_id} --from scan") from e
@@ -131,7 +133,9 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True, metavar="comando")
 
     sp = sub.add_parser("sync", help="atualiza catálogo e preços; baixa imagens, indexa os sets e busca os ícones")
-    sp.add_argument("--sets", help="sets a indexar, ex.: 1,2,5 (padrão: todos os sets de booster)")
+    sp.add_argument("--sets", help="sets a indexar, ex.: 1,2,5 (Lorcana) ou fra,blb com --game magic (padrão: os sets de "
+                                   "booster de Lorcana e os já baixados de Magic e Pokémon)")
+    sp.add_argument("--game", choices=["lorcana", "magic", "pokemon"], help="só este jogo")
     sp.add_argument("--no-images", action="store_true", help="só catálogo e preços (rápido)")
     sp.set_defaults(func=cmd_sync)
 
@@ -152,6 +156,7 @@ def main(argv: list[str] | None = None) -> None:
                     help="confere as cartas com o modelo de visão do Ollama (padrão: verify_model do cardline.toml)")
     sp.add_argument("--currency", choices=["USD", "BRL"], help="moeda do overlay (padrão: cardline.toml)")
     sp.add_argument("--narrar", action="store_true", help="narra o vídeo com overlay (precisa do extra narracao)")
+    sp.add_argument("--game", choices=["lorcana", "magic", "pokemon"], default="lorcana", help="o jogo (padrão: lorcana)")
     sp.set_defaults(func=cmd_process)
 
     sp = sub.add_parser("run", help="executa uma pipeline existente, de onde parou ou a partir de um passo")
