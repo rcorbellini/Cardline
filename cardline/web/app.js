@@ -1390,6 +1390,8 @@ function renderColTabs() {
   $('#col-cartas').hidden = colTab !== 'cartas';
   $('#col-lacrados').hidden = colTab !== 'lacrados';
   $('#sealed-count').textContent = S.sealed?.qty ? `(${S.sealed.qty})` : '';
+  const ncards = entries.reduce((n, e) => n + e.qty, 0);  // as cópias, como no Resumo
+  $('#cards-count').textContent = ncards ? `(${ncards})` : '';
 }
 document.querySelectorAll('[data-coltab]').forEach(b => b.onclick = () => {
   colTab = b.dataset.coltab; store.set('coltab', colTab); renderColTabs();
