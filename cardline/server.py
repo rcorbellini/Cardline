@@ -704,12 +704,23 @@ def create_app(settings: Settings) -> FastAPI:
                         n += 1
         return n
 
+    def last_reads(c, only_run: int | None = None) -> list[str | None]:
+        """A última leitura pela API de cada post que dá para ler (rede conectada e ID na rede); None = nunca lido."""
+        nets = [n for n, mod in (("youtube", youtube), ("instagram", instagram)) if mod.status(settings)["connected"]]
+        if not nets:
+            return []
+        return [r[0] for r in c.execute(
+            "SELECT (SELECT MAX(fetched_at) FROM post_stats s WHERE s.run_id = p.run_id AND s.network = p.network"
+            f" AND s.manual = 0) FROM posts p WHERE p.post_id IS NOT NULL AND p.network IN ({','.join('?' * len(nets))})"
+            " AND (? IS NULL OR p.run_id = ?)", (*nets, only_run, only_run))]
+
     @app.post("/api/social/stats")
     def social_stats(max_age: float = 0, run: int | None = None):
-        """Atualiza os números dos posts (se a última leitura automática tiver mais de `max_age` s)."""
+        """Atualiza os números dos posts pela API. Com `max_age`, só se algum post estiver com a leitura mais velha
+        que isso (ou sem leitura): ler um post não deixa os outros parecendo atualizados."""
         c = con()
-        last = c.execute("SELECT MAX(fetched_at) FROM post_stats WHERE manual = 0").fetchone()[0]
-        if max_age and last and time.time() - datetime.fromisoformat(last).timestamp() < max_age:
+        reads = last_reads(c, run)
+        if max_age and reads and all(r and time.time() - datetime.fromisoformat(r).timestamp() < max_age for r in reads):
             return {"updated": 0, "fresh": True}
         return {"updated": refresh_numbers(c, run)}
 

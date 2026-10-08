@@ -67,6 +67,7 @@ header.top { padding: 24px 0 0; }
 .updated { color: var(--muted); font-size: 12px; margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .updated .linkbtn { font-size: 12px; font-weight: 600; }
 .updated .linkbtn:disabled { color: var(--muted); cursor: default; }
+.ytread { align-items: center; }
 
 /* gráfico gasto vs valor */
 .chartcard { margin: 12px 0 0; padding: 14px 18px 12px; }

@@ -197,8 +197,10 @@ O painel **Postar nas redes**, no detalhe de uma abertura, posta o vídeo e vinc
   o compartilhamento com o vídeo (escolha YouTube, Instagram ou TikTok); no computador, baixa o vídeo.
 - **Já postou?** Cole o link do vídeo no YouTube, do Reel ou do TikTok: o cardline reconhece a rede e vincula.
   Com o YouTube conectado, a lista dos últimos vídeos do canal já aparece para vincular com um toque.
-- **Números:** YouTube e Instagram conectados são lidos pela API ao abrir o Resumo (no máximo a cada 30 min) ou
-  em **Atualizar números**. No TikTok, sem API, use **Informar números**. Cada leitura fica guardada.
+- **Números:** YouTube e Instagram conectados são lidos pela API ao abrir o Resumo (quando algum vídeo está com a
+  leitura de mais de 30 min) e em **↻ Atualizar números**, no gráfico de redes do Resumo, que lê todos os vídeos
+  vinculados de uma vez e mostra quando foi a leitura. **Atualizar números** no painel de uma pipeline lê só os
+  vídeos dela. No TikTok, sem API, use **Informar números**. Cada leitura fica guardada.
 - **Programar:** preencha **Programar a publicação** e os botões viram **Programar no YouTube / no Instagram**.
   No YouTube, o vídeo sobe na hora, fica privado e o próprio YouTube publica na data, mesmo com o PC desligado
   (sem a auditoria do Google, porém, o vídeo fica travado como privado e a data não vale). O Instagram não programa

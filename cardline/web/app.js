@@ -939,6 +939,19 @@ new ResizeObserver(([entry]) => {
 }).observe($('#chart'));
 
 // ---- atualizar preços de hoje (o valor na abertura de cada carta não muda) ----
+$('#yt-refresh').onclick = async () => {
+  const btn = $('#yt-refresh'), status = $('#yt-refresh-status');
+  btn.disabled = true;
+  status.textContent = 'Lendo os números nas redes…';
+  try {
+    const r = await api('/api/social/stats', { method: 'POST' });
+    await refresh();
+    status.textContent = r.updated ? `${r.updated} ${r.updated === 1 ? 'vídeo atualizado' : 'vídeos atualizados'} agora.` : 'Nenhum vídeo para ler pela API.';
+  } catch (e) {
+    status.textContent = e.message;
+  }
+  btn.disabled = false;
+};
 $('#refresh-prices').onclick = async () => {
   const btn = $('#refresh-prices'), status = $('#refresh-status');
   btn.disabled = true;
@@ -1405,6 +1418,16 @@ function renderSocialChart() {
   patch($('#yt-connect-resumo'), S.meta.youtube?.connected || !S.meta.youtube?.configured ? '' : ytConnectBox());
   patch($('#yt-legend'), nets.length ? nets.map(n => `<li><i style="--c:${n.color}"></i>${n.label}</li>`).join('') : '');
   $('#yt-tabledetails').hidden = !runs.length;
+  // "Atualizar números": lê de novo todos os vídeos que a API alcança (rede conectada e post com ID na rede)
+  const canRead = S.meta.youtube?.connected || S.meta.instagram?.connected;
+  $('#yt-read').hidden = !runs.length || !canRead;
+  if (runs.length && canRead) {
+    const posts = runs.flatMap(r => Object.entries(r.posts));
+    const reads = posts.filter(([n, p]) => p.post_id && S.meta[n]?.connected).map(([, p]) => p.fetched_at);
+    const oldest = reads.every(Boolean) && reads.length ? reads.reduce((a, b) => new Date(a) < new Date(b) ? a : b) : null;
+    patch($('#yt-read-when'), (oldest ? `Números lidos em ${dt(oldest)}.` : reads.length ? 'Há vídeos sem números lidos.' : '') +
+      (posts.some(([n]) => n === 'tiktok') ? ' Os do TikTok são informados à mão, em cada pipeline.' : ''));
+  }
   if (!runs.length) {
     patch($('#yt-charts'), '<p class="muted chartempty">Poste ou vincule o vídeo de uma abertura (na página da pipeline) para acompanhar as visualizações e reações aqui.</p>');
     patch($('#yt-table'), '');
@@ -1551,4 +1574,5 @@ async function refresh(collectionToo = false) {
   buildEntries(); setupFilters();
   await route();
   await refresh();
+  if (currentView() === 'resumo') refreshSocialStats(1800);  // a lista de pipelines só chega agora
 })();

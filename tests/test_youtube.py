@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from cardline import db, pipeline, youtube
+from cardline import db, pipeline, social, youtube
 from cardline.config import Settings
 from cardline.server import create_app
 
@@ -229,4 +229,20 @@ def test_tags_follow_youtube_rules():
     many = youtube.clean_tags([f"tag número {i}" for i in range(80)])  # com espaço: contam as aspas
     used = sum(len(t) + 2 for t in many) + len(many) - 1  # + as vírgulas
     assert used <= 500 < used + len("tag número 99") + 3  # para quando a próxima não cabe
+
+
+def test_reading_one_video_does_not_hide_the_others_from_the_automatic_refresh(settings, monkeypatch):
+    connected(settings)
+    a, b = new_run(settings, "a.mp4"), new_run(settings, "b.mp4")
+    info = {"views": 10, "likes": 1, "comments": 0, "privacy": "public", "upload_status": "processed", "title": "x",
+            "published_at": None, "scheduled_at": None}
+    monkeypatch.setattr(youtube, "stats", lambda s, ids: {v: info for v in ids})
+    con = db.connect(settings.db_path)
+    social.save_post(con, a, "youtube", "aaaaaaaaaaa", "https://youtu.be/aaaaaaaaaaa", via="link")
+    social.save_post(con, b, "youtube", "bbbbbbbbbbb", "https://youtu.be/bbbbbbbbbbb", via="link")
+    with TestClient(create_app(settings)) as client:
+        assert client.post(f"/api/social/stats?run={a}").json() == {"updated": 1}  # "Atualizar números" numa pipeline
+        assert client.post("/api/social/stats?max_age=1800").json() == {"updated": 2}  # a outra nunca tinha sido lida
+        assert client.post("/api/social/stats?max_age=1800").json() == {"updated": 0, "fresh": True}
+        assert client.post("/api/social/stats").json() == {"updated": 2}  # o botão do Resumo lê todos de novo
 
