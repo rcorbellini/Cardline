@@ -171,9 +171,12 @@ No detalhe de uma pipeline:
 
 ![Coleção: grade de cartas com quantidade, selo foil, raridade e preço, e filtros por busca, set, raridade, acabamento, preço mínimo e tinta](docs/pagina-colecao.jpg)
 
-Busca por nome, subtítulo ou número (`1/169`), filtros por set, raridade, tinta, foil e preço mínimo,
-várias ordenações, e visualização em grade ou lista. Clicar numa carta abre a imagem grande, os preços normal e
-foil, o link do TCGplayer e cada cópia: de qual pipeline veio (com link) e quanto valia na abertura e hoje.
+Busca por nome, subtítulo ou número (`1/169`), várias ordenações e visualização em grade ou lista ficam sempre à
+vista. O funil mostra os outros filtros (set, raridade, foil, preço mínimo e tinta) e, fechado, conta quantos
+estão valendo. A tinta é escolhida pelo ícone de cada uma, desenhado a partir do símbolo oficial: escudo (Âmbar),
+vórtice (Ametista), onda (Esmeralda), fogo (Rubi), olho (Safira) e fortaleza (Aço). Clicar numa carta abre a
+imagem grande, os preços normal e foil, o link do TCGplayer e cada cópia: de qual pipeline veio (com link) e
+quanto valia na abertura e hoje.
 
 ### Sets
 

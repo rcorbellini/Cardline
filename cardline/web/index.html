@@ -83,12 +83,6 @@
   <section id="view-colecao" class="view" hidden>
     <div class="filters">
       <input type="search" id="q" placeholder="Buscar nome, subtítulo ou número (ex.: 1/169)" aria-label="Buscar">
-      <select id="set" aria-label="Set"></select>
-      <select id="rarity" aria-label="Raridade"></select>
-      <select id="foil" aria-label="Acabamento">
-        <option value="all">Normal e foil</option><option value="foil">Só foil</option><option value="normal">Só normal</option>
-      </select>
-      <input type="number" id="min" min="0" step="0.5" placeholder="Preço mín." aria-label="Preço mínimo">
       <select id="sort" aria-label="Ordenar">
         <option value="value">Maior valor</option><option value="value-asc">Menor valor</option>
         <option value="total">Maior valor total (qtd × preço)</option><option value="name">Nome</option>
@@ -97,7 +91,19 @@
       <div class="seg" role="group" aria-label="Visualização">
         <button data-view="grid" aria-pressed="true">Grade</button><button data-view="list" aria-pressed="false">Lista</button>
       </div>
-      <div class="chips" id="inks" role="group" aria-label="Tinta"></div>
+      <button class="filtertoggle" id="filter-toggle" aria-expanded="false" aria-controls="morefilters" title="Mostrar os filtros">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.2 7.4V18l-3.6 1.6v-7.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+        <span class="sr">Filtros</span><span class="fcount" id="filter-count" hidden></span>
+      </button>
+      <div class="morefilters" id="morefilters" hidden>
+        <select id="set" aria-label="Set"></select>
+        <select id="rarity" aria-label="Raridade"></select>
+        <select id="foil" aria-label="Acabamento">
+          <option value="all">Normal e foil</option><option value="foil">Só foil</option><option value="normal">Só normal</option>
+        </select>
+        <input type="number" id="min" min="0" step="0.5" placeholder="Preço mín." aria-label="Preço mínimo">
+        <div class="inkchips" id="inks" role="group" aria-label="Tinta"></div>
+      </div>
     </div>
     <div class="resultbar"><span id="count"></span><button class="linkbtn" id="clear">Limpar filtros</button></div>
     <div id="results"></div>

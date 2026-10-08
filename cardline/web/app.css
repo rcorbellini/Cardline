@@ -134,6 +134,27 @@ input, select {
   padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font: inherit; font-size: 13px;
 }
 .chip i { width: 10px; height: 10px; border-radius: 50%; background: var(--c); display: inline-block; }
+.filtertoggle {
+  position: relative; height: 38px; width: 42px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 10px; display: inline-grid; place-items: center; cursor: pointer;
+}
+.filtertoggle svg { width: 20px; height: 20px; }
+.filtertoggle[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.filtertoggle .fcount {
+  position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 800; display: grid; place-items: center;
+}
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.morefilters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%; }
+.morefilters[hidden] { display: none; }
+.inkchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.inkchip {
+  width: 40px; height: 38px; border: 1px solid var(--line); background: var(--panel); border-radius: 10px;
+  display: grid; place-items: center; cursor: pointer; padding: 0; opacity: .75;
+}
+.inkchip svg { width: 26px; height: 26px; }
+.inkchip:hover { opacity: 1; }
+.inkchip[aria-pressed="true"] { opacity: 1; border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent) inset; }
 .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .resultbar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; color: var(--muted); font-size: 13px; padding: 4px 0 12px; }
 .resultbar b { color: var(--text); }

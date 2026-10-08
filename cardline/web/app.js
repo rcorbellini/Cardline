@@ -122,13 +122,29 @@ const sorters = {
   'recent': (a, b) => b.last.localeCompare(a.last),
   'qty': (a, b) => b.qty - a.qty,
 };
+// ícones das tintas: desenhos próprios a partir dos símbolos oficiais (escudo, vórtice, onda, fogo, olho, fortaleza)
+const SPIRAL = Array.from({ length: 64 }, (_, i) => { const t = i / 63 * 4 * Math.PI, r = 0.44 * t; return `${(12 + r * Math.cos(t)).toFixed(2)},${(12 + r * Math.sin(t)).toFixed(2)}`; }).join(' ');
+const INK_GLYPH = {
+  Amber: '<path d="M12 6.2 17 8v3.6c0 3-2.1 5.1-5 6.2-2.9-1.1-5-3.2-5-6.2V8z"/><circle cx="12" cy="11.9" r="1.7"/>',
+  Amethyst: `<polyline points="${SPIRAL}"/>`,
+  Emerald: '<path d="M5.6 10.2c1.6-1.7 3.1-1.7 4.6 0s3.1 1.7 4.6 0 2.9-1.4 3.6-.5"/><path d="M5.6 14.3c1.6-1.7 3.1-1.7 4.6 0s3.1 1.7 4.6 0 2.9-1.4 3.6-.5"/>',
+  Ruby: '<path d="M12.3 5.6c.5 2.6 4.3 4.3 4.3 8.1a4.6 4.6 0 0 1-9.2 0c0-2 1-3.2 2.1-4.1.2 1.5.9 2.4 1.9 2.7-.6-2.4-.2-4.6.9-6.7z"/>',
+  Sapphire: '<path d="M4.8 12c2-3.4 4.4-5 7.2-5s5.2 1.6 7.2 5c-2 3.4-4.4 5-7.2 5s-5.2-1.6-7.2-5z"/><path d="M12 9.6l2.4 2.4-2.4 2.4-2.4-2.4z"/>',
+  Steel: '<path d="M7 17.6V9.4h1.9V11h1.6V9.4h3V11h1.6V9.4H17v8.2z"/><path d="M11 17.6v-2.5a1 1 0 0 1 2 0v2.5"/>',
+};
+function inkIcon(k, color) {
+  const ink = k === 'Amber' || k === 'Steel' ? '#1d1a14' : '#fff';  // desenho com contraste sobre a cor da tinta
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="12,1.4 21.7,7 21.7,17 12,22.6 2.3,17 2.3,7" fill="${color}"/>
+    <g fill="none" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${INK_GLYPH[k] || ''}</g></svg>`;
+}
+let filtersOpen = store.get('filtersOpen', false);
 function setupFilters() {
   const sets = [...new Set(entries.map(e => e.c.set))].sort((a, b) => (+a || 999) - (+b || 999) || a.localeCompare(b));
   const setName = Object.fromEntries(S.meta.sets.map(s => [s.code, s.name]));
   $('#set').innerHTML = '<option value="">Todos os sets</option>' + sets.map(s => `<option value="${esc(s)}">${esc(s)} · ${esc(setName[s] || s)}</option>`).join('');
   const rars = S.meta.rarities.map(r => r[0]).filter(r => entries.some(e => e.c.rarity === r));
   $('#rarity').innerHTML = '<option value="">Todas as raridades</option>' + rars.map(r => `<option value="${r}">${esc(rar(r).label)}</option>`).join('');
-  $('#inks').innerHTML = S.meta.inks.map(([k, label, color]) => `<button class="chip" data-ink="${k}" aria-pressed="false" style="--c:${color}"><i></i>${label}</button>`).join('');
+  $('#inks').innerHTML = S.meta.inks.map(([k, label, color]) => `<button class="inkchip" data-ink="${k}" aria-pressed="false" aria-label="${esc(label)}" title="${esc(label)}">${inkIcon(k, color)}</button>`).join('');
   document.querySelectorAll('[data-ink]').forEach(b => b.onclick = () => {
     const k = b.dataset.ink; F.inks = F.inks.includes(k) ? F.inks.filter(x => x !== k) : [...F.inks, k]; renderCollection();
   });
@@ -136,12 +152,20 @@ function setupFilters() {
 for (const k of ['q', 'set', 'rarity', 'foil', 'min', 'sort']) $('#' + k).addEventListener('input', e => { F[k] = e.target.value; renderCollection(); });
 document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { F.view = b.dataset.view; renderCollection(); });
 $('#clear').onclick = () => { F = { ...defaults, view: F.view }; renderCollection(); };
+$('#filter-toggle').onclick = () => { filtersOpen = !filtersOpen; store.set('filtersOpen', filtersOpen); renderCollection(); };
 
 function renderCollection() {
   store.set('filters', F);
   for (const k of ['q', 'set', 'rarity', 'foil', 'min', 'sort']) if ($('#' + k).value !== F[k]) $('#' + k).value = F[k];
   document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === F.view));
   document.querySelectorAll('[data-ink]').forEach(b => b.setAttribute('aria-pressed', F.inks.includes(b.dataset.ink)));
+  // os filtros escondidos que estão valendo aparecem no funil, para não sumirem cartas sem explicação
+  const hidden = [F.set, F.rarity, F.foil !== 'all', F.min !== '', F.inks.length].filter(Boolean).length;
+  $('#morefilters').hidden = !filtersOpen;
+  $('#filter-toggle').setAttribute('aria-expanded', filtersOpen);
+  $('#filter-toggle').title = `${filtersOpen ? 'Esconder' : 'Mostrar'} os filtros${hidden ? ` (${hidden} valendo)` : ''}`;
+  $('#filter-count').hidden = !hidden;
+  $('#filter-count').textContent = hidden;
   const q = norm(F.q.trim()), min = parseFloat(F.min), rate = S.meta.rates[S.cur] ?? 1;
   const list = entries.filter(e =>
     (!q || e.text.includes(q)) && (!F.set || e.c.set === F.set) && (!F.rarity || e.c.rarity === F.rarity) &&
