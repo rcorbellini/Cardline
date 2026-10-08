@@ -1,8 +1,10 @@
 """Contas: entrar com o Google, sessões por cookie e compartilhamento só para ver.
 
-Entrar usa o fluxo de dispositivo do Google, o mesmo da conexão do YouTube e com o mesmo cliente OAuth: a página
-mostra um código para digitar em google.com/device. Funciona pelo IP da rede de casa (o botão "Fazer login com o
-Google" exige https ou localhost) e pelo túnel. O Google devolve o e-mail da conta; a sessão é um cookie.
+No endereço público (https, `public_url`) a entrada é a de sempre: o botão leva à escolha da conta no Google, que
+volta para /api/auth/google/callback (cliente OAuth do tipo "Aplicativo da Web", em data/google/web.json). Pelo IP
+da rede de casa (http), o Google não aceita esse retorno, então a entrada é pelo fluxo de dispositivo, o mesmo da
+conexão do YouTube e com o mesmo cliente: a página mostra um código para digitar em google.com/device. O Google
+devolve o e-mail da conta; a sessão é um cookie.
 
 Cada pipeline, carta, lacrado, atualização e histórico de valor tem dono. O que existia antes das contas (ou foi
 criado pela linha de comando) fica com o administrador (`admin_email`, em data/config.toml). Compartilhar dá a
@@ -17,6 +19,7 @@ import hmac
 import json
 import secrets
 import shutil
+import urllib.parse
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -27,6 +30,8 @@ from .config import Settings
 
 SCOPE = "openid email profile"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+CALLBACK = "/api/auth/google/callback"
 COOKIE = "cardline_sessao"
 SESSION_DAYS = 30
 
@@ -168,9 +173,7 @@ def poll_login(settings: Settings, device_code: str) -> dict | None:
         if not claims.get("email") and payload.get("access_token"):  # sem ID token: pergunta ao Google de quem é a conta
             status, _, info = youtube._request("GET", USERINFO_URL, headers={"Authorization": f"Bearer {payload['access_token']}"})
             claims = info if status == 200 else {}
-        if not claims.get("email") or not claims.get("email_verified", True):
-            raise RuntimeError("O Google não informou um e-mail verificado para esta conta.")
-        return {"email": claims["email"].lower(), "name": claims.get("name"), "picture": claims.get("picture")}
+        return _account(claims)
     error = payload.get("error")
     if error in ("authorization_pending", "slow_down"):
         return None
@@ -180,6 +183,56 @@ def poll_login(settings: Settings, device_code: str) -> dict | None:
     if error == "expired_token":
         raise TimeoutError("O código expirou. Peça outro.")
     raise RuntimeError(f"O Google recusou a entrada: {youtube._message(payload)}")
+
+
+def _account(claims: dict) -> dict:
+    if not claims.get("email") or not claims.get("email_verified", True):
+        raise RuntimeError("O Google não informou um e-mail verificado para esta conta.")
+    return {"email": claims["email"].lower(), "name": claims.get("name"), "picture": claims.get("picture")}
+
+
+# --- entrar pelo botão do Google (no endereço público, com https) -------------------------------
+
+
+def web_client(settings: Settings) -> dict | None:
+    """O cliente OAuth do tipo "Aplicativo da Web" (o do YouTube é de TV e não aceita o retorno para a página)."""
+    return youtube._read(settings.data_dir / "google" / "web.json")
+
+
+def save_web_client(settings: Settings, client_id: str, client_secret: str) -> None:
+    client_id, client_secret = client_id.strip(), client_secret.strip()
+    if not client_id.endswith(".apps.googleusercontent.com") or not client_secret:
+        raise ValueError("Use o ID e a chave secreta de um cliente OAuth do Google (o ID termina em "
+                         ".apps.googleusercontent.com).")
+    youtube._write(settings.data_dir / "google" / "web.json", {"client_id": client_id, "client_secret": client_secret})
+
+
+def redirect_uri(settings: Settings) -> str:
+    """O endereço de retorno, que precisa estar cadastrado no cliente web do Google Cloud."""
+    return settings.public_url.rstrip("/") + CALLBACK
+
+
+def web_login_url(settings: Settings, state: str, verifier: str) -> str:
+    """A página do Google para escolher a conta; volta para `redirect_uri` com um código (PKCE)."""
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    return AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": web_client(settings)["client_id"], "redirect_uri": redirect_uri(settings), "response_type": "code",
+        "scope": SCOPE, "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
+        "prompt": "select_account"})
+
+
+def finish_web_login(settings: Settings, code: str, verifier: str) -> dict:
+    """Troca o código pela conta (e-mail, nome, foto)."""
+    cfg = web_client(settings)
+    status, _, payload = youtube._request("POST", youtube.TOKEN_URL, form={
+        "client_id": cfg["client_id"], "client_secret": cfg["client_secret"], "code": code, "code_verifier": verifier,
+        "grant_type": "authorization_code", "redirect_uri": redirect_uri(settings)})
+    if status != 200:
+        raise RuntimeError(f"O Google recusou a entrada: {youtube._message(payload)}")
+    claims = id_claims(payload.get("id_token", ""))
+    if claims.get("aud") != cfg["client_id"] or claims.get("iss") not in ("https://accounts.google.com", "accounts.google.com"):
+        raise RuntimeError("A resposta do Google não é para este cardline.")
+    return _account(claims)
 
 
 def id_claims(id_token: str) -> dict:

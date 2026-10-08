@@ -105,17 +105,23 @@ def cmd_add(s: Settings, a: argparse.Namespace) -> None:
 
 
 def cmd_google(s: Settings, a: argparse.Namespace) -> None:
-    """Salva o cliente OAuth do Google: o mesmo serve para entrar na página e para conectar o YouTube."""
+    """Salva um cliente OAuth do Google: o de TV (entrar pelo código e conectar o YouTube) ou, com --web, o de
+    Aplicativo da Web (o botão "Fazer login com o Google" no endereço público, com https)."""
     from getpass import getpass
 
-    from . import youtube
+    from . import auth, youtube
 
     client_id = a.client_id or input("ID do cliente (…apps.googleusercontent.com): ")
+    secret = getpass("Chave secreta do cliente (não aparece ao digitar): ")
     try:
-        youtube.save_client(s, client_id, getpass("Chave secreta do cliente (não aparece ao digitar): "))
+        (auth.save_web_client if a.web else youtube.save_client)(s, client_id, secret)
     except ValueError as e:
         raise SystemExit(str(e)) from e
-    print(f"Cliente salvo em {youtube.folder(s) / 'client.json'} (fora do git). Já dá para entrar na página.")
+    if a.web:
+        uri = auth.redirect_uri(s) if s.public_url else "<public_url>/api/auth/google/callback"
+        print(f"Cliente web salvo (fora do git). No Google Cloud, o URI de redirecionamento autorizado é {uri}")
+    else:
+        print(f"Cliente salvo em {youtube.folder(s) / 'client.json'} (fora do git). Já dá para entrar na página.")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -183,6 +189,8 @@ def main(argv: list[str] | None = None) -> None:
 
     sp = sub.add_parser("google", help="configura o cliente OAuth do Google (entrar na página e conectar o YouTube)")
     sp.add_argument("client_id", nargs="?", help="ID do cliente (a chave secreta é pedida sem aparecer na tela)")
+    sp.add_argument("--web", action="store_true",
+                    help="cliente do tipo Aplicativo da Web: o botão do Google no endereço público (https)")
     sp.set_defaults(func=cmd_google)
 
     a = p.parse_args(argv)

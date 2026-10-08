@@ -66,7 +66,7 @@ def new_run(settings, name, user_id=None):
 def test_login_with_a_google_code_opens_a_session(settings, monkeypatch):
     google = FakeGoogle(monkeypatch)
     with TestClient(create_app(settings)) as client:
-        assert client.get("/api/auth/me").json() == {"user": None, "google": True}
+        assert client.get("/api/auth/me").json() == {"user": None, "google": True, "web": False}
         assert client.get("/api/runs").status_code == 401
         r = login(client, google, "Dono@Teste.dev")
         assert r.json()["user"]["email"] == "dono@teste.dev" and auth.COOKIE in r.cookies
@@ -157,3 +157,36 @@ def test_who_can_get_in(settings, tmp_path):
     auth.upsert_user(con, "primeiro@teste.dev")
     assert auth.is_admin(con, fresh, auth.by_email(con, "primeiro@teste.dev"))
     assert not auth.allowed(con, fresh, "segundo@teste.dev")
+
+
+def test_on_the_public_address_the_google_button_signs_in(settings, monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+
+    settings.public_url = "https://cardiline.com.br"
+    auth.save_web_client(settings, "web-123.apps.googleusercontent.com", "segredo-web")
+    exchanged = {}
+
+    def google(method, url, **kwargs):
+        assert url == youtube.TOKEN_URL
+        exchanged.update(kwargs["form"])
+        return 200, {}, {"id_token": jwt({"iss": "https://accounts.google.com", "aud": "web-123.apps.googleusercontent.com",
+                                          "email": "Dono@Teste.dev", "email_verified": True, "name": "Dono"})}
+
+    monkeypatch.setattr(youtube, "_request", google)
+    with TestClient(create_app(settings), base_url="https://cardiline.com.br") as client:
+        lan = "http://192.168.31.51:8000"  # pela rede de casa (http): entra pelo código
+        assert client.get(f"{lan}/api/auth/me").json()["web"] is False
+        assert client.get(f"{lan}/api/auth/google", follow_redirects=False).status_code == 404
+        assert client.get("/api/auth/me").json() == {"user": None, "google": True, "web": True}
+        go = client.get("/api/auth/google", follow_redirects=False)
+        to = urlparse(go.headers["location"])
+        q = {k: v[0] for k, v in parse_qs(to.query).items()}
+        assert go.status_code == 303 and to.netloc == "accounts.google.com"
+        assert q["redirect_uri"] == "https://cardiline.com.br/api/auth/google/callback" and q["code_challenge_method"] == "S256"
+        assert client.get(f"/api/auth/google/callback?state=forjado&code=x", follow_redirects=False).headers["location"].startswith("/?login_erro=")
+        back = client.get(f"/api/auth/google/callback?state={q['state']}&code=abc", follow_redirects=False)
+        assert back.status_code == 303 and back.headers["location"] == "/" and auth.COOKIE in back.cookies
+        assert exchanged["code"] == "abc" and exchanged["redirect_uri"] == q["redirect_uri"] and exchanged["code_verifier"]
+        assert client.get("/api/auth/me").json()["user"]["email"] == "dono@teste.dev"
+        again = client.get(f"/api/auth/google/callback?state={q['state']}&code=abc", follow_redirects=False)
+        assert "login_erro" in again.headers["location"]  # o mesmo retorno não serve duas vezes

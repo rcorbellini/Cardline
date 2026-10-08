@@ -2098,9 +2098,9 @@ const GOOGLE_G = `<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="t
   <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
   <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
   <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`;
-const login = { info: null, timer: null, error: null, google: true };
+const login = { info: null, timer: null, error: null, google: true, web: false, public: null };
 function showLogin(who) {  // sem sessão: a página vira a tela de entrada
-  if (who) login.google = who.google;
+  if (who) Object.assign(login, { google: who.google, web: who.web, public: who.public || null });
   S.loggedOut = true;
   clearTimeout(timer);
   if ($('#dlg').open) $('#dlg').close();
@@ -2110,6 +2110,12 @@ function showLogin(who) {  // sem sessão: a página vira a tela de entrada
 }
 function renderLogin() {
   const box = $('#login-body'), l = login.info;
+  if (login.web) {  // no endereço público (https): a entrada de sempre, escolhendo a conta no Google
+    patch(box, `<p>Entre com a sua conta do Google para ver e cuidar da sua coleção.</p>
+      ${login.error ? `<p class="error">${esc(login.error)}</p>` : ''}
+      <a class="btn googlebtn" href="/api/auth/google">${GOOGLE_G}Fazer login com o Google</a>`);
+    return;
+  }
   if (!login.google) {
     patch(box, `<p>Para entrar, falta configurar o cliente OAuth do Google. No computador do servidor, rode
       <code>uv run cardline google</code> (o passo a passo está no README) e recarregue a página.</p>`);
@@ -2130,8 +2136,9 @@ function renderLogin() {
   patch(box, `<p>Entre com a sua conta do Google para ver e cuidar da sua coleção.</p>
     ${login.error ? `<p class="error">${esc(login.error)}</p>` : ''}
     <button class="btn googlebtn" data-login="start">${GOOGLE_G}Entrar com o Google</button>
-    <p class="muted small">O Google mostra um código para digitar em google.com/device. Assim a entrada funciona pelo
-      IP da rede de casa e pelo túnel, sem precisar de https.</p>`);
+    <p class="muted small">Por este endereço, sem https, o Google só aceita a entrada por código: ele mostra um código
+      para digitar em google.com/device.${login.public ? ` Para entrar pelo botão do Google, abra
+      <a href="${esc(login.public)}">${esc(login.public.replace(/^https?:\/\//, ''))}</a>.` : ''}</p>`);
 }
 async function loginStart() {
   login.error = null;
@@ -2313,6 +2320,8 @@ async function refresh(collectionToo = false) {
 }
 
 (async () => {
+  const problem = new URLSearchParams(location.search).get('login_erro');  // a volta do Google com erro
+  if (problem) { login.error = problem; history.replaceState(null, '', location.pathname + location.hash); }
   let who;
   try { who = await api('/api/auth/me'); } catch (e) { login.error = e.message; showLogin(); return; }
   if (!who.user) { showLogin(who); return; }

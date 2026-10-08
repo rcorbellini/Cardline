@@ -231,10 +231,11 @@ miniatura leve; ícones guardados pela versão anterior, menores, são baixados 
 A página pede login com a conta do Google. Cada pipeline, carta, lacrado, atualização e histórico de valor tem
 dono: cada um vê e mexe só no que é seu, e as redes (YouTube, Instagram) e os logos também são de cada conta.
 
-- **Entrar:** **Entrar com o Google** mostra um código; abra google.com/device (no celular ou no computador),
-  entre com a conta e digite o código. É o mesmo fluxo da conexão do YouTube, e por isso funciona pelo IP da rede
-  de casa e pelo túnel, sem https (o botão comum do Google exige https ou localhost). A sessão dura 30 dias e se
-  renova enquanto a página é usada.
+- **Entrar:** no endereço público (https, `public_url`), **Fazer login com o Google** leva à escolha da conta no
+  Google, que volta logada para a página. Pelo IP da rede de casa (http) o Google não aceita esse retorno, então lá
+  **Entrar com o Google** mostra um código: abra google.com/device, entre com a conta e digite o código (o mesmo
+  fluxo da conexão do YouTube). A sessão dura 30 dias, se renova enquanto a página é usada e vale só no endereço
+  em que você entrou.
 - **Quem entra:** o administrador (`admin_email`), os e-mails de `allowed_emails` (`"*"` libera qualquer conta) e
   quem recebeu um compartilhamento. O administrador fica com tudo o que existia antes das contas (e com o que a
   linha de comando cria) e é quem sincroniza os sets, troca os ícones e configura o cliente OAuth. Sem
@@ -244,9 +245,12 @@ dono: cada um vê e mexe só no que é seu, e as redes (YouTube, Instagram) e os
   coleção, os lacrados e o Resumo, sem nenhuma ação (uma faixa avisa que é só visualização). **Remover** tira o
   acesso na hora.
 
-O login usa o mesmo cliente OAuth do YouTube (tipo "TVs e dispositivos de entrada limitada"; o passo a passo
-está em [Redes](#redes-youtube-instagram-e-tiktok)). Para configurar sem a página, rode `uv run cardline google`
-(a chave secreta é pedida sem aparecer na tela). Enquanto o app do Google Cloud estiver em **Teste**, só entram
+A entrada por código usa o mesmo cliente OAuth do YouTube (tipo "TVs e dispositivos de entrada limitada"; o passo
+a passo está em [Redes](#redes-youtube-instagram-e-tiktok)); para configurar sem a página, rode
+`uv run cardline google` (a chave secreta é pedida sem aparecer na tela). O botão precisa de outro cliente, do tipo
+**Aplicativo da Web**, no mesmo projeto: em **Google Auth Platform → Clientes → Criar cliente**, cadastre o URI de
+redirecionamento `https://seu-dominio.com.br/api/auth/google/callback` e salve o ID e a chave com
+`uv run cardline google --web` (ficam em `data/google/`, fora do git). Enquanto o app do Google Cloud estiver em **Teste**, só entram
 as contas cadastradas como **usuários de teste** (Público-alvo): adicione o e-mail de quem você convidar, ou
 publique o app. Com só as permissões de login (e-mail e nome) o Google não exige verificação; com o YouTube junto,
 aparece o aviso de "app não verificado" na autorização.
@@ -377,7 +381,8 @@ entrou. Com o cabeçalho `X-Cardline-Owner: <id>`, mostra os dados de quem compa
 | Método | Rota | Para quê |
 |---|---|---|
 | GET | `/api/auth/me` | quem entrou (ou `{"user": null}`), se é o administrador, com quem compartilhou e quem compartilhou com ele |
-| POST | `/api/auth/start`, `/api/auth/poll` | entrar: pede o código para google.com/device; `{"id": "…"}` pergunta se já foi digitado e, quando foi, abre a sessão |
+| GET | `/api/auth/google` | entrar pelo botão (no endereço público): vai para a escolha da conta no Google, que volta para `/api/auth/google/callback` e abre a sessão |
+| POST | `/api/auth/start`, `/api/auth/poll` | entrar pelo código: pede o código para google.com/device; `{"id": "…"}` pergunta se já foi digitado e, quando foi, abre a sessão |
 | POST | `/api/auth/logout` | sai (encerra a sessão) |
 | GET / POST / DELETE | `/api/shares`, `/api/shares/{email}` | com quem você compartilha (`{"email": "…"}` adiciona) e quem compartilha com você |
 | GET | `/api/meta` | moedas e cotação, passos, sets, raridades e se o Ollama está disponível |
@@ -524,7 +529,7 @@ vídeos postados no YouTube (o nome do set entra junto). `admin_email` e `allowe
 - `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg` e tempos `overlay.json`),
   `narrado.mp4` (+ o roteiro e as falas gravadas em `narracao/`) e `pipeline.log` de cada pipeline.
 - `data/youtube/` e `data/instagram/`: o cliente OAuth e, em `u<id>/`, os tokens das redes de cada conta (só o seu
-  usuário lê; fora do git).
+  usuário lê; fora do git). `data/google/web.json`: o cliente web do botão de login.
 - `data/logos/u<id>/`: o logo padrão do vídeo de cada conta (`padrao.png`) e os enviados na criação das
   pipelines (fora do git).
 - `data/config.toml`: os e-mails das contas e o `public_url`; `data/segredo.key`: a chave dos links assinados;

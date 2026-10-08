@@ -15,7 +15,9 @@ import re
 import subprocess
 import sys
 import threading
+import secrets
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
@@ -1599,12 +1601,36 @@ def create_app(settings: Settings) -> FastAPI:
     # --- contas: entrar com o Google, sair, compartilhar -----------------------------------------
 
     logins: dict[str, dict] = {}  # entradas esperando o código ser digitado em google.com/device
+    web_logins: dict[str, dict] = {}  # entradas pelo botão, esperando a volta do Google (state → verificador PKCE)
+    STATE_COOKIE = "cardline_entrada"
 
     def user_json(u: auth.User) -> dict:
         return {"id": u.id, "email": u.email, "name": u.name, "picture": u.picture}
 
     def https(request: Request) -> bool:
         return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+
+    def web_ready(request: Request) -> bool:
+        """O botão comum do Google: precisa do cliente web e da página aberta no endereço público, por https (o
+        Google só volta para endereços cadastrados, e o IP da rede de casa não pode ser um deles)."""
+        host = (request.headers.get("host") or "").split(":")[0]
+        public = urllib.parse.urlparse(settings.public_url).hostname if settings.public_url else None
+        return auth.web_client(settings) is not None and host == public and https(request)
+
+    def welcome(info: dict) -> tuple[auth.User, str]:
+        """Confere se a conta pode entrar e abre a sessão: o usuário e o token do cookie."""
+        c = con()
+        if not auth.allowed(c, settings, info["email"]):
+            raise PermissionError(f"A conta {info['email']} não tem acesso a este cardline. Peça para quem cuida dele "
+                                  "compartilhar a coleção com você.")
+        user = auth.upsert_user(c, info["email"], info["name"], info["picture"])
+        auth.adopt(c, settings)  # sem administrador definido, o primeiro a entrar fica com os dados de antes
+        return user, auth.new_session(c, user.id)
+
+    def with_session(resp, token: str, request: Request):
+        resp.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400, path="/", httponly=True,
+                        samesite="lax", secure=https(request))
+        return resp
 
     @app.get("/api/auth/me")
     def auth_me(request: Request):
@@ -1613,7 +1639,9 @@ def create_app(settings: Settings) -> FastAPI:
         c = con()
         user = auth.request_user(c, settings, session_cookie(request.headers.get("cookie")))
         if user is None:
-            return {"user": None, "google": youtube.client(settings) is not None}
+            public = settings.public_url if settings.public_url and auth.web_client(settings) else None
+            return {"user": None, "google": youtube.client(settings) is not None, "web": web_ready(request),
+                    **({"public": public} if public and not web_ready(request) else {})}
         return {"user": user_json(user), "admin": auth.is_admin(c, settings, user), "my_shares": auth.shares(c, user.id),
                 "shared_with_me": [user_json(u) for u in auth.shared_with(c, user)]}
 
@@ -1661,16 +1689,57 @@ def create_app(settings: Settings) -> FastAPI:
         if info is None:
             return {"status": "pending"}
         logins.pop(body.id, None)
-        c = con()
-        if not auth.allowed(c, settings, info["email"]):
-            raise HTTPException(403, f"A conta {info['email']} não tem acesso a este cardline. Peça para quem cuida dele "
-                                     "compartilhar a coleção com você.")
-        user = auth.upsert_user(c, info["email"], info["name"], info["picture"])
-        auth.adopt(c, settings)  # sem administrador definido, o primeiro a entrar fica com os dados de antes
-        resp = JSONResponse({"status": "done", "user": user_json(user)})
-        resp.set_cookie(auth.COOKIE, auth.new_session(c, user.id), max_age=auth.SESSION_DAYS * 86400, path="/",
-                        httponly=True, samesite="lax", secure=https(request))
+        try:
+            user, token = welcome(info)
+        except PermissionError as e:
+            raise HTTPException(403, str(e)) from e
+        return with_session(JSONResponse({"status": "done", "user": user_json(user)}), token, request)
+
+    @app.get("/api/auth/google")
+    def auth_google(request: Request):
+        """O botão "Fazer login com o Google": vai para a escolha da conta no Google, que volta para o callback."""
+        if not web_ready(request):
+            raise HTTPException(404, "O botão do Google só funciona no endereço público (https); aqui, entre pelo código.")
+        now = time.time()
+        for key in [k for k, v in web_logins.items() if v["at"] < now - 600]:
+            web_logins.pop(key)
+        if len(web_logins) >= 200:
+            raise HTTPException(429, "Muitas entradas em andamento. Tente de novo em alguns minutos.")
+        state, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(48)
+        web_logins[state] = {"verifier": verifier, "at": now}
+        resp = RedirectResponse(auth.web_login_url(settings, state, verifier), 303)
+        # o mesmo navegador que saiu tem de voltar: o state também fica num cookie (contra entrada forjada)
+        resp.set_cookie(STATE_COOKIE, state, max_age=600, path="/api/auth/google", httponly=True, samesite="lax",
+                        secure=True)
         return resp
+
+    @app.get("/api/auth/google/callback")
+    def auth_google_back(request: Request, state: str = "", code: str = "", error: str = ""):
+        """A volta do Google: troca o código pela conta, abre a sessão e leva para a página."""
+        def back(problem: str | None = None, done: bool = True):
+            resp = RedirectResponse("/" + ("?" + urllib.parse.urlencode({"login_erro": problem}) if problem else ""), 303)
+            if done:  # um retorno que não é deste navegador não atrapalha a entrada que está em andamento nele
+                resp.delete_cookie(STATE_COOKIE, path="/api/auth/google")
+            return resp
+
+        if not state or request.cookies.get(STATE_COOKIE) != state:
+            return back("A entrada começou em outra aba ou outro navegador. Tente de novo.", done=False)
+        pending = web_logins.pop(state, None)
+        if pending is None or pending["at"] < time.time() - 600:
+            return back("A entrada expirou. Tente de novo.")
+        if error:
+            return back("O Google não autorizou a entrada." + (
+                " Se o app do Google Cloud estiver em teste, a sua conta precisa estar na lista de usuários de teste."
+                if error == "access_denied" else f" ({error})"))
+        try:
+            info = auth.finish_web_login(settings, code, pending["verifier"])
+        except (RuntimeError, OSError) as e:
+            return back(str(e))
+        try:
+            _, token = welcome(info)
+        except PermissionError as e:
+            return back(str(e))
+        return with_session(back(), token, request)
 
     @app.post("/api/auth/logout")
     def auth_logout(request: Request):
