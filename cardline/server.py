@@ -538,6 +538,7 @@ def create_app(settings: Settings) -> FastAPI:
         request: Request, filename: str, paid: float | None = None, paid_currency: str = "BRL",
         set_hint: str | None = None, overlay: bool = True, verify: bool | None = None, currency: str | None = None,
         kind: str = "abertura", narration: bool = False, logo_name: str | None = Query(None, alias="logo"),
+        sealed_id: int | None = None, sealed_qty: int = 1,
     ):
         if kind not in pipeline.KINDS:
             raise HTTPException(400, "Tipo de pipeline deve ser abertura ou cadastro.")
@@ -567,9 +568,12 @@ def create_app(settings: Settings) -> FastAPI:
                     settings, tmp, video_name=Path(filename).name, sha1=sha1.hexdigest(), paid=paid,
                     paid_currency=paid_currency, set_hint=set_hint, overlay=overlay, verify=verify,
                     currency=currency, move=True, kind=kind, narration=narration, logo=logo_name or None,
+                    sealed=(sealed_id, max(1, sealed_qty)) if sealed_id else None,
                 )
             except pipeline.DuplicateVideo as e:
                 raise HTTPException(409, {"message": str(e), "run_id": e.run_id}) from e
+            except LookupError as e:  # o booster escolhido não está mais nos lacrados
+                raise HTTPException(409, str(e)) from e
         finally:
             tmp.unlink(missing_ok=True)
         runner.wake()
@@ -1067,6 +1071,11 @@ def create_app(settings: Settings) -> FastAPI:
                 "value_usd": sum(x["value_usd"] or 0 for x in out),
                 "paid_usd": sum(x["paid_total_usd"] for x in paid) if paid else None,
                 "value_of_paid_usd": sum(x["value_usd"] or 0 for x in paid) if paid else None}
+
+    @app.get("/api/sealed/boosters")
+    def sealed_boosters():
+        """Os boosters fechados da coleção, para escolher numa abertura."""
+        return [sealed_json(r) for r in sealed.boosters(con())]
 
     @app.get("/api/sealed/products")
     def sealed_products(set_code: str = Query(..., alias="set")):

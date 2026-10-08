@@ -109,7 +109,10 @@ nem com esse botão nem ao reprocessar uma pipeline. É ele que aparece no víde
      valor pago e sem vídeo. Como não há booster, a foil não é deduzida: marque as foils pela edição.
 2. Arraste o vídeo (MP4 ou MOV, do jeito que sai do celular).
 3. Na abertura, escolha a **moeda** uma vez (R$ ou US$): ela vale para o **valor pago** pelo(s) booster(s) e para
-   os preços no vídeo. O valor pago é opcional e pode ser preenchido depois.
+   os preços no vídeo. O valor pago é opcional e pode ser preenchido depois. Se o booster estava nos **lacrados**,
+   escolha-o em **Booster dos lacrados** (e quantos, se tiver mais de um): o valor pago vem do valor de registro
+   dele (o pago informado ou, sem ele, o preço de mercado quando foi registrado) e o set também; ele sai do
+   estoque ao enviar e volta se a pipeline for excluída.
 4. **Set das cartas**: deixe em "Detectar automaticamente" ou escolha o set. As opções ficam em chaves (liga/desliga):
    **vídeo com overlay**, **logo no vídeo** e **narrar o vídeo** (precisa do extra `narracao`; ~2 min a mais).
    **Logo no vídeo** põe o logo semitransparente num canto, da capa ao resumo: vem marcado com o logo padrão
@@ -190,7 +193,8 @@ quanto valia na abertura e hoje.
 **Lacrados** (ao lado de **Cartas**, no topo da Coleção) guarda boosters, caixas, decks, baús e outros produtos
 fechados. **+ Adicionar lacrado**: escolha o set e o produto (a lista vem do TCGplayer, via tcgcsv.com, já com o
 preço de mercado), a quantidade e, se quiser, quanto pagou por unidade. Cada item mostra o valor de hoje
-(preço × quantidade) e o resultado sobre o pago; a quantidade muda no − / +. Os preços dos lacrados são
+(preço × quantidade) e o resultado sobre o pago; a quantidade (só os fechados) muda no − / +. Um booster aberto
+numa pipeline sai do estoque, mas continua registrado nela. Os preços dos lacrados são
 atualizados junto com os das cartas (**↻ Atualizar preços**), e o Resumo tem um painel próprio para eles.
 
 ### Sets
@@ -303,6 +307,7 @@ no túnel, ou só redes de confiança.
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
 | GET / POST | `/api/sealed` | lacrados com valor de hoje e pago; `{"set_code": "1", "product_id": 482406, "qty": 2, "paid": 35, "paid_currency": "BRL"}` adiciona |
 | PATCH / DELETE | `/api/sealed/{id}` | `{"qty": 3}` e/ou `{"paid": 30}` (`null` apaga o pago); DELETE remove |
+| GET | `/api/sealed/boosters` | os boosters fechados, para escolher numa abertura (`sealed_id` e `sealed_qty` na criação) |
 | GET | `/api/sealed/products?set=1` | os lacrados do set no TCGplayer, com o preço de mercado de hoje |
 | GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) e `views` (visualizações por rede) |
 | GET | `/api/jobs`, `/api/jobs/{id}` | as atualizações disparadas na página (preços, números das redes, sincronização), com o resultado e o log |

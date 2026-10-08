@@ -61,7 +61,30 @@ def products(settings: Settings, con, set_code: str) -> list[dict]:
 
 
 def items(con) -> list[dict]:
-    return [dict(r) for r in con.execute("SELECT * FROM sealed ORDER BY COALESCE(usd, 0) * qty DESC, name")]
+    """Os lacrados em estoque; `qty` é quanto ainda está fechado (o registrado menos os abertos)."""
+    return [{**dict(r), "qty": r["qty"] - r["opened"]} for r in con.execute(
+        "SELECT * FROM sealed WHERE qty > opened ORDER BY COALESCE(usd, 0) * (qty - opened) DESC, name")]
+
+
+def boosters(con) -> list[dict]:
+    """Os boosters em estoque, para escolher numa abertura (puxa o set e o valor de registro)."""
+    return [x for x in items(con) if re.match(r"(Sleeved )?Booster Pack$", x["name"])]
+
+
+def take(con, item_id: int, n: int) -> dict:
+    """Abre `n` do lacrado (uma pipeline de abertura): saem do estoque, e voltam se a pipeline for excluída."""
+    with con:
+        if not con.execute("UPDATE sealed SET opened = opened + ? WHERE id = ? AND qty - opened >= ?",
+                           (n, item_id, n)).rowcount:
+            raise LookupError(f"Não há {n} desse booster fechado nos lacrados.")
+    db.record_value(con)
+    return dict(con.execute("SELECT * FROM sealed WHERE id = ?", (item_id,)).fetchone())
+
+
+def give_back(con, item_id: int, n: int) -> None:
+    with con:
+        con.execute("UPDATE sealed SET opened = MAX(0, opened - ?) WHERE id = ?", (n, item_id))
+    db.record_value(con)
 
 
 def add(settings: Settings, con, set_code: str, product_id: int, qty: int, paid: float | None, currency: str) -> int:
@@ -71,9 +94,9 @@ def add(settings: Settings, con, set_code: str, product_id: int, qty: int, paid:
     with con:
         new_id = con.execute(
             "INSERT INTO sealed(product_id, set_code, name, image, qty, paid, paid_currency, paid_usd, usd, price_updated_at,"
-            " added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " added_at, registered_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (product_id, set_code, product["name"], product["image"], qty, paid, currency.upper() if paid else None,
-             to_usd(settings, paid, currency), product["usd"], db.now(), db.now())).lastrowid
+             to_usd(settings, paid, currency), product["usd"], db.now(), db.now(), product["usd"])).lastrowid
     db.record_value(con)
     return new_id
 
@@ -84,8 +107,8 @@ def update(settings: Settings, con, item_id: int, qty: int | None, paid: float |
     if row is None:
         raise LookupError("Lacrado não encontrado.")
     with con:
-        if qty is not None:
-            con.execute("UPDATE sealed SET qty = ? WHERE id = ?", (qty, item_id))
+        if qty is not None:  # a quantidade da página é a que está fechada: os abertos continuam contados
+            con.execute("UPDATE sealed SET qty = ? + opened WHERE id = ?", (qty, item_id))
         if paid_sent:
             cur = (currency or row["paid_currency"] or "BRL").upper()
             con.execute("UPDATE sealed SET paid = ?, paid_currency = ?, paid_usd = ? WHERE id = ?",

@@ -571,3 +571,6 @@ a.netbadge:hover { background: var(--panel-2); }
 .sealedtop span { display: grid; min-width: 0; }
 .sealedtop b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+#from-sealed-box .inline { max-width: 560px; }
+#from-sealed-box select { flex: 1; min-width: 0; }
+#from-sealed-qty { width: 76px; flex: none; }

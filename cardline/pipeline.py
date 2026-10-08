@@ -108,6 +108,7 @@ def create_run(
     kind: str = "abertura",
     narration: bool = False,
     logo: str | None = None,
+    sealed: tuple[int, int] | None = None,
 ) -> int:
     """Cadastra um run na fila. Com `move`, o vídeo (um upload) passa a morar na pasta do run."""
     if kind not in KINDS:
@@ -127,6 +128,11 @@ def create_run(
         "narration": narration,
         "logo": logo if overlay else None,  # nome em data/logos; None = vídeo sem logo
     }
+    if sealed and kind == "abertura":  # booster(s) que estavam nos lacrados: saem do estoque (voltam se excluir)
+        from .sealed import take
+
+        item = take(con, sealed[0], sealed[1])
+        options["sealed"] = {"id": item["id"], "qty": sealed[1], "name": item["name"], "set": item["set_code"]}
     paid_currency = paid_currency.upper()
     with con:
         run_id = con.execute(
@@ -492,6 +498,11 @@ def delete_run(settings: Settings, run_id: int) -> None:
         raise RuntimeError("A pipeline está rodando; espere terminar para apagar.")
     with con:
         con.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+    taken = json.loads(run["options"] or "{}").get("sealed")
+    if taken:  # o booster aberto volta para os lacrados
+        from .sealed import give_back
+
+        give_back(con, taken["id"], taken["qty"])
     db.record_value(con)  # as cartas dela saíram da coleção
     folder = (settings.root / run["dir"]).resolve()
     if run["dir"] and folder.is_relative_to(settings.runs_dir.resolve()) and folder != settings.runs_dir.resolve():

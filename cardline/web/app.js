@@ -398,7 +398,8 @@ function renderRun() {
       <button class="btn ghost" data-action="rerun">Rodar de novo daqui</button></span>
       <button class="btn danger" data-action="delete">Excluir</button>` : ''}</div>`);
   patch($('#r-sub'), `${esc(r.video_name)} · gravado ${dt(r.recorded_at || r.created_at)}${r.sets ? ` · ${r.sets.map(c => `<span class="setref">${setIcon(c, 'seticon small')}${esc(setTitle(c))}</span>`).join(', ')}` : ''}` +
-    `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}`);
+    `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}` +
+    (r.options?.sealed ? ` · ${r.options.sealed.qty > 1 ? `${r.options.sealed.qty} boosters` : 'booster'} dos lacrados (${esc(setTitle(r.options.sealed.set))})` : ''));
 
   const twins = (r.duplicates || []).map(id => S.runs.find(x => x.id === id) || { id });
   $('#r-dup').hidden = !twins.length;
@@ -827,6 +828,7 @@ function prepareNew() {
     : 'Um narrador comenta a abertura sem dar spoiler (voz em português, ~2 min a mais)';
   newLogo = null;
   $('#opt-logo').checked = !!S.meta.logo?.default;
+  loadSealedBoosters();
   syncNarrationOption();
   applyKind();
 }
@@ -836,6 +838,33 @@ function syncNarrationOption() {  // a narração e o logo são do vídeo com ov
   syncLogoOption();
 }
 $('#opt-overlay').addEventListener('change', syncNarrationOption);
+// ---- booster dos lacrados: o valor de registro e o set vêm dele, e ele sai do estoque ----
+let sealedBoosters = [];
+async function loadSealedBoosters() {
+  try { sealedBoosters = await api('/api/sealed/boosters'); } catch { sealedBoosters = []; }
+  $('#from-sealed-box').hidden = !sealedBoosters.length || newKind() !== 'abertura';
+  $('#from-sealed').innerHTML = '<option value="">Nenhum: não veio dos lacrados</option>' + sealedBoosters.map(x =>
+    `<option value="${x.id}">${esc(setTitle(x.set_code))} · ${esc(x.name)} (${x.qty} ${x.qty === 1 ? 'fechado' : 'fechados'})</option>`).join('');
+  pickSealedBooster();
+}
+function pickSealedBooster() {
+  const x = sealedBoosters.find(b => String(b.id) === $('#from-sealed').value), qty = $('#from-sealed-qty');
+  qty.hidden = !x || x.qty < 2;
+  if (!x) { $('#from-sealed-note').textContent = 'Escolha um booster fechado da coleção: o valor pago e o set vêm dele, e ele sai do estoque.'; return; }
+  qty.max = x.qty;
+  const n = Math.min(x.qty, Math.max(1, parseInt(qty.value, 10) || 1));
+  qty.value = n;
+  if (x.paid != null) {  // o valor que você informou ao registrar; sem ele, o preço de mercado do registro
+    setNewCurrency(x.paid_currency);
+    $('#paid').value = nf.format(x.paid * n);
+  } else if (x.registered_usd != null) {
+    $('#paid').value = nf.format(x.registered_usd * n * (S.meta.rates[newCurrency] ?? 1));
+  }
+  if ([...$('#new-set').options].some(o => o.value === x.set_code)) $('#new-set').value = x.set_code;
+  $('#from-sealed-note').textContent = `${x.paid != null ? `Registrado por ${sym(x.paid_currency)} ${nf.format(x.paid)} cada` : `Valia ${money(x.registered_usd)} cada quando foi registrado`}; sai do estoque ao enviar (volta se a pipeline for excluída).`;
+}
+$('#from-sealed').onchange = pickSealedBooster;
+$('#from-sealed-qty').oninput = pickSealedBooster;
 // moeda escolhida uma vez: a do valor pago é a do vídeo
 let newCurrency = 'BRL';
 function setNewCurrency(cur) {
@@ -873,6 +902,7 @@ const newKind = () => document.querySelector('input[name="kind"]:checked').value
 function applyKind() {  // valor pago, moeda e vídeo só existem na abertura de booster
   const cadastro = newKind() === 'cadastro';
   document.querySelectorAll('#new-form .only-abertura').forEach(el => { el.hidden = cadastro; });
+  if (!sealedBoosters.length) $('#from-sealed-box').hidden = true;
   $('#send').textContent = cadastro ? 'Enviar e cadastrar' : 'Enviar e processar';
 }
 document.querySelectorAll('input[name="kind"]').forEach(r => r.addEventListener('change', applyKind));
@@ -905,6 +935,7 @@ $('#new-form').onsubmit = ev => {
     params.set('currency', newCurrency);
     if (paid != null) params.set('paid', paid);
     params.set('logo', $('#opt-logo').checked ? newLogo?.logo || S.meta.logo?.default || '' : '');
+    if ($('#from-sealed').value) { params.set('sealed_id', $('#from-sealed').value); params.set('sealed_qty', $('#from-sealed-qty').value || 1); }
   }
   if ($('#new-set').value) params.set('set_hint', $('#new-set').value);
   const xhr = S.xhr = new XMLHttpRequest();

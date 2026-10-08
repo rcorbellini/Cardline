@@ -175,6 +175,11 @@
         <span id="drop-sub" class="muted">MP4 ou MOV, como sai da câmera do celular</span>
       </label>
       <div class="fields">
+        <label class="wide only-abertura" id="from-sealed-box" hidden>Booster dos lacrados
+          <span class="inline"><select id="from-sealed"><option value="">Nenhum: não veio dos lacrados</option></select>
+          <input type="number" id="from-sealed-qty" min="1" value="1" aria-label="Quantos boosters" hidden></span>
+          <small class="muted" id="from-sealed-note">Escolha um booster fechado da coleção: o valor pago e o set vêm dele, e ele sai do estoque.</small>
+        </label>
         <div class="wide only-abertura curfield"><span>Moeda</span>
           <span class="seg" role="group" aria-label="Moeda"><button type="button" data-newcur="BRL" aria-pressed="true">R$ (real)</button><button type="button" data-newcur="USD" aria-pressed="false">US$ (dólar)</button></span>
           <small class="muted">Escolhida uma vez: vale para o valor pago e para os preços no vídeo.</small>

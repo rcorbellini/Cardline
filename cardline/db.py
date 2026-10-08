@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS sealed (  -- produtos lacrados da coleção (booster,
     price_updated_at TEXT,
     added_at         TEXT NOT NULL,
     registered_usd   REAL,            -- preço de mercado quando entrou na coleção (não muda)
-    run_id           INTEGER REFERENCES runs(id) ON DELETE CASCADE  -- registrado por uma pipeline de lacrados
+    run_id           INTEGER REFERENCES runs(id) ON DELETE CASCADE,  -- registrado por uma pipeline de lacrados
+    opened           INTEGER NOT NULL DEFAULT 0  -- quantos já foram abertos (pipelines de abertura); em estoque = qty - opened
 );
 
 CREATE TABLE IF NOT EXISTS jobs (  -- atualizações disparadas na página: preços, números das redes, sincronização de sets
@@ -235,6 +236,7 @@ MIGRATIONS = {
     7: lambda con: _add_column(con, "posts", "scheduled_at", "TEXT"),
     8: lambda con: _value_history(con),
     9: lambda con: _sealed_origin(con),
+    10: lambda con: _add_column(con, "sealed", "opened", "INTEGER NOT NULL DEFAULT 0"),
 }
 
 
@@ -372,7 +374,7 @@ def _sealed_origin(con: sqlite3.Connection) -> None:
 def collection_value(con: sqlite3.Connection) -> tuple[float, float | None, int]:
     """(cartas pelo preço de mercado atual, lacrados ou None, quantas cartas)."""
     rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id").fetchall()
-    sealed = con.execute("SELECT SUM(qty * usd) FROM sealed WHERE usd IS NOT NULL AND qty > 0").fetchone()[0]
+    sealed = con.execute("SELECT SUM((qty - opened) * usd) FROM sealed WHERE usd IS NOT NULL AND qty > opened").fetchone()[0]
     return sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), sealed, len(rows)
 
 

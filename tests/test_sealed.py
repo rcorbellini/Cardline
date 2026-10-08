@@ -69,3 +69,26 @@ def test_sealed_items_have_value_paid_and_follow_the_prices(settings, tcg):
         assert client.delete(f"/api/sealed/{item_id}").status_code == 200
         assert client.get("/api/sealed").json()["items"] == []
         assert client.delete(f"/api/sealed/{item_id}").status_code == 404
+
+
+def test_an_opening_takes_the_booster_from_the_stock_and_gives_it_back_if_deleted(settings, tcg, tmp_path):
+    from cardline import pipeline
+
+    with TestClient(create_app(settings)) as client:
+        booster = client.post("/api/sealed", json={"set_code": "1", "product_id": 2, "qty": 2, "paid": 35, "paid_currency": "BRL"}).json()["id"]
+        client.post("/api/sealed", json={"set_code": "1", "product_id": 1, "qty": 1})  # a caixa não é booster avulso
+        assert [(x["name"], x["qty"], x["registered_usd"]) for x in client.get("/api/sealed/boosters").json()] == [("Booster Pack", 2, 17.23)]
+        video = tmp_path / "abertura.mp4"
+        video.write_bytes(b"abertura")
+        run_id = pipeline.create_run(settings, video, paid=35, sealed=(booster, 1))
+        options = client.get(f"/api/runs/{run_id}").json()["options"]
+        assert options["sealed"] == {"id": booster, "qty": 1, "name": "Booster Pack", "set": "1"}
+        assert client.get("/api/sealed/boosters").json()[0]["qty"] == 1  # um saiu do estoque
+        other = tmp_path / "outra.mp4"
+        other.write_bytes(b"outra")
+        with pytest.raises(LookupError):
+            pipeline.create_run(settings, other, sealed=(booster, 2))  # só sobrou um
+        assert client.patch(f"/api/sealed/{booster}", json={"qty": 3}).status_code == 200  # a quantidade da página é a fechada
+        assert client.get("/api/sealed/boosters").json()[0]["qty"] == 3
+        assert client.delete(f"/api/runs/{run_id}").status_code == 200
+        assert client.get("/api/sealed/boosters").json()[0]["qty"] == 4  # o aberto voltou
