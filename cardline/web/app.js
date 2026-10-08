@@ -521,20 +521,24 @@ function renderRun() {
 const boosterSets = () => S.meta.sets.filter(x => x.booster).slice().reverse();
 function renderPacks(r, editable) {
   const packs = r.pack_items || [], removed = r.removed || [], pending = r.status === 'stale';
-  patch($('#r-cards-sub'), packs.length ? (editable ? 'troque o set ou remova o que foi identificado errado' : 'recorte do vídeo') : '');
+  patch($('#r-cards-sub'), packs.length ? (editable ? 'deslize um booster para editar ou remover' : 'recorte do vídeo') : '');
   patch($('#r-sanitize'), '');
+  patch($('#r-cards'), packs.length ? packs.map(p => {
+    const name = esc(p.set_name || setTitle(p.set)), label = `#${p.n}, ${name}`;
+    return `<li class="swipe" data-uid="${esc(p.uid)}">
+      ${editable ? `<div class="swipe-act left"><button data-action="edit-pack" data-uid="${esc(p.uid)}" aria-label="Editar o booster ${label}">${PENCIL}<span>Editar</span></button></div>
+      <div class="swipe-act right"><button data-action="remove-pack" data-uid="${esc(p.uid)}" aria-label="Remover o booster ${label}">${TRASH}<span>Remover</span></button></div>` : ''}
+      <div class="pull packpull${editable ? ' draggable' : ''}" data-pack="${esc(p.uid)}">
+        <span class="n">#${p.n}</span>
+        ${p.crop ? `<img loading="lazy" src="${esc(p.crop)}" alt="Recorte do vídeo" draggable="false">` : `<span class="packicon">${setIcon(p.set)}</span>`}
+        <div class="info">
+          <div class="pname">${setIcon(p.set, 'seticon small')}<b>${name}</b></div>
+          <div class="line"><span class="price num" style="color:var(--text)">${money(p.price_now ?? p.price_open)}</span>
+            ${p.value_usd != null ? '<span>· valor editado</span>' : ''}${p.manual ? '<span>· set corrigido</span>' : ''}</div>
+          <div class="line">${p.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}s</div>
+        </div></div></li>`;
+  }).join('') : `<p class="muted">${active(r) ? 'Os boosters aparecem aqui quando a identificação terminar.' : 'Nenhum booster identificado.'}</p>`);
   const options = sel => boosterSets().map(x => `<option value="${esc(x.code)}" ${x.code === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-  patch($('#r-cards'), packs.length ? packs.map(p => `<li class="packrow">
-      <span class="n">#${p.n}</span>
-      ${p.crop ? `<img loading="lazy" src="${esc(p.crop)}" alt="Recorte do vídeo">` : `<span class="packicon">${setIcon(p.set)}</span>`}
-      <div class="info">
-        <div class="pname">${setIcon(p.set, 'seticon small')}<b>${esc(p.set_name || setTitle(p.set))}</b></div>
-        <div class="line"><span class="price num">${money(p.price_now ?? p.price_open)}</span>
-          <span class="muted">${p.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}s${p.manual ? ' · corrigido' : ''}</span></div>
-        ${editable ? `<div class="packedit"><select data-pack-set="${esc(p.uid)}" aria-label="Set do booster #${p.n}">${options(p.set)}</select>
-          <button class="linkbtn" data-action="remove-pack" data-uid="${esc(p.uid)}">Remover</button></div>` : ''}
-      </div></li>`).join('')
-    : `<p class="muted">${active(r) ? 'Os boosters aparecem aqui quando a identificação terminar.' : 'Nenhum booster identificado.'}</p>`);
   patch($('#r-edits'), `
     ${removed.length ? `<div class="removed"><b>Removidos (${removed.length})</b><ul>${removed.map(p => `<li>
       ${p.crop ? `<img loading="lazy" src="${esc(p.crop)}" alt="">` : '<span class="noimg"></span>'}<span>${esc(p.set_name || setTitle(p.set))}</span>
@@ -546,17 +550,70 @@ function renderPacks(r, editable) {
     <div class="reprocess${pending ? ' pending' : ''}">
       <p>${active(r) ? 'A pipeline está rodando; os boosters ficam editáveis quando ela terminar.'
         : pending ? 'Edições pendentes: preços, lacrados e vídeo só mudam depois de reprocessar.'
-        : 'Corrija o set, remova ou inclua boosters e depois reprocesse.'}</p>
+        : 'Deslize um booster para a direita para editar (set e valor) ou para a esquerda para remover, depois reprocesse.'}</p>
       <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
     </div>`);
 }
-$('#view-run').addEventListener('change', async ev => {
-  const sel = ev.target.closest('[data-pack-set]');
-  if (!sel) return;
-  try { await api(`/api/runs/${S.runId}/packs/${encodeURIComponent(sel.dataset.packSet)}`, json({ set: sel.value }, 'PATCH')); }
-  catch (e) { alert(e.message); }
-  await refresh();
-});
+// editar um booster: o set e o valor (vazio = o preço de mercado do TCGplayer; informado = fixo para ele)
+function editPack(uid) {
+  const r = S.run, p = (r.pack_items || []).find(x => x.uid === uid);
+  if (!p) return;
+  const rate = cur => S.meta.rates[cur] ?? 1;
+  $('#dlgbody').innerHTML = `
+    <form class="editcard" id="edit-form">
+      <button class="iconbtn close" type="button" data-close aria-label="Fechar">✕</button>
+      <h2>Editar booster #${p.n}</h2>
+      <div class="editpreview pack">
+        ${p.crop ? `<img src="${esc(p.crop)}" alt="Recorte do vídeo">` : `<span class="packicon">${setIcon(p.set)}</span>`}
+        <div><b>${esc(p.set_name || setTitle(p.set))}</b><div class="muted">aos ${p.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}s do vídeo</div>
+          <div class="muted">Preço de mercado no registro: ${money(p.price_open)}</div></div>
+      </div>
+      <div class="fields">
+        <label>Set<select id="edit-pack-set">${boosterSets().map(x => `<option value="${esc(x.code)}" ${x.code === p.set ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+        <label>Valor do booster
+          <span class="inline"><select id="edit-pack-cur" aria-label="Moeda"><option value="BRL">R$</option><option value="USD">US$</option></select>
+          <input type="text" id="edit-pack-value" inputmode="decimal" autocomplete="off"></span></label>
+      </div>
+      <p class="muted">Vazio usa o preço de mercado do TCGplayer. Um valor informado fica fixo para este booster: vale no
+        vídeo, nos lacrados e no valor de hoje. As mudanças valem ao reprocessar.</p>
+      <div class="actions"><button class="btn" id="edit-save">Salvar</button>
+        <button class="btn ghost" type="button" data-close>Cancelar</button></div>
+      <p class="error" id="edit-error" hidden></p>
+    </form>`;
+  const curSel = $('#edit-pack-cur'), input = $('#edit-pack-value');
+  curSel.value = S.cur in S.meta.rates ? S.cur : 'USD';
+  const fill = () => {  // o valor editado (ou o de mercado, como dica) na moeda escolhida
+    input.placeholder = p.price_open != null ? `${nf.format(p.price_open * rate(curSel.value))} (mercado)` : 'preço de mercado';
+    if (p.value_usd != null && !input.dataset.typed) input.value = nf.format(p.value_usd * rate(curSel.value));
+  };
+  fill();
+  curSel.onchange = fill;
+  input.oninput = () => { input.dataset.typed = '1'; };
+  $('#dlg').className = 'dlg narrow';
+  $('#dlg').showModal();
+  $('#edit-form').onsubmit = async ev => {
+    ev.preventDefault();
+    const body = {}, raw = input.value.trim();
+    if ($('#edit-pack-set').value !== p.set) body.set = $('#edit-pack-set').value;
+    if (raw) {
+      const v = parseMoney(raw);
+      if (v == null || v < 0) { $('#edit-error').textContent = 'Valor inválido.'; $('#edit-error').hidden = false; return; }
+      body.value = v; body.currency = curSel.value;
+    } else if (p.value_usd != null) body.value = null;  // apagou: volta ao preço de mercado
+    if (!Object.keys(body).length) { $('#dlg').close(); closeSwipe(); return; }
+    $('#edit-save').disabled = true;
+    try {
+      await api(`/api/runs/${r.id}/packs/${encodeURIComponent(uid)}`, json(body, 'PATCH'));
+      $('#dlg').close();
+      closeSwipe();
+      await refresh();
+    } catch (e) {
+      $('#edit-error').textContent = e.message;
+      $('#edit-error').hidden = false;
+      $('#edit-save').disabled = false;
+    }
+  };
+}
 
 // ---- narração: liga/desliga e roteiro editável ----
 let videoMode = 'narrated';  // quando as duas versões existem: com ou sem narração
@@ -653,6 +710,7 @@ $('#view-run').addEventListener('click', async ev => {
     if (Date.now() - swipe.endedAt < 400) return;  // o clique que vem junto com o fim do arraste
     if (pull && swipe.open === pull.closest('.swipe')) { closeSwipe(); return; }
     closeSwipe();
+    if (pull?.dataset.pack) { if (!active(S.run)) editPack(pull.dataset.pack); return; }  // booster: abre a edição
     if (pull) {
       const e = entries.find(x => x.card === pull.dataset.card && String(x.foil) === pull.dataset.foil);
       const c = S.run.card_info[pull.dataset.card];
@@ -737,6 +795,7 @@ $('#view-run').addEventListener('click', async ev => {
     }
     if (action === 'edit-paid') { editPaid(); return; }
     if (action === 'edit-card') { editCard(target.dataset.uid); return; }
+    if (action === 'edit-pack') { editPack(target.dataset.uid); return; }
     if (action === 'video-currency') {
       if (target.getAttribute('aria-pressed') === 'true') return;
       await api(`/api/runs/${id}`, json({ currency: target.dataset.cur }, 'PATCH'));

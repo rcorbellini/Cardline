@@ -112,8 +112,10 @@ nem com esse botão nem ao reprocessar uma pipeline. É ele que aparece no víde
      (TCGplayer), registra nos **lacrados** com o preço de mercado do dia (o valor pago, se informado, é
      dividido igualmente) e gera o vídeo com o painel de valor: a capa com os sets, a etiqueta de cada
      booster, o total da pilha e o resumo por set. Logo, narração e redes funcionam como na abertura. Dois
-     boosters seguidos do mesmo set são separados pela arte ou por pararem em lugares diferentes; se algo
-     escapar, o detalhe permite trocar o set, remover e incluir o booster que faltou (no segundo do vídeo).
+     boosters seguidos do mesmo set são separados pela arte ou por pararem em lugares diferentes. No detalhe,
+     cada booster desliza como as cartas: para a **direita**, **Editar** (o set e o **valor**: vazio usa o preço de
+     mercado do TCGplayer; um valor informado fica fixo para aquele booster, no vídeo, nos lacrados e no valor de
+     hoje); para a **esquerda**, **Remover**. "Faltou um booster?" inclui o que escapou (no segundo do vídeo).
 2. Arraste o vídeo (MP4 ou MOV, do jeito que sai do celular).
 3. Na abertura, escolha a **moeda** uma vez (R$ ou US$): ela vale para o **valor pago** pelo(s) booster(s) e para
    os preços no vídeo. O valor pago é opcional e pode ser preenchido depois. Se o booster estava nos **lacrados**,
@@ -336,7 +338,7 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs/{id}/posts/{rede}` | `{"title", "caption", "privacy", "variant", "tags"}`: posta pela API (`youtube` ou `instagram`, em segundo plano); com `"publish_at": "2026-10-08T21:30:00Z"`, programa |
 | DELETE | `/api/runs/{id}/scheduled/{rede}` | cancela a publicação que o cardline faria na hora marcada (ou descarta a que falhou) |
 | PUT | `/api/runs/{id}/posts` | `{"url": "…"}`: vincula um post já feito (YouTube, Instagram ou TikTok, reconhecido pelo link) |
-| PATCH / DELETE | `/api/runs/{id}/packs/{uid}` | registro de lacrados: `{"set": "9"}` corrige o set do booster; DELETE tira (`/restore` devolve) |
+| PATCH / DELETE | `/api/runs/{id}/packs/{uid}` | registro de lacrados: `{"set": "9"}` corrige o set e `{"value": 40, "currency": "BRL"}` fixa o valor do booster (`null` volta ao mercado); DELETE tira (`/restore` devolve) |
 | POST | `/api/runs/{id}/packs` | `{"set": "9", "t": 48.5}`: inclui um booster que a identificação não pegou |
 | PATCH / DELETE | `/api/runs/{id}/posts/{rede}` | `{"views": 1500, "likes": 120, …}` informa os números à mão; DELETE desvincula |
 | GET | `/api/sets` | sets com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo |

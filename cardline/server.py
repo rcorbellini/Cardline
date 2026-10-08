@@ -32,7 +32,7 @@ from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_ico
 from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
 from .config import Settings
 from .index import image_path, indexed_sets
-from .money import CURRENCIES, usd_brl
+from .money import CURRENCIES, to_usd, usd_brl
 from .video import probe
 
 WEB = Path(__file__).parent / "web"
@@ -178,8 +178,10 @@ class SealedPatch(BaseModel):
 
 
 class PackBody(BaseModel):
-    set: str  # o set do booster (registro de lacrados)
+    set: str | None = None  # o set do booster (registro de lacrados)
     t: float | None = None  # só para incluir um booster que faltou: o instante no vídeo
+    value: float | None = None  # valor editado do booster; null volta ao preço de mercado
+    currency: str = "BRL"  # moeda de `value`
 
 
 class RerunBody(BaseModel):
@@ -452,10 +454,12 @@ def create_app(settings: Settings) -> FastAPI:
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
         }
         if run["kind"] == "lacrados":
-            now = {r["set_code"]: r["usd"] for r in c.execute("SELECT set_code, usd FROM sealed WHERE run_id = ?", (run["id"],))}
+            market = {r["set_code"]: r["usd"] for r in c.execute(
+                "SELECT set_code, usd FROM sealed WHERE run_id = ? AND product_id IS NOT NULL", (run["id"],))}
+            now_of = lambda p: p["manual_usd"] if p.get("manual_usd") is not None else market.get(p["set"]) or p.get("price_usd")  # noqa: E731
             out.update(packs=len(boosters), thumbs=[f"{url}/{p['crop']}" for p in boosters if p.get("crop")][:24],
                        value_open=sum(p.get("price_usd") or 0 for p in boosters) if any("price_usd" in p for p in boosters) else None,
-                       value_now=sum(now.get(p["set"]) or p.get("price_usd") or 0 for p in boosters) if boosters else None)
+                       value_now=sum(now_of(p) or 0 for p in boosters) if boosters else None)
         if detail:
             out["cards"] = [
                 {
@@ -475,9 +479,8 @@ def create_app(settings: Settings) -> FastAPI:
             ]
             out["card_info"] = {cid: card_json(r) for cid, r in rows.items()}
             if run["kind"] == "lacrados":
-                now = {r["set_code"]: r["usd"] for r in c.execute("SELECT set_code, usd FROM sealed WHERE run_id = ?", (run["id"],))}
                 pack_json = lambda p: {"uid": p["uid"], "set": p["set"], "set_name": p.get("set_name"), "t": p["t"],  # noqa: E731
-                                       "price_open": p.get("price_usd"), "price_now": now.get(p["set"]) or p.get("price_usd"),
+                                       "price_open": p.get("price_usd"), "price_now": now_of(p), "value_usd": p.get("manual_usd"),
                                        "crop": f"{url}/{p['crop']}" if p.get("crop") else None, "inliers": p.get("inliers"),
                                        "manual": p.get("manual", False)}
                 out["pack_items"] = [{"n": n, **pack_json(p)} for n, p in enumerate(boosters, 1)]
@@ -710,20 +713,25 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.patch("/api/runs/{run_id}/packs/{uid}")
     def edit_pack(run_id: int, uid: str, body: PackBody):
-        """Corrige o set de um booster (o preço é refeito ao reprocessar)."""
+        """Corrige um booster: o set e/ou o valor (fixo para ele; null volta ao preço de mercado). Vale ao reprocessar."""
+        if body.value is not None and (body.value < 0 or body.currency.upper() not in CURRENCIES):
+            raise HTTPException(400, "Valor (não negativo) em USD ou BRL.")
+        value = {"value_usd": to_usd(settings, body.value, body.currency) if body.value is not None else None} \
+            if "value" in body.model_fields_set else {}
         with edit_lock:
             try:
-                packs_mod.set_pack(pack_run(run_id), uid, body.set, set_name(body.set))
+                changed = packs_mod.edit_pack(pack_run(run_id), uid, body.set, set_name(body.set) if body.set else None, **value)
             except LookupError as e:
                 raise HTTPException(404, str(e)) from e
-            pipeline.mark_stale(settings, run_id, "prices")
-        return {"ok": True}
+            if changed:
+                pipeline.mark_stale(settings, run_id, "prices")
+        return {"ok": True, "changed": changed}
 
     @app.post("/api/runs/{run_id}/packs")
     def add_pack(run_id: int, body: PackBody):
         """Inclui um booster que a identificação não pegou, no instante t do vídeo."""
-        if body.t is None or body.t < 0:
-            raise HTTPException(400, "Informe o instante do vídeo em que o booster aparece.")
+        if body.t is None or body.t < 0 or not body.set:
+            raise HTTPException(400, "Informe o set e o instante do vídeo em que o booster aparece.")
         with edit_lock:
             uid = packs_mod.add_pack(pack_run(run_id), body.set, set_name(body.set), body.t)
             pipeline.mark_stale(settings, run_id, "prices")

@@ -166,7 +166,9 @@ def price_packs(settings: Settings, con, scan: dict, progress=lambda fraction, m
     kept = 0
     for p in scan["packs"]:
         product = found.get(p["set"])
-        if p.get("price_usd") is not None and p.get("price_key") == p["set"]:
+        if p.get("manual_usd") is not None:  # valor editado na página: fixo
+            p.update(price_usd=p["manual_usd"], price_key="manual")
+        elif p.get("price_usd") is not None and p.get("price_key") == p["set"]:
             kept += 1
         elif product:
             p.update(price_usd=product["usd"], price_key=p["set"])
@@ -177,31 +179,35 @@ def price_packs(settings: Settings, con, scan: dict, progress=lambda fraction, m
 
 def register_packs(settings: Settings, con, run_id: int, scan: dict, paid: float | None, currency: str | None) -> int:
     """Os boosters do vídeo viram lacrados da coleção, um item por set (substitui o que esta pipeline tinha
-    registrado; os já abertos numa abertura continuam abertos). O valor pago é dividido igualmente entre eles."""
-    groups: dict[str, list[dict]] = {}
+    registrado; os já abertos numa abertura continuam abertos). O valor pago é dividido igualmente entre eles.
+    Booster com valor editado vira um item à parte, com o valor fixo (a atualização de preços não mexe nele)."""
+    groups: dict[tuple, list[dict]] = {}
     for p in scan["packs"]:
-        groups.setdefault(p["set"], []).append(p)
+        groups.setdefault((p["set"], p.get("manual_usd")), []).append(p)
     each = round(paid / len(scan["packs"]), 2) if paid and scan["packs"] else None
     each_usd = to_usd(settings, each, currency or "BRL") if each else None
     now = db.now()
     with con:
-        existing = {r["set_code"]: r for r in con.execute("SELECT * FROM sealed WHERE run_id = ?", (run_id,))}
-        for code, items in groups.items():
+        # o item com valor fixo não tem produto do TCGplayer (é assim que a atualização de preços o deixa quieto)
+        existing = {(r["set_code"], r["usd"] if r["product_id"] is None else None): r
+                    for r in con.execute("SELECT * FROM sealed WHERE run_id = ?", (run_id,))}
+        for key, items in groups.items():
+            code, fixed = key
             first = items[0]
             prices = [i["price_usd"] for i in items if i.get("price_usd") is not None]
             registered = round(sum(prices) / len(prices), 4) if prices else None
-            values = (first.get("product_id"), first.get("image"), len(items), each, currency if each else None, each_usd,
-                      registered)
-            if code in existing:
+            values = (None if fixed is not None else first.get("product_id"), first.get("image"), len(items), each,
+                      currency if each else None, each_usd, registered)
+            if key in existing:
                 con.execute("UPDATE sealed SET product_id = ?, image = ?, qty = MAX(?, opened), paid = ?, paid_currency = ?,"
-                            " paid_usd = ?, registered_usd = ?, usd = COALESCE(usd, ?), name = 'Booster Pack' WHERE id = ?",
-                            (*values, registered, existing[code]["id"]))
+                            " paid_usd = ?, registered_usd = ?, usd = ?, name = 'Booster Pack' WHERE id = ?",
+                            (*values, fixed if fixed is not None else existing[key]["usd"] or registered, existing[key]["id"]))
             else:
                 con.execute("INSERT INTO sealed(product_id, image, qty, paid, paid_currency, paid_usd, registered_usd, usd,"
                             " set_code, name, price_updated_at, added_at, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (*values, registered, code, "Booster Pack", now, now, run_id))
-        for code, row in existing.items():
-            if code not in groups:  # saiu da identificação: o que já foi aberto fica registrado como aberto
+                            (*values, fixed if fixed is not None else registered, code, "Booster Pack", now, now, run_id))
+        for key, row in existing.items():
+            if key not in groups:  # saiu da identificação: o que já foi aberto fica registrado como aberto
                 if row["opened"]:
                     con.execute("UPDATE sealed SET qty = opened WHERE id = ?", (row["id"],))
                 else:

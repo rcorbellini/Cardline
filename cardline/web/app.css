@@ -577,18 +577,16 @@ a.netbadge:hover { background: var(--panel-2); }
 
 /* Registro de lacrados: os boosters da pilha */
 .kindchip.lacrados { background: color-mix(in srgb, var(--up) 16%, transparent); color: var(--up); }
-.packrow { display: grid; grid-template-columns: 34px 64px minmax(0, 1fr); gap: 10px; align-items: center; padding: 10px 12px;
-  border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.packrow .n { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-.packrow > img, .packrow .packicon { width: 64px; height: 96px; object-fit: cover; border-radius: 8px; background: var(--panel-2); display: grid; place-items: center; }
-.packrow .packicon img { max-width: 100%; max-height: 100%; }
-.packrow .info { display: grid; gap: 4px; min-width: 0; }
-.packrow .pname { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.packrow .pname b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.packrow .line { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
-.packrow .price { font-weight: 700; }
-.packedit { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.packedit select { height: 32px; font-size: 13px; max-width: 220px; }
+.pull.packpull { grid-template-columns: 28px 64px minmax(0, 1fr); }
+.pull.packpull > img, .packicon { width: 64px; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 8px; background: var(--panel-2); display: grid; place-items: center; }
+.packpull .pname img { width: auto; height: 22px; aspect-ratio: auto; object-fit: contain; border-radius: 3px; background: none; }
+.editpreview.pack { grid-template-columns: 72px minmax(0, 1fr); }
+.editpreview.pack > img { width: 72px; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 8px; }
+.packicon img { max-width: 100%; max-height: 100%; }
+.packpull .pname { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.packpull .pname b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.packpull .price { font-weight: 700; }
+.editpreview .packicon { width: 72px; }
 .packadd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; font-size: 14px; }
 .packadd input { width: 110px; }
 .packadd select { max-width: 220px; }

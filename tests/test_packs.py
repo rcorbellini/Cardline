@@ -146,3 +146,25 @@ def test_sealed_narration_is_an_inventory_with_an_ending():
     assert sum("Tá virando coleção" in line["texto"] for line in lines) == 1  # o terceiro do mesmo set, uma vez
     gaps = [b["t"] - a["t"] for a, b in zip(lines, lines[1:])]
     assert min(gaps) >= 2.0
+
+
+def test_a_booster_value_can_be_edited_and_stays_fixed(settings, run):
+    with TestClient(create_app(settings)) as client:
+        assert client.patch(f"/api/runs/{run}/packs/01", json={"value": 50, "currency": "BRL"}).json()["changed"] is True
+        assert client.patch(f"/api/runs/{run}/packs/01", json={"value": -1}).status_code == 400
+        item = client.get(f"/api/runs/{run}").json()["pack_items"][0]
+        assert (item["value_usd"], item["price_now"]) == (10.0, 10.0)  # R$ 50 a US$ 1 = R$ 5
+    con = db.connect(settings.db_path)
+    folder = settings.runs_dir / str(run)
+    scan = json.loads((folder / "scan.json").read_text())
+    sealed.price_packs(settings, con, scan)
+    assert [p["price_usd"] for p in scan["packs"]] == [10.0, 5.0, 6.5]  # o editado vale; os outros, o mercado
+    sealed.register_packs(settings, con, run, scan, None, None)
+    rows = {(r["set_code"], r["product_id"]): (r["qty"], r["usd"]) for r in con.execute("SELECT * FROM sealed")}
+    assert rows == {("9", None): (1, 10.0), ("9", 91): (1, 6.5), ("7", 71): (1, 5.0)}  # o editado é um item à parte
+    settings.prices[24348][91] = 9.0
+    sealed.refresh_prices(settings, con)
+    assert {r["product_id"]: r["usd"] for r in con.execute("SELECT * FROM sealed WHERE set_code = '9'")} == {None: 10.0, 91: 9.0}
+    with TestClient(create_app(settings)) as client:  # apagar o valor volta ao preço de mercado
+        assert client.patch(f"/api/runs/{run}/packs/01", json={"value": None}).json()["changed"] is True
+        assert client.get(f"/api/runs/{run}").json()["pack_items"][0]["value_usd"] is None

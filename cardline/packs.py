@@ -286,17 +286,32 @@ def restore_pack(run_dir: Path, uid: str) -> None:
     _save(run_dir, scan)
 
 
-def set_pack(run_dir: Path, uid: str, code: str, name: str) -> None:
-    """Corrige o set de um booster: o preço dele é refeito ao reprocessar."""
+_UNSET = object()
+
+
+def edit_pack(run_dir: Path, uid: str, code: str | None = None, name: str | None = None, value_usd=_UNSET) -> bool:
+    """Corrige um booster: o set (o preço é refeito ao reprocessar) e/ou o valor. O valor editado fica fixo para
+    esse booster (no vídeo, nos lacrados e no valor de hoje); `value_usd=None` volta ao preço de mercado.
+    Devolve se algo mudou."""
     scan = _load(run_dir)
     pack = next((p for p in scan["packs"] if p["uid"] == uid), None)
     if pack is None:
         raise LookupError("Booster não encontrado nesta pipeline.")
-    if pack["set"] != code:
+    changed = False
+    if code and pack["set"] != code:
         pack.update(set=code, set_name=name, manual=True)
         for key in ("price_usd", "price_key", "product_id", "image"):
             pack.pop(key, None)
-    _save(run_dir, scan)
+        changed = True
+    if value_usd is not _UNSET and pack.get("manual_usd") != value_usd:
+        if value_usd is None:
+            pack.pop("manual_usd", None)
+        else:
+            pack["manual_usd"] = round(float(value_usd), 4)
+        changed = True
+    if changed:
+        _save(run_dir, scan)
+    return changed
 
 
 def add_pack(run_dir: Path, code: str, name: str, t: float) -> str:
