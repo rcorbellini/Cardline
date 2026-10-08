@@ -1,0 +1,13 @@
+# Túnel do Cloudflare: o domínio chega no cardline deste PC sem IP fixo (veja o README).
+#   cp deploy/cloudflared.service ~/.config/systemd/user/ && systemctl --user enable --now cloudflared
+[Unit]
+Description=Túnel do Cloudflare para o cardline
+
+[Service]
+ExecStart=%h/.local/bin/cloudflared tunnel --config %h/.cloudflared/config.yml run
+# o cloudflared se atualiza sozinho e sai para recomeçar com a versão nova
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

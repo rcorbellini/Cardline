@@ -62,3 +62,54 @@ def test_runs_bring_the_value_of_each_booster(client, tmp_path):
     # valor pelas cartas de cada booster: na abertura (preço fixado) e hoje (preço atual, foil onde é foil)
     assert listed["pack_values"] == [{"pack": 1, "set": "1", "cards": 2, "value_open": 2.0, "value_now": 3.0},
                                      {"pack": 2, "set": "2", "cards": 1, "value_open": 8.0, "value_now": 9.0}]
+
+
+def test_big_videos_arrive_in_parts(tmp_path, monkeypatch):  # pelo Cloudflare, cada requisição vai até 100 MB
+    import hashlib
+    import subprocess
+
+    from cardline import db
+    from cardline.video import ffmpeg_exe
+
+    monkeypatch.setattr("cardline.money.usd_brl", lambda s: (5.0, "2026-10-06"))
+    monkeypatch.setattr("cardline.server.usd_brl", lambda s: (5.0, "2026-10-06"))
+    monkeypatch.setattr("cardline.server.Runner.start", lambda self: None)  # a pipeline só entra na fila
+    monkeypatch.setattr("cardline.server.UPLOAD_CHUNK", 1024)
+    video = tmp_path / "gravado.mp4"
+    subprocess.run([ffmpeg_exe(), "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=2",
+                    "-pix_fmt", "yuv420p", str(video)], check=True)
+    data = video.read_bytes()
+    assert len(data) > 3 * 1024
+    with TestClient(create_app(Settings(root=tmp_path))) as client:
+        start = client.post("/api/uploads", json={"filename": "abertura.mp4", "size": len(data)})
+        up = start.json()["id"]
+        assert start.json()["chunk"] == 1024
+        r = client.put(f"/api/uploads/{up}?offset=1024", content=data[1024:2048])
+        assert r.status_code == 409 and r.json()["detail"]["size"] == 0  # fora de ordem: diz de onde continuar
+        assert client.post(f"/api/runs?filename=abertura.mp4&upload={up}").status_code == 400  # ainda não terminou
+        offset = 0
+        while offset < len(data):
+            offset = client.put(f"/api/uploads/{up}?offset={offset}", content=data[offset:offset + 1024]).json()["size"]
+        r = client.put(f"/api/uploads/{up}?offset=0", content=data[:1024])  # repetida: a resposta tinha se perdido
+        assert r.status_code == 409 and r.json()["detail"]["size"] == len(data)
+        run_id = client.post(f"/api/runs?filename=abertura.mp4&kind=cadastro&upload={up}").json()["id"]
+        row = db.connect(tmp_path / "data" / "cardline.db").execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        assert row["video_name"] == "abertura.mp4" and row["video_sha1"] == hashlib.sha1(data).hexdigest()
+        assert client.post(f"/api/runs?filename=abertura.mp4&upload={up}").status_code == 404  # já virou pipeline
+        assert list((tmp_path / "runs" / "_incoming").iterdir()) == []
+        other = client.post("/api/uploads", json={"filename": "x.mp4", "size": 10}).json()["id"]
+        assert client.delete(f"/api/uploads/{other}").status_code == 200
+        assert list((tmp_path / "runs" / "_incoming").iterdir()) == []
+
+
+def test_private_files_never_go_to_a_shared_cache(client, tmp_path):
+    from cardline import pipeline
+
+    video = tmp_path / "abertura.mp4"
+    video.write_bytes(b"x")
+    run_id = pipeline.create_run(Settings(root=tmp_path), video)
+    (tmp_path / "runs" / str(run_id) / "overlay.jpg").write_bytes(b"capa")
+    assert client.get(f"/runs/{run_id}/overlay.jpg").headers["cache-control"] == "private, no-cache"
+    assert client.get("/api/runs").headers["cache-control"] == "no-store"
+    assert client.get("/").headers["cache-control"] == "no-cache"  # a página revalida: atualizações aparecem na hora
+    assert client.get("/app.js").headers["cache-control"] == "no-cache"

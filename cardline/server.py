@@ -40,6 +40,8 @@ from .money import CURRENCIES, to_usd, usd_brl
 from .video import probe
 
 WEB = Path(__file__).parent / "web"
+# cada parte do envio de um vídeo: o Cloudflare (plano grátis) recusa requisições com mais de 100 MB
+UPLOAD_CHUNK = 32 * 1024 * 1024
 
 
 class Runner:
@@ -189,6 +191,11 @@ class ShareBody(BaseModel):
     email: str  # quem pode ver
 
 
+class UploadBody(BaseModel):
+    filename: str
+    size: int  # bytes do vídeo inteiro
+
+
 class PackBody(BaseModel):
     set: str | None = None  # o set do booster (registro de lacrados)
     t: float | None = None  # só para incluir um booster que faltou: o instante no vídeo
@@ -330,6 +337,38 @@ class AuthGate:
             auth.CURRENT.reset(token)
 
 
+class CacheRules:
+    """Cache-Control de cada resposta, para o navegador e para quem está na frente (o Cloudflare guarda vídeos e
+    imagens por padrão): os arquivos com dono nunca ficam num cache compartilhado, a API não fica em cache nenhum e
+    a página revalida a cada abertura, então uma atualização aparece na hora."""
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def rule(path: str) -> str | None:
+        if path.startswith("/api/"):
+            return "no-store"
+        if path.startswith(("/runs/", "/logos/")):
+            return "private, no-cache"
+        if path.startswith(("/img/", "/set-icons/", "/vozes/")):
+            return None  # catálogo público: o cache comum serve
+        return "no-cache"  # a página: index.html, app.js, app.css
+
+    async def __call__(self, scope, receive, send):
+        rule = self.rule(scope.get("path", "")) if scope["type"] == "http" else None
+        if rule is None:
+            return await self.app(scope, receive, send)
+
+        async def send_with_rule(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"]
+                message = {**message, "headers": [*headers, (b"cache-control", rule.encode())]}
+            await send(message)
+
+        await self.app(scope, receive, send_with_rule)
+
+
 class PostJobs:
     """Publicações pela API em segundo plano (envio do YouTube, processamento do Instagram); uma por vez."""
 
@@ -409,6 +448,8 @@ def create_app(settings: Settings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         auth.adopt(con(), settings)  # o que não tem dono (de antes das contas) fica com o administrador
+        for part in (settings.runs_dir / "_incoming").glob("*.part"):  # envios de antes de reiniciar: não continuam
+            part.unlink(missing_ok=True)
         pipeline.recover_interrupted(settings)
         social.interrupted(con())
         job_log.interrupted(con())
@@ -420,6 +461,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(title="cardline", lifespan=lifespan)
     app.add_middleware(AuthGate, settings=settings)
+    app.add_middleware(CacheRules)  # por fora: vale também para as recusas do porteiro
 
     def con():
         return db.connect(settings.db_path)
@@ -653,12 +695,63 @@ def create_app(settings: Settings) -> FastAPI:
     def run_detail(run_id: int):
         return run_json(con(), run_row(run_id), detail=True)
 
+    uploads: dict[str, dict] = {}  # vídeos chegando em partes: id → dono, arquivo, bytes recebidos, sha1
+
+    def my_upload(upload_id: str) -> dict:
+        up = uploads.get(upload_id)
+        if up is None or up["user"] != me():
+            raise HTTPException(404, "Esse envio não existe mais (o servidor reiniciou?). Envie o vídeo de novo.")
+        return up
+
+    @app.post("/api/uploads", status_code=201)
+    def upload_start(body: UploadBody):
+        """Começa o envio de um vídeo em partes (PUT /api/uploads/{id}?offset=…); a pipeline nasce com
+        `upload={id}`. Pelo túnel do Cloudflare, cada requisição pode ter no máximo 100 MB."""
+        if body.size <= 0:
+            raise HTTPException(400, "O vídeo está vazio.")
+        now = time.time()
+        for key in [k for k, v in uploads.items() if now - v["touched"] > 6 * 3600]:  # abandonados
+            uploads.pop(key)["path"].unlink(missing_ok=True)
+        incoming = settings.runs_dir / "_incoming"
+        incoming.mkdir(parents=True, exist_ok=True)
+        upload_id = uuid.uuid4().hex
+        path = incoming / f"{upload_id}.part"
+        path.touch()
+        uploads[upload_id] = {"user": me(), "path": path, "name": Path(body.filename).name, "size": 0,
+                              "total": body.size, "sha1": hashlib.sha1(), "touched": now}
+        return {"id": upload_id, "chunk": UPLOAD_CHUNK}
+
+    @app.put("/api/uploads/{upload_id}")
+    async def upload_part(upload_id: str, offset: int, request: Request):
+        """Uma parte, no ponto em que o envio está. Uma parte repetida (a resposta se perdeu) ou fora de ordem
+        recebe 409 com o tamanho que já chegou, e o envio continua dali."""
+        up = my_upload(upload_id)
+        if offset != up["size"]:
+            raise HTTPException(409, {"message": "Parte fora de ordem.", "size": up["size"]})
+        data = await request.body()
+        if offset != up["size"]:  # outra parte entrou enquanto esta chegava
+            raise HTTPException(409, {"message": "Parte fora de ordem.", "size": up["size"]})
+        if not data or len(data) > UPLOAD_CHUNK or up["size"] + len(data) > up["total"]:
+            raise HTTPException(400, "Parte vazia ou maior que o esperado.")
+        with open(up["path"], "ab") as f:
+            f.write(data)
+        up["sha1"].update(data)
+        up["size"] += len(data)
+        up["touched"] = time.time()
+        return {"size": up["size"]}
+
+    @app.delete("/api/uploads/{upload_id}")
+    def upload_cancel(upload_id: str):
+        my_upload(upload_id)
+        uploads.pop(upload_id)["path"].unlink(missing_ok=True)
+        return {"ok": True}
+
     @app.post("/api/runs", status_code=201)
     async def upload(
         request: Request, filename: str, paid: float | None = None, paid_currency: str = "BRL",
         set_hint: str | None = None, overlay: bool = True, verify: bool | None = None, currency: str | None = None,
         kind: str = "abertura", narration: bool = False, logo_name: str | None = Query(None, alias="logo"),
-        sealed_id: int | None = None, sealed_qty: int = 1,
+        sealed_id: int | None = None, sealed_qty: int = 1, upload_id: str | None = Query(None, alias="upload"),
     ):
         if kind not in pipeline.KINDS:
             raise HTTPException(400, "Tipo de pipeline deve ser abertura ou cadastro.")
@@ -668,19 +761,27 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, "Esse booster não está nos seus lacrados.")
         if paid_currency.upper() not in CURRENCIES or (currency and currency.upper() not in CURRENCIES):
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
-        incoming = settings.runs_dir / "_incoming"
-        incoming.mkdir(parents=True, exist_ok=True)
-        tmp = incoming / f"{uuid.uuid4().hex}.part"
-        sha1, size = hashlib.sha1(), 0
+        if upload_id:  # o vídeo já chegou em partes (/api/uploads)
+            up = my_upload(upload_id)
+            if up["size"] != up["total"]:
+                raise HTTPException(400, "O envio do vídeo ainda não terminou.")
+            uploads.pop(upload_id)
+            tmp, sha1 = up["path"], up["sha1"]
+        else:  # o vídeo é o corpo desta requisição
+            incoming = settings.runs_dir / "_incoming"
+            incoming.mkdir(parents=True, exist_ok=True)
+            tmp, sha1 = incoming / f"{uuid.uuid4().hex}.part", hashlib.sha1()
         try:
-            with open(tmp, "wb") as f:  # direto para o disco: vídeos 4K passam de 1 GB
-                async for chunk in request.stream():
-                    f.write(chunk)
-                    sha1.update(chunk)
-                    size += len(chunk)
-            expected = request.headers.get("content-length")
-            if size == 0 or (expected and int(expected) != size):
-                raise HTTPException(400, "Upload vazio ou incompleto.")
+            if not upload_id:
+                size = 0
+                with open(tmp, "wb") as f:  # direto para o disco: vídeos 4K passam de 1 GB
+                    async for chunk in request.stream():
+                        f.write(chunk)
+                        sha1.update(chunk)
+                        size += len(chunk)
+                expected = request.headers.get("content-length")
+                if size == 0 or (expected and int(expected) != size):
+                    raise HTTPException(400, "Upload vazio ou incompleto.")
             try:
                 probe(tmp)
             except SystemExit as e:

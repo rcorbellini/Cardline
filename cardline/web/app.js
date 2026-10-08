@@ -1049,8 +1049,44 @@ drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add(
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); pickFile(e.dataTransfer.files[0]); });
 function newError(html) { $('#new-error').innerHTML = html; $('#new-error').hidden = false; }
-$('#new-form').onsubmit = ev => {
+// o vídeo vai em partes (o Cloudflare, no plano grátis, recusa requisições com mais de 100 MB), cada uma com até
+// 3 tentativas; uma parte que o servidor já tinha (a resposta se perdeu) não é enviada de novo
+function sendPart(url, blob, onProgress) {  // XHR: o fetch não informa o progresso do envio
+  return new Promise((resolve, reject) => {
+    const xhr = S.xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = e => onProgress(e.loaded);
+    xhr.onload = () => {
+      let body = null; try { body = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(body); return; }
+      const d = body?.detail;
+      reject(Object.assign(new Error(typeof d === 'string' ? d : d?.message || `Falha no envio (${xhr.status}).`), { status: xhr.status, detail: d }));
+    };
+    xhr.onerror = () => reject(Object.assign(new Error('Falha de conexão durante o envio.'), { network: true }));
+    xhr.send(blob);
+  });
+}
+async function uploadVideo(file, onProgress) {
+  const { id, chunk } = await api('/api/uploads', json({ filename: file.name, size: file.size }));
+  let offset = 0;
+  while (offset < file.size) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        offset = (await sendPart(`/api/uploads/${id}?offset=${offset}`, file.slice(offset, offset + chunk), n => onProgress(offset + n))).size;
+        break;
+      } catch (e) {
+        if (e.status === 409 && e.detail?.size != null) { offset = e.detail.size; break; }
+        if (!(e.network || e.status >= 500) || attempt >= 3) throw e;
+        await new Promise(r => setTimeout(r, 2000 * attempt));
+      }
+    }
+  }
+  return id;
+}
+$('#new-form').onsubmit = async ev => {
   ev.preventDefault();
+  if (S.uploading) return;
   if (!S.file) { newError('Escolha o vídeo da abertura.'); return; }
   const paidRaw = $('#paid').value.trim();
   const paid = paidRaw ? parseMoney(paidRaw) : null;
@@ -1067,34 +1103,35 @@ $('#new-form').onsubmit = ev => {
     if (kind === 'abertura' && $('#from-sealed').value) { params.set('sealed_id', $('#from-sealed').value); params.set('sealed_qty', $('#from-sealed-qty').value || 1); }
   }
   if ($('#new-set').value) params.set('set_hint', $('#new-set').value);
-  const xhr = S.xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/runs?' + params);
-  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-  $('#upload').hidden = false; $('#send').disabled = true; $('#new-error').hidden = true;
-  xhr.upload.onprogress = e => {
-    const p = e.total ? e.loaded / e.total : 0;
+  const file = S.file, mb = n => (n / 1048576).toFixed(0);
+  const show = sent => {
+    const p = file.size ? Math.min(1, sent / file.size) : 0;
     $('#upload-bar').style.width = `${(p * 100).toFixed(1)}%`;
-    $('#upload-text').textContent = p < 1 ? `Enviando ${(p * 100).toFixed(0)}% (${(e.loaded / 1048576).toFixed(0)} de ${(e.total / 1048576).toFixed(0)} MB)` : 'Conferindo o vídeo…';
+    $('#upload-text').textContent = p < 1 ? `Enviando ${(p * 100).toFixed(0)}% (${mb(sent)} de ${mb(file.size)} MB)` : 'Conferindo o vídeo…';
   };
-  xhr.onload = async () => {
-    S.xhr = null; $('#send').disabled = false; $('#upload').hidden = true;
-    let body = null; try { body = JSON.parse(xhr.responseText); } catch {}
-    if (xhr.status === 201) {
-      S.file = null; $('#new-form').reset(); $('#drop').classList.remove('ready');
-      $('#drop-title').textContent = 'Arraste o vídeo aqui ou clique para escolher';
-      $('#drop-sub').textContent = 'MP4 ou MOV, como sai da câmera do celular';
-      location.hash = `#/pipelines/${body.id}`;
-      await refresh();
-    } else if (xhr.status === 409 && body?.detail?.run_id) {
-      newError(`${esc(body.detail.message)} <a href="#/pipelines/${body.detail.run_id}">Abrir pipeline #${body.detail.run_id}</a>`);
-    } else {
-      newError(esc(typeof body?.detail === 'string' ? body.detail : `Falha no envio (${xhr.status}).`));
-    }
-  };
-  xhr.onerror = () => { S.xhr = null; $('#send').disabled = false; $('#upload').hidden = true; newError('Falha de conexão durante o envio.'); };
-  xhr.send(S.file);
+  S.uploading = true; $('#upload').hidden = false; $('#send').disabled = true; $('#new-error').hidden = true;
+  show(0);
+  let upload = null;
+  try {
+    upload = await uploadVideo(file, show);
+    show(file.size);
+    params.set('upload', upload);
+    const body = await api('/api/runs?' + params, { method: 'POST' });
+    upload = null;
+    S.file = null; $('#new-form').reset(); $('#drop').classList.remove('ready');
+    $('#drop-title').textContent = 'Arraste o vídeo aqui ou clique para escolher';
+    $('#drop-sub').textContent = 'MP4 ou MOV, como sai da câmera do celular';
+    location.hash = `#/pipelines/${body.id}`;
+    await refresh();
+  } catch (e) {
+    if (e.detail?.run_id) newError(`${esc(e.detail.message)} <a href="#/pipelines/${e.detail.run_id}">Abrir pipeline #${e.detail.run_id}</a>`);
+    else newError(esc(e.message));
+    if (upload) api(`/api/uploads/${upload}`, { method: 'DELETE' }).catch(() => {});  // não deixa o vídeo parado no servidor
+  } finally {
+    S.uploading = false; S.xhr = null; $('#send').disabled = false; $('#upload').hidden = true;
+  }
 };
-window.addEventListener('beforeunload', e => { if (S.xhr) e.preventDefault(); });
+window.addEventListener('beforeunload', e => { if (S.uploading) e.preventDefault(); });
 
 // ---- gráfico: gasto vs valor das cartas ----
 const SERIES = [  // cor segue a série (slots validados), nunca a posição

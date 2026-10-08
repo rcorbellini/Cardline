@@ -1,0 +1,9 @@
+# Modelo do ~/.cloudflared/config.yml (troque o ID do túnel e o domínio; o .json com a credencial fica só no PC).
+tunnel: ID-DO-TUNEL
+credentials-file: /home/USUARIO/.cloudflared/ID-DO-TUNEL.json
+ingress:
+  - hostname: seu-dominio.com.br
+    service: http://localhost:8000
+  - hostname: www.seu-dominio.com.br
+    service: http://localhost:8000
+  - service: http_status:404

@@ -331,10 +331,43 @@ A página funciona no celular. Por padrão o servidor só aceita conexões da pr
 outro aparelho:
 
 - na rede local: `uv run cardline serve --host 0.0.0.0` e abra `http://IP-da-máquina:8000`;
-- de qualquer lugar: um túnel, por exemplo `ngrok http 8000`.
+- de qualquer lugar: um domínio próprio pelo túnel do Cloudflare (abaixo) ou um túnel rápido, como `ngrok http 8000`.
 
 Sem entrar com o Google, a API responde 401 e os arquivos das pipelines (vídeos, recortes) não abrem. O Instagram
 baixa o vídeo por um link assinado, que só serve para aquele arquivo.
+
+### Domínio próprio, sem IP fixo (túnel do Cloudflare)
+
+O cardline continua rodando no seu PC; o Cloudflare é só a porta de entrada. O `cloudflared` abre uma conexão de
+saída até ele, então não precisa de IP fixo nem de abrir porta no roteador, a troca de IP da operadora não
+atrapalha (funciona até atrás de CGNAT) e o https vem pronto. O PC precisa ficar ligado: desligado, o domínio
+mostra um erro do Cloudflare até ele voltar.
+
+1. No [Cloudflare](https://dash.cloudflare.com) (plano Free), adicione o domínio e troque os servidores DNS dele
+   pelos dois que o Cloudflare indicar (no Registro.br: o domínio → DNS → **Alterar servidores DNS**).
+2. Instale o [cloudflared](https://github.com/cloudflare/cloudflared/releases) (o binário `cloudflared-linux-amd64`
+   em `~/.local/bin/cloudflared` basta) e crie o túnel:
+   ```bash
+   cloudflared tunnel login                 # autoriza o domínio no navegador
+   cloudflared tunnel create cardline
+   cloudflared tunnel route dns cardline seu-dominio.com.br
+   ```
+3. Copie `deploy/cloudflared.yml` para `~/.cloudflared/config.yml`, com o ID do túnel e o domínio.
+4. Serviços do usuário, que ligam junto com o PC e voltam sozinhos se caírem:
+   ```bash
+   cp deploy/cardline.service deploy/cloudflared.service ~/.config/systemd/user/
+   systemctl --user enable --now cardline cloudflared
+   loginctl enable-linger      # ligam no boot, mesmo sem ninguém entrar no PC
+   ```
+   O log do servidor fica em `data/servidor.log`; `systemctl --user restart cardline` reinicia (espere as
+   pipelines da fila terminarem).
+5. Em `data/config.toml`: `public_url = "https://seu-dominio.com.br"` (de onde o Instagram baixa o vídeo).
+
+O plano grátis recusa requisições com mais de 100 MB, então a página envia o vídeo em partes de 32 MB. Os arquivos
+com dono saem com `Cache-Control: private` (o Cloudflare guarda imagens e vídeos por padrão; esses nunca ficam no
+cache dele) e a página revalida a cada abertura, então uma atualização aparece na hora. O Cloudflare não permite
+usar o plano grátis para servir muito vídeo; para você e alguns convidados assistirem às aberturas não é problema,
+mas um site de vídeos com muito acesso precisaria de outro caminho.
 
 ### API
 
@@ -351,7 +384,8 @@ entrou. Com o cabeçalho `X-Cardline-Owner: <id>`, mostra os dados de quem compa
 | GET | `/api/collection` | cartas da coleção, agrupadas por carta e acabamento, com as cópias |
 | GET | `/api/runs` | pipelines com status, progresso e valores; `duplicates` lista as pipelines com as mesmas cartas e `repeated` conta as cartas repetidas |
 | GET | `/api/runs/{id}` | detalhe: passos, cartas e log |
-| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL&narration=true&logo=padrao.png` | cria a pipeline (`kind`: `abertura` ou `cadastro`; `logo` vazio = sem logo); o corpo da requisição é o vídeo |
+| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL&narration=true&logo=padrao.png` | cria a pipeline (`kind`: `abertura`, `cadastro` ou `lacrados`; `logo` vazio = sem logo); o corpo da requisição é o vídeo, ou `upload={id}` usa o que chegou em partes |
+| POST / PUT / DELETE | `/api/uploads`, `/api/uploads/{id}?offset=…` | envio em partes: `{"filename", "size"}` começa (devolve `id` e o tamanho da parte); cada `PUT` leva uma parte (uma parte repetida ou fora de ordem recebe 409 com o tamanho que já chegou); `DELETE` desiste |
 | POST | `/api/logos` | o corpo é a imagem: guarda o logo (PNG, até 600 px) e devolve o nome para `logo=` na criação |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo), `{"narration": true}` e/ou `{"logo": "padrao.png"}` (`null` tira); só o que for enviado muda |
@@ -493,7 +527,8 @@ vídeos postados no YouTube (o nome do set entra junto). `admin_email` e `allowe
   usuário lê; fora do git).
 - `data/logos/u<id>/`: o logo padrão do vídeo de cada conta (`padrao.png`) e os enviados na criação das
   pipelines (fora do git).
-- `data/config.toml`: os e-mails das contas; `data/segredo.key`: a chave dos links assinados (fora do git).
+- `data/config.toml`: os e-mails das contas e o `public_url`; `data/segredo.key`: a chave dos links assinados;
+  `data/servidor.log`: o log do serviço (fora do git).
 - `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
   que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 
