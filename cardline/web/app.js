@@ -250,7 +250,7 @@ function setIcon(code, cls = 'seticon') {
   return set?.icon ? `<img class="${cls}" src="${esc(set.icon)}" alt="" title="${esc(set.name)}" loading="lazy">` : setHex(code, cls);
 }
 const setTitle = code => S.meta.sets.find(x => x.code === code)?.name || `set ${code}`;
-const KIND_LABEL = { abertura: 'Abertura de booster', cadastro: 'Cadastro de coleção' };
+const KIND_LABEL = { abertura: 'Abertura de booster', cadastro: 'Cadastro de coleção', lacrados: 'Registro de lacrados' };
 function kindChip(r) { return `<span class="kindchip ${r.kind}">${KIND_LABEL[r.kind] || r.kind}</span>`; }
 function dupChip(r) {  // as mesmas cartas de outra pipeline (ordem, foil e repetidas não contam)
   return r.duplicates?.length ? `<span class="dupchip" title="Mesmas cartas da pipeline ${r.duplicates.map(i => `#${i}`).join(', ')}">⚠ Repetida</span>` : '';
@@ -332,7 +332,7 @@ function renderJob() {
     ${j.log ? `<details class="log" open><summary>Log</summary><pre>${esc(j.log)}</pre></details>` : ''}`);
 }
 function renderRuns() {
-  const filters = [['todas', 'Todas'], ['abertura', 'Aberturas'], ['cadastro', 'Cadastros'], ['atualizacao', 'Atualizações']];
+  const filters = [['todas', 'Todas'], ['abertura', 'Aberturas'], ['cadastro', 'Cadastros'], ['lacrados', 'Lacrados'], ['atualizacao', 'Atualizações']];
   const head = `<div class="toolbar"><h2>Pipelines</h2>
     <div class="seg" role="group" aria-label="Tipo de pipeline">${filters.map(([k, label]) =>
       `<button data-runkind="${k}" aria-pressed="${runKind === k}">${label}</button>`).join('')}</div>
@@ -353,12 +353,12 @@ function renderRuns() {
       ${progressHtml(r)}
       ${r.thumbs.length ? `<div class="thumbs">${r.thumbs.map(t => `<img loading="lazy" src="${esc(t)}" alt="">`).join('')}</div>` : ''}
       <div class="metrics">
-        <span><small>Cartas</small><b>${r.n_cards || '—'}</b></span>
+        ${r.kind === 'lacrados' ? `<span><small>Boosters</small><b>${r.packs || '—'}</b></span>` : `<span><small>Cartas</small><b>${r.n_cards || '—'}</b></span>`}
         ${r.kind === 'cadastro'
           ? `<span><small>Valor no cadastro</small><b class="num">${money(r.value_open)}</b></span>`
           : `<span><small>Pago</small><b>${r.paid != null ? `${sym(r.paid_currency)} ${nf.format(r.paid)}` : '—'}</b></span>`}
         <span><small>Valor hoje</small><b class="num">${money(r.value_now)}</b></span>
-        ${r.kind === 'abertura' ? resultHtml(r) : ''}
+        ${r.kind !== 'cadastro' ? resultHtml(r) : ''}
       </div>
     </a>`).join('') + '</div>');
 }
@@ -378,7 +378,7 @@ function runSkeleton() {
     <div class="kpis"><div class="panel kpi" id="r-paid"></div><div id="r-kpis" style="display:contents"></div></div>
     <p class="error" id="r-error"></p>
     <div class="cols">
-      <div><div class="sectionhead"><h3>Cartas</h3><span class="secside"><span class="muted" id="r-cards-sub"></span><span id="r-sanitize"></span></span></div>
+      <div><div class="sectionhead"><h3 id="r-cards-title">Cartas</h3><span class="secside"><span class="muted" id="r-cards-sub"></span><span id="r-sanitize"></span></span></div>
         <ul class="pulls" id="r-cards"></ul><div id="r-edits"></div></div>
       <div class="side"><div class="panel"><ul class="steps" id="r-steps"></ul></div><div id="r-video"></div><div id="r-narr"></div><div id="r-yt"></div></div>
     </div>
@@ -398,7 +398,8 @@ function renderRun() {
       <button class="btn ghost" data-action="rerun">Rodar de novo daqui</button></span>
       <button class="btn danger" data-action="delete">Excluir</button>` : ''}</div>`);
   patch($('#r-sub'), `${esc(r.video_name)} · gravado ${dt(r.recorded_at || r.created_at)}${r.sets ? ` · ${r.sets.map(c => `<span class="setref">${setIcon(c, 'seticon small')}${esc(setTitle(c))}</span>`).join(', ')}` : ''}` +
-    `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}` +
+    (r.kind === 'lacrados' ? (r.packs ? ` · ${r.packs} ${r.packs === 1 ? 'booster lacrado' : 'boosters lacrados'}` : '')
+      : `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}`) +
     (r.options?.sealed ? ` · ${r.options.sealed.qty > 1 ? `${r.options.sealed.qty} boosters` : 'booster'} dos lacrados (${esc(setTitle(r.options.sealed.set))})` : ''));
 
   const twins = (r.duplicates || []).map(id => S.runs.find(x => x.id === id) || { id });
@@ -419,9 +420,9 @@ function renderRun() {
     <div class="panel kpi"><small>Valor hoje</small><b class="num">${money(r.value_now)}</b>
       ${r.value_open ? `<div class="${cls(r.value_now - r.value_open)}" style="font-size:13px">${pctTxt(r.value_now, r.value_open)} desde o cadastro</div>` : ''}</div>`);
   else patch($('#r-kpis'), `
-    <div class="panel kpi"><small>Cartas na abertura</small><b class="num">${money(r.value_open)}</b></div>
+    <div class="panel kpi"><small>${r.kind === 'lacrados' ? 'Boosters no registro' : 'Cartas na abertura'}</small><b class="num">${money(r.value_open)}</b></div>
     <div class="panel kpi"><small>Valor hoje</small><b class="num">${money(r.value_now)}</b>
-      ${r.value_open ? `<div class="${cls(r.value_now - r.value_open)}" style="font-size:13px">${pctTxt(r.value_now, r.value_open)} desde a abertura</div>` : ''}</div>
+      ${r.value_open ? `<div class="${cls(r.value_now - r.value_open)}" style="font-size:13px">${pctTxt(r.value_now, r.value_open)} desde ${r.kind === 'lacrados' ? 'o registro' : 'a abertura'}</div>` : ''}</div>
     <div class="panel kpi"><small>Resultado</small><b class="num ${d == null ? '' : cls(d)}">${d == null ? '—' : money(d, true)}</b>
       ${d != null ? `<div class="${cls(d)}" style="font-size:13px">${pctTxt(r.value_now, r.paid_usd)} sobre o valor pago</div>` : ''}</div>`);
   patch($('#r-error'), r.status === 'failed' || r.status === 'interrupted' ? esc(r.error?.[0] || 'A execução foi interrompida.') : '');
@@ -462,6 +463,9 @@ function renderRun() {
 
   const cards = r.cards || [];
   const editable = !active(r);
+  $('#r-cards-title').textContent = r.kind === 'lacrados' ? 'Boosters' : 'Cartas';
+  if (r.kind === 'lacrados') renderPacks(r, editable);
+  else {
   const best = cards.reduce((b, x) => (x.price_now ?? 0) > (b?.price_now ?? -1) ? x : b, null);
   patch($('#r-cards-sub'), !cards.length ? '' : editable ? 'deslize uma carta para editar ou remover' : 'recorte do vídeo ao lado da imagem oficial');
   const nrep = r.repeated || 0;
@@ -503,6 +507,7 @@ function renderRun() {
         : 'Deslize uma carta para a direita para editar ou para a esquerda para remover, depois reprocesse.'}</p>
       <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
     </div>` : '');
+  }
 
   const log = $('#r-log');
   if (log.textContent !== (r.log || '')) {
@@ -511,6 +516,47 @@ function renderRun() {
     if (atEnd) log.scrollTop = log.scrollHeight;
   }
 }
+
+// ---- registro de lacrados: os boosters da pilha, com correção de set, remoção e inclusão ----
+const boosterSets = () => S.meta.sets.filter(x => x.booster).slice().reverse();
+function renderPacks(r, editable) {
+  const packs = r.pack_items || [], removed = r.removed || [], pending = r.status === 'stale';
+  patch($('#r-cards-sub'), packs.length ? (editable ? 'troque o set ou remova o que foi identificado errado' : 'recorte do vídeo') : '');
+  patch($('#r-sanitize'), '');
+  const options = sel => boosterSets().map(x => `<option value="${esc(x.code)}" ${x.code === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  patch($('#r-cards'), packs.length ? packs.map(p => `<li class="packrow">
+      <span class="n">#${p.n}</span>
+      ${p.crop ? `<img loading="lazy" src="${esc(p.crop)}" alt="Recorte do vídeo">` : `<span class="packicon">${setIcon(p.set)}</span>`}
+      <div class="info">
+        <div class="pname">${setIcon(p.set, 'seticon small')}<b>${esc(p.set_name || setTitle(p.set))}</b></div>
+        <div class="line"><span class="price num">${money(p.price_now ?? p.price_open)}</span>
+          <span class="muted">${p.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}s${p.manual ? ' · corrigido' : ''}</span></div>
+        ${editable ? `<div class="packedit"><select data-pack-set="${esc(p.uid)}" aria-label="Set do booster #${p.n}">${options(p.set)}</select>
+          <button class="linkbtn" data-action="remove-pack" data-uid="${esc(p.uid)}">Remover</button></div>` : ''}
+      </div></li>`).join('')
+    : `<p class="muted">${active(r) ? 'Os boosters aparecem aqui quando a identificação terminar.' : 'Nenhum booster identificado.'}</p>`);
+  patch($('#r-edits'), `
+    ${removed.length ? `<div class="removed"><b>Removidos (${removed.length})</b><ul>${removed.map(p => `<li>
+      ${p.crop ? `<img loading="lazy" src="${esc(p.crop)}" alt="">` : '<span class="noimg"></span>'}<span>${esc(p.set_name || setTitle(p.set))}</span>
+      ${editable ? `<button class="btn ghost small" data-action="restore-pack" data-uid="${esc(p.uid)}">Restaurar</button>` : ''}</li>`).join('')}</ul></div>` : ''}
+    ${editable ? `<div class="packadd"><b>Faltou um booster?</b>
+      <select id="pack-add-set" aria-label="Set do booster que faltou">${options(packs.at(-1)?.set)}</select>
+      <input type="number" id="pack-add-t" min="0" step="0.1" placeholder="aos … s" aria-label="Instante do vídeo, em segundos">
+      <button class="btn ghost small" data-action="add-pack">Incluir</button></div>` : ''}
+    <div class="reprocess${pending ? ' pending' : ''}">
+      <p>${active(r) ? 'A pipeline está rodando; os boosters ficam editáveis quando ela terminar.'
+        : pending ? 'Edições pendentes: preços, lacrados e vídeo só mudam depois de reprocessar.'
+        : 'Corrija o set, remova ou inclua boosters e depois reprocesse.'}</p>
+      <button class="btn" data-action="resume" ${pending && editable ? '' : 'disabled'}>Reprocessar com as edições</button>
+    </div>`);
+}
+$('#view-run').addEventListener('change', async ev => {
+  const sel = ev.target.closest('[data-pack-set]');
+  if (!sel) return;
+  try { await api(`/api/runs/${S.runId}/packs/${encodeURIComponent(sel.dataset.packSet)}`, json({ set: sel.value }, 'PATCH')); }
+  catch (e) { alert(e.message); }
+  await refresh();
+});
 
 // ---- narração: liga/desliga e roteiro editável ----
 let videoMode = 'narrated';  // quando as duas versões existem: com ou sem narração
@@ -549,7 +595,7 @@ function scriptRows() {
 }
 function renderNarration(r) {
   const box = $('#r-narr'), nm = S.meta.narration || {};
-  if (r.kind !== 'abertura' || r.options?.overlay === false) { patch(box, ''); return; }
+  if (r.kind === 'cadastro' || r.options?.overlay === false) { patch(box, ''); return; }
   const n = r.narration || { enabled: false, lines: [] };
   const busy = active(r);
   if (!n.enabled) {
@@ -621,6 +667,18 @@ $('#view-run').addEventListener('click', async ev => {
       const uid = encodeURIComponent(target.dataset.uid);
       await api(action === 'remove-card' ? `/api/runs/${id}/cards/${uid}` : `/api/runs/${id}/cards/${uid}/restore`,
                 { method: action === 'remove-card' ? 'DELETE' : 'POST' });
+    }
+    if (action === 'remove-pack' || action === 'restore-pack') {
+      target.disabled = true;
+      const uid = encodeURIComponent(target.dataset.uid);
+      await api(action === 'remove-pack' ? `/api/runs/${id}/packs/${uid}` : `/api/runs/${id}/packs/${uid}/restore`,
+                { method: action === 'remove-pack' ? 'DELETE' : 'POST' });
+    }
+    if (action === 'add-pack') {
+      const t = parseFloat(String($('#pack-add-t').value).replace(',', '.'));
+      if (isNaN(t)) { alert('Informe em que segundo do vídeo o booster aparece.'); return; }
+      target.disabled = true;
+      await api(`/api/runs/${id}/packs`, json({ set: $('#pack-add-set').value, t }));
     }
     if (action === 'sanitize') {
       const n = S.run?.repeated || 0;
@@ -899,11 +957,18 @@ $('#logo-file').onchange = async ev => {
 };
 document.addEventListener('input', ev => { if (ev.target.id === 'sp-when' && S.run) renderSocial(S.run); });
 const newKind = () => document.querySelector('input[name="kind"]:checked').value;
-function applyKind() {  // valor pago, moeda e vídeo só existem na abertura de booster
-  const cadastro = newKind() === 'cadastro';
-  document.querySelectorAll('#new-form .only-abertura').forEach(el => { el.hidden = cadastro; });
+function applyKind() {  // cada campo diz em que tipos de pipeline ele vale (data-kinds)
+  const kind = newKind();
+  document.querySelectorAll('#new-form [data-kinds]').forEach(el => { el.hidden = !el.dataset.kinds.split(' ').includes(kind); });
   if (!sealedBoosters.length) $('#from-sealed-box').hidden = true;
-  $('#send').textContent = cadastro ? 'Enviar e cadastrar' : 'Enviar e processar';
+  const lacrados = kind === 'lacrados';
+  $('#paid-label').textContent = lacrados ? 'Valor pago pelos boosters (total)' : 'Valor pago pelo(s) booster(s)';
+  $('#overlay-label').textContent = lacrados ? 'A etiqueta de cada booster, o total da pilha e o resumo por set'
+    : 'As etiquetas de cada carta, o total do booster e o resumo';
+  if (!S.meta.narration.unavailable) $('#narration-label').textContent = lacrados
+    ? 'Um narrador comenta a pilha de lacrados (voz em português, ~2 min a mais)'
+    : 'Um narrador comenta a abertura sem dar spoiler (voz em português, ~2 min a mais)';
+  $('#send').textContent = kind === 'cadastro' ? 'Enviar e cadastrar' : lacrados ? 'Enviar e registrar' : 'Enviar e processar';
 }
 document.querySelectorAll('input[name="kind"]').forEach(r => r.addEventListener('change', applyKind));
 function pickFile(f) {
@@ -928,14 +993,14 @@ $('#new-form').onsubmit = ev => {
   if (paidRaw && paid == null) { newError('Valor pago inválido.'); return; }
   const kind = newKind();
   const params = new URLSearchParams({ filename: S.file.name, kind, verify: $('#opt-verify').checked });
-  if (kind === 'abertura') {
+  if (kind === 'abertura' || kind === 'lacrados') {
     params.set('paid_currency', newCurrency);
     params.set('overlay', $('#opt-overlay').checked);
     params.set('narration', $('#opt-narration').checked);
     params.set('currency', newCurrency);
     if (paid != null) params.set('paid', paid);
     params.set('logo', $('#opt-logo').checked ? newLogo?.logo || S.meta.logo?.default || '' : '');
-    if ($('#from-sealed').value) { params.set('sealed_id', $('#from-sealed').value); params.set('sealed_qty', $('#from-sealed-qty').value || 1); }
+    if (kind === 'abertura' && $('#from-sealed').value) { params.set('sealed_id', $('#from-sealed').value); params.set('sealed_qty', $('#from-sealed-qty').value || 1); }
   }
   if ($('#new-set').value) params.set('set_hint', $('#new-set').value);
   const xhr = S.xhr = new XMLHttpRequest();
@@ -1659,7 +1724,7 @@ function netRowHtml(r, n) {
 }
 function renderSocial(r) {
   const box = $('#r-yt');
-  if (r.kind !== 'abertura' || !r.overlay) { patch(box, ''); sp.key = null; return; }
+  if (r.kind === 'cadastro' || !r.overlay) { patch(box, ''); sp.key = null; return; }
   if (sp.key !== r.id) {  // o formulário é montado uma vez por pipeline: as atualizações não apagam o que foi digitado
     sp.key = r.id; sp.recent = null; sp.share = null; sp.editing = {};
     const sug = r.post_suggestion || {};

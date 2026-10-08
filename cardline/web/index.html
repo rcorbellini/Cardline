@@ -168,6 +168,9 @@
         <label class="kind"><input type="radio" name="kind" value="cadastro">
           <span><b>Cadastro de coleção</b><small>Para cartas que você já tem: identifica, precifica e registra na
             coleção. Sem valor pago e sem vídeo; as foils você marca na edição.</small></span></label>
+        <label class="kind"><input type="radio" name="kind" value="lacrados">
+          <span><b>Registro de lacrados</b><small>Para boosters fechados: filme colocando um por um na pilha. Identifica
+            o set de cada um, registra nos lacrados com o preço de mercado e gera o vídeo com o painel de valor.</small></span></label>
       </fieldset>
       <label class="drop" id="drop">
         <input type="file" id="file" accept="video/*" hidden>
@@ -175,36 +178,36 @@
         <span id="drop-sub" class="muted">MP4 ou MOV, como sai da câmera do celular</span>
       </label>
       <div class="fields">
-        <label class="wide only-abertura" id="from-sealed-box" hidden>Booster dos lacrados
+        <label class="wide" data-kinds="abertura" id="from-sealed-box" hidden>Booster dos lacrados
           <span class="inline"><select id="from-sealed"><option value="">Nenhum: não veio dos lacrados</option></select>
           <input type="number" id="from-sealed-qty" min="1" value="1" aria-label="Quantos boosters" hidden></span>
           <small class="muted" id="from-sealed-note">Escolha um booster fechado da coleção: o valor pago e o set vêm dele, e ele sai do estoque.</small>
         </label>
-        <div class="wide only-abertura curfield"><span>Moeda</span>
+        <div class="wide curfield" data-kinds="abertura lacrados"><span>Moeda</span>
           <span class="seg" role="group" aria-label="Moeda"><button type="button" data-newcur="BRL" aria-pressed="true">R$ (real)</button><button type="button" data-newcur="USD" aria-pressed="false">US$ (dólar)</button></span>
           <small class="muted">Escolhida uma vez: vale para o valor pago e para os preços no vídeo.</small>
         </div>
-        <label class="wide only-abertura">Valor pago pelo(s) booster(s)
+        <label class="wide" data-kinds="abertura lacrados"><span id="paid-label">Valor pago pelo(s) booster(s)</span>
           <span class="inline"><span class="curtag" id="paid-cur">R$</span><input type="text" id="paid" inputmode="decimal" placeholder="ex.: 34,90"></span>
           <small class="muted">Se o vídeo tiver mais de um booster, informe o total. Pode deixar em branco e preencher depois.</small>
         </label>
-        <label>Set das cartas
+        <label data-kinds="abertura cadastro">Set das cartas
           <select id="new-set"><option value="">Detectar automaticamente</option></select>
         </label>
       </div>
       <div class="options">
-        <label class="switchrow only-abertura"><span><b>Vídeo com overlay de preços</b><small>As etiquetas de cada carta, o total do booster e o resumo</small></span>
+        <label class="switchrow" data-kinds="abertura lacrados"><span><b>Vídeo com overlay de preços</b><small id="overlay-label">As etiquetas de cada carta, o total do booster e o resumo</small></span>
           <input type="checkbox" role="switch" class="switch" id="opt-overlay" checked></label>
-        <div class="switchrow only-abertura logoopt">
+        <div class="switchrow logoopt" data-kinds="abertura lacrados">
           <img id="logo-preview" alt="Logo escolhido" hidden>
           <span><label for="opt-logo"><b>Logo no vídeo</b></label><small id="logo-label">Semitransparente, num canto, da capa ao resumo ·
             <button type="button" class="linkbtn" id="logo-change">Trocar logo</button> <button type="button" class="linkbtn" id="logo-default" hidden>Usar o padrão</button></small></span>
           <input type="checkbox" role="switch" class="switch" id="opt-logo">
           <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" hidden>
         </div>
-        <label class="switchrow only-abertura"><span><b>Narrar o vídeo</b><small id="narration-label"></small></span>
+        <label class="switchrow" data-kinds="abertura lacrados"><span><b>Narrar o vídeo</b><small id="narration-label"></small></span>
           <input type="checkbox" role="switch" class="switch" id="opt-narration"></label>
-        <label class="switchrow"><span><b>Conferir cada carta com IA local</b><small id="verify-label"></small></span>
+        <label class="switchrow" data-kinds="abertura cadastro"><span><b>Conferir cada carta com IA local</b><small id="verify-label"></small></span>
           <input type="checkbox" role="switch" class="switch" id="opt-verify"></label>
       </div>
       <div class="actions">

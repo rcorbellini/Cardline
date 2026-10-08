@@ -213,10 +213,13 @@ def timeline(settings: Settings, run, folder: Path) -> Timeline:
     meta = timing(folder / "overlay.mp4")
     intro = meta.get("intro", 0.0)
     end = meta.get("end") or probe(folder / "overlay.mp4").duration
-    total = sum(c.get("price_usd") or 0 for c in scan["cards"])
+    items = scan["cards"]
+    if scan.get("kind") == "lacrados":  # cada booster da pilha faz o papel de uma carta
+        items = [{**p, "card_id": f"booster:{p['set']}", "foil": False, "rarity": None, "pack": 1} for p in scan["packs"]]
+    total = sum(c.get("price_usd") or 0 for c in items)
     return Timeline(
-        cards=[{**c, "t": c["t"] + intro} for c in scan["cards"]], summary=meta.get("summary") or max(0.0, end - settings.outro_seconds),
-        end=end, packs=max((c["pack"] or 1 for c in scan["cards"]), default=1), paid=run["paid"],
+        cards=[{**c, "t": c["t"] + intro} for c in items], summary=meta.get("summary") or max(0.0, end - settings.outro_seconds),
+        end=end, packs=max((c["pack"] or 1 for c in items), default=1), paid=run["paid"],
         paid_currency=run["paid_currency"], result=(total - run["paid_usd"]) / run["paid_usd"] if run["paid_usd"] else None,
         intro=intro,
     )
@@ -362,6 +365,47 @@ def plan(tl: Timeline, jokes: dict[int, str], rng: random.Random, max_jokes: int
         placed.remove(last)
     placed.append((start, start + estimate(ending), ending, "desfecho"))
     return [{"t": round(p[0], 2), "texto": p[2], "tipo": p[3]} for p in sorted(placed)]
+
+
+# lacrados: não é abertura, é inventário (sem piadas de carta; os nomes dos sets em inglês a voz erra)
+SEALED_INTROS = ["{pago} em boosters lacrados. Hoje ninguém abre nada.", "{pago}. {n} boosters. Hora de contar o estoque."]
+SEALED_INTROS_FREE = ["{n} boosters lacrados. Hoje ninguém abre nada.", "Hoje não é abertura. É inventário."]
+SEALED_LINES = ["E vai pra pilha.", "A pilha só cresce.", "Esse eu não abro... por enquanto.", "Resistindo à tentação.",
+                "Calma, é só pra contar.", "Lacrado e bonito.", "Mais um pro estoque."]
+SEALED_REPEAT = "Mais um do mesmo set? Tá virando coleção."
+SEALED_ENDINGS = {
+    "profit": ["Vale mais do que eu paguei. Agora ninguém abre!"],
+    "loss": ["Vale menos do que eu paguei... melhor abrir logo."],
+    "even": ["Empatou. A pilha não engana."],
+    "unknown": ["E essa é a pilha. Agora é resistir à tentação."],
+}
+
+
+def write_sealed_script(tl: Timeline, seed: int) -> dict:
+    """Roteiro do registro de lacrados: a abertura na capa, um comentário a cada poucos boosters e o desfecho."""
+    rng = random.Random(seed)
+    n = spell(str(len(tl.cards))).capitalize()
+    if tl.paid:
+        intro = rng.choice(SEALED_INTROS).format(pago=money_words(tl.paid, tl.paid_currency or "BRL").capitalize(), n=n)
+    else:
+        intro = rng.choice(SEALED_INTROS_FREE).format(n=n)
+    lines, busy = [{"t": 0.2, "texto": intro, "tipo": "abertura"}], 0.2 + estimate(intro)
+    pool, seen, repeated = rng.sample(SEALED_LINES, len(SEALED_LINES)), {}, False
+    for c in tl.cards:
+        seen[c["set"]] = seen.get(c["set"], 0) + 1
+        repeat = seen[c["set"]] == 3 and not repeated  # o terceiro do mesmo set, uma vez só no vídeo
+        text = SEALED_REPEAT if repeat else pool[0] if pool else None
+        start = c["t"] + 0.3
+        if text and start >= busy + 2.5 and start + estimate(text) < tl.summary:  # espaçado: a pilha é o show
+            lines.append({"t": round(start, 2), "texto": text, "tipo": "piada" if text == SEALED_REPEAT else "reacao"})
+            busy = start + estimate(text)
+            if text == SEALED_REPEAT:
+                repeated = True
+            else:
+                pool.pop(0)
+    ending = rng.choice(SEALED_ENDINGS[tl.outcome])
+    lines.append({"t": round(max(tl.summary + 0.7, busy + GAP), 2), "texto": ending, "tipo": "desfecho"})
+    return {"source": "auto", "writer": None, "seed": seed, "fingerprint": fingerprint(tl), "intro": tl.intro, "lines": lines}
 
 
 def write_script(settings: Settings, tl: Timeline, seed: int, progress) -> dict:
@@ -729,7 +773,9 @@ def narrate(settings: Settings, run, folder: Path, progress) -> str:
         script = follow_intro(folder, script, tl.intro)
     if script is None or (script["source"] == "auto" and script.get("fingerprint") != fingerprint(tl)):
         progress(0.01, "Escrevendo o roteiro")
-        script = write_script(settings, tl, script["seed"] if script else run["id"], progress)
+        seed = script["seed"] if script else run["id"]
+        script = (write_sealed_script(tl, seed) if run["kind"] == "lacrados"
+                  else write_script(settings, tl, seed, progress))
         save_script(folder, script)
     clips = voice_lines(settings, folder, script["lines"], progress, script.get("voz"))
     if None in clips:  # a voz não acertou alguma piada: ela sai do roteiro (a página mostra o que ficou)

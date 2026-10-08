@@ -175,3 +175,17 @@ def suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> d
                "#lorcana #disneylorcana #tcg #booster")
     return {"title": title[:100], "caption": caption, "tags": list(dict.fromkeys([*tags, *sets])),
             "hashtags": HASHTAGS}
+
+
+def sealed_suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> dict:
+    """Título e legenda do vídeo de registro de lacrados (sem o valor: ele aparece no fim do vídeo)."""
+    n = len(scan.get("packs", []))
+    sets = list(dict.fromkeys(set_names.get(p["set"], f"set {p['set']}") for p in scan.get("packs", [])))
+    what = "um booster lacrado" if n == 1 else f"{n} boosters lacrados"
+    title = f"Contando {what} | Disney Lorcana"
+    caption = (f"Registro de {what} de Disney Lorcana: {', '.join(sets[:6])}{' e outros' if len(sets) > 6 else ''}.\n"
+               "Preço de mercado de cada booster (TCGplayer) no dia do registro. Quanto vale a pilha?\n\n"
+               "#lorcana #disneylorcana #tcg #booster #lacrado")
+    return {"title": title[:100], "caption": caption, "tags": list(dict.fromkeys([*tags, *sets, "lacrado"])),
+            "hashtags": HASHTAGS}
+

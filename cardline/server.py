@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, instagram, jobs as job_log, logo, narration, pipeline, rarity, sealed, social, youtube
+from . import packs as packs_mod
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
 from .config import Settings
@@ -174,6 +175,11 @@ class SealedPatch(BaseModel):
     qty: int | None = None
     paid: float | None = None  # por unidade; null apaga
     paid_currency: str | None = None
+
+
+class PackBody(BaseModel):
+    set: str  # o set do booster (registro de lacrados)
+    t: float | None = None  # só para incluir um booster que faltou: o instante no vídeo
 
 
 class RerunBody(BaseModel):
@@ -416,8 +422,9 @@ def create_app(settings: Settings) -> FastAPI:
         url = f"/runs/{folder.name}"
         scan = load_scan(folder) if (folder / "scan.json").exists() else None
         cards = scan["cards"] if scan else []
+        boosters = scan.get("packs", []) if scan else []  # registro de lacrados: os boosters da pilha
         repeats = repeated(cards)
-        removed = scan.get("removed", []) if scan else []
+        removed = scan.get("removed", []) if scan and run["kind"] != "lacrados" else []  # lacrados: boosters removidos
         ids = sorted({x["card_id"] for x in cards + removed})
         rows = {r["id"]: r for r in c.execute(
             f"SELECT * FROM cards WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else {}
@@ -441,9 +448,14 @@ def create_app(settings: Settings) -> FastAPI:
             "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
             "posts": social.posts(c, run["id"]), "post_jobs": jobs.of(run["id"]), "scheduled": social.scheduled(c, run["id"]),
             "duplicates": (duplicates(c) if dups is None else dups).get(run["id"], []), "repeated": len(repeats),
-            "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
+            "steps": [{"name": n, "label": pipeline.label(run["kind"], n), **{k: steps.get(n, {}).get(k) for k in
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
         }
+        if run["kind"] == "lacrados":
+            now = {r["set_code"]: r["usd"] for r in c.execute("SELECT set_code, usd FROM sealed WHERE run_id = ?", (run["id"],))}
+            out.update(packs=len(boosters), thumbs=[f"{url}/{p['crop']}" for p in boosters if p.get("crop")][:24],
+                       value_open=sum(p.get("price_usd") or 0 for p in boosters) if any("price_usd" in p for p in boosters) else None,
+                       value_now=sum(now.get(p["set"]) or p.get("price_usd") or 0 for p in boosters) if boosters else None)
         if detail:
             out["cards"] = [
                 {
@@ -462,13 +474,22 @@ def create_app(settings: Settings) -> FastAPI:
                 for x in removed
             ]
             out["card_info"] = {cid: card_json(r) for cid, r in rows.items()}
+            if run["kind"] == "lacrados":
+                now = {r["set_code"]: r["usd"] for r in c.execute("SELECT set_code, usd FROM sealed WHERE run_id = ?", (run["id"],))}
+                pack_json = lambda p: {"uid": p["uid"], "set": p["set"], "set_name": p.get("set_name"), "t": p["t"],  # noqa: E731
+                                       "price_open": p.get("price_usd"), "price_now": now.get(p["set"]) or p.get("price_usd"),
+                                       "crop": f"{url}/{p['crop']}" if p.get("crop") else None, "inliers": p.get("inliers"),
+                                       "manual": p.get("manual", False)}
+                out["pack_items"] = [{"n": n, **pack_json(p)} for n, p in enumerate(boosters, 1)]
+                out["removed"] = [pack_json(p) for p in (scan or {}).get("removed", [])]
             script = narration.load_script(folder) or {}
             out["narration"] = {"enabled": bool(json.loads(run["options"]).get("narration")),
                                 "lines": script.get("lines", []), "source": script.get("source"),
                                 "writer": script.get("writer"), "voz": script.get("voz") or settings.narration_voice}
-            if scan and run["kind"] == "abertura":
+            if scan and run["kind"] in pipeline.VIDEO_KINDS:
                 names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
-                out["post_suggestion"] = social.suggestion(scan, names, settings.youtube_tags)
+                out["post_suggestion"] = (social.sealed_suggestion(scan, names, settings.youtube_tags) if run["kind"] == "lacrados"
+                                          else social.suggestion(scan, names, settings.youtube_tags))
             log = folder / "pipeline.log"
             lines = log.read_text(errors="replace").splitlines()[-120:] if log.exists() else []
             out["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in lines)
@@ -654,6 +675,60 @@ def create_app(settings: Settings) -> FastAPI:
             pipeline.mark_stale(settings, run_id, "prices")
         return {"ok": True}
 
+    def set_name(code: str) -> str:
+        row = con().execute("SELECT name FROM sets WHERE code = ?", (code,)).fetchone()
+        if row is None:
+            raise HTTPException(400, "Set desconhecido.")
+        return row["name"]
+
+    def pack_run(run_id: int) -> Path:
+        folder = editable_run(run_id)
+        if con().execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()["kind"] != "lacrados":
+            raise HTTPException(400, "Só o registro de lacrados tem boosters para editar.")
+        return folder
+
+    @app.delete("/api/runs/{run_id}/packs/{uid}")
+    def delete_pack(run_id: int, uid: str):
+        """Tira um booster identificado errado; vale para os lacrados e o vídeo ao reprocessar."""
+        with edit_lock:
+            try:
+                packs_mod.remove_pack(pack_run(run_id), uid)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            pipeline.mark_stale(settings, run_id, "prices")
+        return {"ok": True}
+
+    @app.post("/api/runs/{run_id}/packs/{uid}/restore")
+    def restore_pack(run_id: int, uid: str):
+        with edit_lock:
+            try:
+                packs_mod.restore_pack(pack_run(run_id), uid)
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            pipeline.mark_stale(settings, run_id, "prices")
+        return {"ok": True}
+
+    @app.patch("/api/runs/{run_id}/packs/{uid}")
+    def edit_pack(run_id: int, uid: str, body: PackBody):
+        """Corrige o set de um booster (o preço é refeito ao reprocessar)."""
+        with edit_lock:
+            try:
+                packs_mod.set_pack(pack_run(run_id), uid, body.set, set_name(body.set))
+            except LookupError as e:
+                raise HTTPException(404, str(e)) from e
+            pipeline.mark_stale(settings, run_id, "prices")
+        return {"ok": True}
+
+    @app.post("/api/runs/{run_id}/packs")
+    def add_pack(run_id: int, body: PackBody):
+        """Inclui um booster que a identificação não pegou, no instante t do vídeo."""
+        if body.t is None or body.t < 0:
+            raise HTTPException(400, "Informe o instante do vídeo em que o booster aparece.")
+        with edit_lock:
+            uid = packs_mod.add_pack(pack_run(run_id), body.set, set_name(body.set), body.t)
+            pipeline.mark_stale(settings, run_id, "prices")
+        return {"ok": True, "uid": uid}
+
     @app.post("/api/runs/{run_id}/sanitize")
     def sanitize(run_id: int):
         """Tira as cartas repetidas, deixando a primeira aparição de cada uma; vale ao reprocessar."""
@@ -821,8 +896,8 @@ def create_app(settings: Settings) -> FastAPI:
         run = con().execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         if run is None:
             raise HTTPException(404, "Pipeline não encontrada.")
-        if run["kind"] != "abertura":
-            raise HTTPException(400, "Só aberturas de booster têm vídeo para postar.")
+        if run["kind"] not in pipeline.VIDEO_KINDS:
+            raise HTTPException(400, "Só aberturas de booster e registros de lacrados têm vídeo para postar.")
         return run
 
     def video_of(run, variant: str) -> tuple[Path, str]:

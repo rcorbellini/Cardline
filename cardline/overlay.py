@@ -241,7 +241,7 @@ class Overlay:
         version = c.get("version") or ""
         price = self.money.fmt(c.get("price_usd"))
         m = Sprite(1, 1)  # só para medir texto
-        badge_text = rarity.label(c["rarity"]).upper()
+        badge_text, accent = self._badge(c)
         badge_w = m.textlen(badge_text, "SemiBold", 21 * u) + 28 * u
         foil_w = m.textlen("FOIL", "Bold", 21 * u) + 36 * u if c.get("foil") else 0
         price_w = m.textlen(price, "ExtraBold", 58 * u)
@@ -260,7 +260,6 @@ class Overlay:
         s = Sprite(w + 2 * shadow, h + 2 * shadow)
         ox, oy = shadow, shadow
         s.rrect([ox, oy, ox + w, oy + h], 28 * u, fill=PANEL)
-        accent = rgba(rarity.color(c["rarity"]))
         s.rrect([ox, oy, ox + 12 * u, oy + h], 6 * u, fill=accent)
         x = ox + pad + 14 * u
         y = oy + 22 * u
@@ -274,6 +273,10 @@ class Overlay:
             s.text((x, y + 50 * u + name_size * 1.2), version, "Medium", 27 * u, MUTED)
         s.text((ox + w - pad, oy + h / 2), price, "ExtraBold", 58 * u, price_color(c.get("price_usd")), anchor="rm")
         return s.done(shadow=10 * u)
+
+    def _badge(self, c: dict) -> tuple[str, tuple]:
+        """Selo da etiqueta: a raridade da carta, na cor dela."""
+        return rarity.label(c["rarity"]).upper(), rgba(rarity.color(c["rarity"]))
 
     def _flyer(self, c: dict) -> Image.Image | None:
         if c.get("price_usd") is None:
@@ -604,27 +607,182 @@ class Overlay:
         return s.done(shadow=16 * u)
 
 
+class SealedOverlay(Overlay):
+    """Vídeo do registro de lacrados: cada booster colocado na pilha ganha a etiqueta com o set e o preço; o
+    painel do topo conta os boosters e soma o valor; a capa mostra os sets e o resumo agrupa por set."""
+
+    def __init__(self, scan: dict, money: Money, size: tuple[int, int], paid_usd: float | None = None,
+                 icons: dict[str, Image.Image] | None = None, names: dict[str, str] | None = None,
+                 paid: tuple[float, str] | None = None, intro: float = 0.0, logo: Image.Image | None = None,
+                 logo_corner: str = "top-right", logo_opacity: float = 0.6):
+        names = names or {}
+        packs = [{**p, "name": p.get("set_name") or names.get(p["set"], f"Set {p['set']}"), "version": None,
+                  "rarity": None, "foil": False, "pack": 1} for p in scan["packs"]]
+        super().__init__({"cards": packs}, money, size, max(1, len(packs)), paid_usd, icons, names, paid, intro,
+                         logo, logo_corner, logo_opacity)
+
+    def _badge(self, c: dict) -> tuple[str, tuple]:
+        return "BOOSTER", GOLD
+
+    def _sets_in_order(self) -> list[str]:
+        """Os sets na ordem em que aparecem no vídeo, cada um uma vez."""
+        return list(dict.fromkeys(c["set"] for c in self.cards))
+
+    def _sealed_hud(self, code: str | None, shown: int, total_text: str) -> Image.Image:
+        key = ("lacrados", code, shown, total_text)
+        if key in self._hud_cache:
+            return self._hud_cache[key]
+        u = self.u
+        h = 150 * u
+        icon = self._set_icon(code, h - 26 * u) if code else None
+        lead = icon.width + 14 * u if icon else 0
+        w = 660 * u + lead
+        shadow = 18 * u
+        s = Sprite(w + 2 * shadow, h + 2 * shadow)
+        ox, oy = shadow, shadow
+        s.rrect([ox, oy, ox + w, oy + h], 32 * u, fill=PANEL, outline=(242, 193, 78, 120), width=2 * u)
+        if icon:
+            s.paste(icon, (ox + 20 * u, oy + (h - icon.height) / 2))
+        x0 = ox + 30 * u + lead
+        s.text((x0, oy + 34 * u), "LACRADOS", "SemiBold", 25 * u, GOLD)
+        s.text((x0, oy + 72 * u), f"{shown} {'booster' if shown == 1 else 'boosters'}", "Medium", 27 * u, MUTED)
+        s.text((ox + w - 30 * u, oy + h / 2), total_text, "ExtraBold", 62 * u, WHITE, anchor="rm")
+        img = s.done(shadow=12 * u)
+        self._hud_cache[key] = img
+        return img
+
+    def _hud_at(self, t: float) -> tuple[Image.Image, float, float, float, list[int]]:
+        everything = list(range(len(self.cards)))
+        shown = [k for k in everything if self.cards[k]["t"] <= t]
+        code = self.cards[shown[-1]]["set"] if shown else (self.cards[0]["set"] if self.cards else None)
+        hud = self._sealed_hud(code, len(shown), self.money.fmt(self._total_at(t, shown)))
+        pulse = 1.0
+        for k in shown:
+            x = (t - self.arrive[k]) / PULSE
+            if 0 <= x <= 1 and self.cards[k].get("price_usd"):
+                pulse = 1 + 0.06 * math.sin(math.pi * x)
+        return hud, self.W / 2, 56 * self.u + hud.height / 2 - 18 * self.u, pulse, everything
+
+    def _hud_icon(self) -> tuple[float, float, float]:
+        u = self.u
+        hud, cx, cy, _, _ = self._hud_at(0.0)
+        h = 150 * u
+        icon = self._set_icon(self.cards[0]["set"], h - 26 * u)
+        shadow = 18 * u
+        return cx - hud.width / 2 + shadow + 20 * u + icon.width / 2, cy - hud.height / 2 + shadow + h / 2, icon.height
+
+    def _cover_sprites(self) -> dict:
+        """Capa: os boosters dos primeiros sets em leque e o painel com quantos são (o valor fica para o fim)."""
+        if self._cover is not None:
+            return self._cover
+        n = len(self.cards)
+        sets = self._sets_in_order()
+        self.pack_set = {i + 1: code for i, code in enumerate(sets[:3])}  # a capa da abertura usa o mapa booster→set
+        cover = super()._cover_sprites()
+        u, W = self.u, self.W
+        lines = [("REGISTRO DE LACRADOS", "SemiBold", 30 * u, GOLD),
+                 (f"{n} {'booster' if n == 1 else 'boosters'}", "ExtraBold", 96 * u, WHITE),
+                 (f"{len(sets)} {'set' if len(sets) == 1 else 'sets'}", "SemiBold", 34 * u, MUTED)]
+        if self.paid:
+            lines.append((f"pago {Money(self.paid[1]).fmt(self.paid[0])}", "SemiBold", 34 * u, WHITE))
+        m = Sprite(1, 1)
+        pad, gap = 44 * u, 16 * u
+        w = min(W * 0.88, max(560 * u, max(m.textlen(t, wt, sz) for t, wt, sz, _ in lines) + 2 * pad))
+        h = 2 * pad + sum(sz for _, _, sz, _ in lines) + gap * (len(lines) - 1)
+        shadow = 24 * u
+        s = Sprite(w + 2 * shadow, h + 2 * shadow)
+        s.rrect([shadow, shadow, shadow + w, shadow + h], 36 * u, fill=(10, 14, 32, 236), outline=(242, 193, 78, 150),
+                width=2 * u)
+        y = shadow + pad
+        for text, weight, size, color in lines:
+            s.text((shadow + w / 2, y + size / 2), text, weight, size, color, anchor="mm")
+            y += size + gap
+        cover["panel"] = s.done(shadow=16 * u)
+        main, gap = cover["images"][0], 36 * u  # recentraliza com o painel novo (outra altura)
+        top = (self.H - (main.height + gap + cover["panel"].height)) / 2
+        cover.update(cy=top + main.height / 2, panel_cy=top + main.height + gap + cover["panel"].height / 2)
+        self.pack_set = {1: self.cards[0]["set"]} if self.cards else {}
+        return cover
+
+    def summary(self) -> Image.Image:
+        """Resumo: o total, quantos boosters e, por set, quantos e quanto valem (do que vale mais)."""
+        u = self.u
+        groups: dict[str, list[dict]] = {}
+        for c in self.cards:
+            groups.setdefault(c["set"], []).append(c)
+        rows = sorted(groups.items(), key=lambda kv: -sum(c.get("price_usd") or 0 for c in kv[1]))
+        extra = max(0, len(rows) - 12)
+        rows = rows[:12]
+        w = min(940 * u, self.W - 2 * self.margin)
+        row_h = 62 * u
+        head = 210 * u + (48 * u if self.paid_usd else 0)
+        h = head + len(rows) * row_h + (50 * u if extra else 0) + 40 * u
+        shadow = 24 * u
+        s = Sprite(w + 2 * shadow, h + 2 * shadow)
+        ox, oy = shadow, shadow
+        s.rrect([ox, oy, ox + w, oy + h], 36 * u, fill=(10, 14, 32, 242), outline=(242, 193, 78, 150), width=2 * u)
+        s.text((ox + w / 2, oy + 46 * u), "RESUMO DOS LACRADOS", "SemiBold", 28 * u, GOLD, anchor="mm")
+        total = sum(c.get("price_usd") or 0 for c in self.cards)
+        s.text((ox + w / 2, oy + 112 * u), self.money.fmt(total), "ExtraBold", 80 * u, WHITE, anchor="mm")
+        n = len(self.cards)
+        s.text((ox + w / 2, oy + 168 * u), f"{n} {'booster' if n == 1 else 'boosters'} · {len(groups)} "
+               f"{'set' if len(groups) == 1 else 'sets'}", "Medium", 24 * u, MUTED, anchor="mm")
+        if self.paid_usd:
+            diff = total - self.paid_usd
+            pct = f" ({diff / self.paid_usd * 100:+.0f}%)".replace("-", "−")
+            line = f"pago {self.money.fmt(self.paid_usd)}  ·  resultado {self.money.fmt(diff, sign=True)}{pct}"
+            color = rgba("#5BE49B") if diff >= 0 else rgba("#FF7A7A")
+            s.text((ox + w / 2, oy + head - 34 * u), line, "SemiBold", 25 * u, color, anchor="mm")
+        y = oy + head
+        for i, (code, items) in enumerate(rows):
+            if i == 0:
+                s.rrect([ox + 18 * u, y + 3 * u, ox + w - 18 * u, y + row_h - 3 * u], 18 * u,
+                        fill=(242, 193, 78, 38), outline=(242, 193, 78, 200), width=2 * u)
+            mid = y + row_h / 2
+            icon = self._set_icon(code, 48 * u)
+            s.paste(icon, (ox + 40 * u, mid - icon.height / 2))
+            value = sum(c.get("price_usd") or 0 for c in items)
+            price = self.money.fmt(value)
+            price_w = s.textlen(price, "Bold", 32 * u)
+            name = f"{items[0]['name']}  ×{len(items)}"
+            room = w - 120 * u - price_w - 40 * u
+            while s.textlen(name, "SemiBold", 29 * u) > room and len(name) > 4:
+                name = name[:-2].rstrip() + "…"
+            s.text((ox + 100 * u, mid), name, "SemiBold", 29 * u, WHITE, anchor="lm")
+            s.text((ox + w - 40 * u, mid), price, "Bold", 32 * u, price_color(value), anchor="rm")
+            y += row_h
+        if extra:
+            s.text((ox + w / 2, y + 25 * u), f"+ {extra} sets", "Medium", 24 * u, MUTED, anchor="mm")
+        return s.done(shadow=16 * u)
+
+
 def render(
     settings: Settings, scan: dict, out: Path, money: Money, progress: Progress, paid_usd: float | None = None,
     paid: float | None = None, paid_currency: str | None = None, logo: Image.Image | None = None,
 ) -> Path:
     """Gera o vídeo com overlay e, ao lado, a capa (`.jpg`) e os tempos (`.json`: capa, resumo e fim)."""
-    if not scan["cards"]:
-        raise RuntimeError("Nenhuma carta identificada; nada para sobrepor.")
+    sealed = scan.get("kind") == "lacrados"
+    if not (scan["packs"] if sealed else scan["cards"]):
+        raise RuntimeError("Nenhum booster identificado; nada para sobrepor." if sealed
+                           else "Nenhuma carta identificada; nada para sobrepor.")
     video = settings.root / scan["video"]
     info = probe(video)
     size = info.scaled(settings.output_short_side)
     con = db.connect(settings.db_path)
-    codes = sorted({c["set"] for c in scan["cards"]})
+    codes = sorted({c["set"] for c in (scan["packs"] if sealed else scan["cards"])})
     icons, names = {}, {}
     for r in con.execute(f"SELECT code, name, icon FROM sets WHERE code IN ({','.join('?' * len(codes))})", codes):
         names[r["code"]] = r["name"]
         if r["icon"] and (settings.root / r["icon"]).exists():
             icons[r["code"]] = Image.open(settings.root / r["icon"]).convert("RGBA")
     intro = max(0.0, settings.intro_seconds)
-    ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons, names,
-                 (paid, paid_currency or "BRL") if paid else None, intro, logo,
-                 settings.logo_corner if settings.logo_corner in CORNERS else CORNERS[0], settings.logo_opacity)
+    corner = settings.logo_corner if settings.logo_corner in CORNERS else CORNERS[0]
+    paid_as = (paid, paid_currency or "BRL") if paid else None
+    if sealed:
+        ov = SealedOverlay(scan, money, size, paid_usd, icons, names, paid_as, intro, logo, corner, settings.logo_opacity)
+    else:
+        ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons, names, paid_as, intro, logo, corner,
+                     settings.logo_opacity)
     tmp = out.with_name(out.stem + ".imagem.part.mp4")  # o vídeo anterior continua válido até o novo ficar pronto
     writer = VideoWriter(tmp, size, FPS)  # o som entra depois, misturado com o "ka-ching" de cada carta
     written = 0
@@ -683,7 +841,7 @@ def render(
     # a soma alcança o valor pago
     progress(0.97, "Misturando o som")
     celebration = ov.celebration_time()
-    effects = {"sounds": [round(intro + c["t"], 3) for c in scan["cards"]] if settings.card_sound_volume > 0 else [],
+    effects = {"sounds": [round(intro + c["t"], 3) for c in ov.cards] if settings.card_sound_volume > 0 else [],
                "sound_volume": settings.card_sound_volume,
                "celebration": round(intro + celebration, 3) if celebration is not None and settings.celebration_volume > 0 else None,
                "celebration_volume": settings.celebration_volume}

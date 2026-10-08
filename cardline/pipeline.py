@@ -50,11 +50,19 @@ LABELS = dict(STEPS)
 KINDS = {
     "abertura": ("Abertura de booster", STEP_NAMES),
     "cadastro": ("Cadastro de coleção", [n for n in STEP_NAMES if n not in ("overlay", "narrate")]),
+    "lacrados": ("Registro de lacrados", [n for n in STEP_NAMES if n != "verify"]),
 }
+KIND_LABELS = {"lacrados": {"scan": "Identificar boosters", "prices": "Preço dos boosters", "commit": "Registrar nos lacrados"}}
+VIDEO_KINDS = ("abertura", "lacrados")  # os tipos que geram vídeo com overlay (e podem ir para as redes)
 
 
 def steps_for(kind: str) -> list[str]:
     return KINDS[kind][1]
+
+
+def label(kind: str, step: str) -> str:
+    """O nome do passo neste tipo de pipeline (o scan dos lacrados identifica boosters, não cartas)."""
+    return KIND_LABELS.get(kind, {}).get(step, LABELS[step])
 
 
 DEFAULT_VERIFY_MODEL = "qwen3.5:4b"
@@ -115,6 +123,8 @@ def create_run(
         raise ValueError(f"Tipo de pipeline desconhecido: {kind}")
     if kind == "cadastro":  # sem compra e sem vídeo de saída
         paid, overlay = None, False
+    if kind == "lacrados":
+        verify = False  # a conferência com IA lê cartas
     narration = narration and overlay  # narra o vídeo com overlay
     con = db.connect(settings.db_path)
     sha1 = sha1 or sha1_file(video)
@@ -196,6 +206,14 @@ def _scan(ctx: RunContext) -> str:
     from .scan import scan_video
 
     run = ctx.run
+    if run["kind"] == "lacrados":
+        from .packs import scan_video as scan_packs
+
+        result = scan_packs(ctx.settings, ctx.settings.root / run["video"], ctx.dir, ctx.progress)
+        with ctx.con:
+            ctx.con.execute("UPDATE runs SET recorded_at = ? WHERE id = ?", (result["recorded_at"], ctx.run_id))
+        n = len(result["packs"])
+        return f"{n} {'booster' if n == 1 else 'boosters'} · {len(result['sets'])} {'set' if len(result['sets']) == 1 else 'sets'}"
     sets = [s.strip() for s in run["set_hint"].split(",")] if run["set_hint"] else None
     result = scan_video(ctx.settings, ctx.settings.root / run["video"], ctx.dir, sets, ctx.progress, run["kind"])
     with ctx.con:
@@ -239,6 +257,18 @@ def _prices(ctx: RunContext) -> str:
     depois (trocada, inserida, foil corrigida) recebe o preço do dia da abertura, se houver histórico.
     """
     scan = load_scan(ctx.dir)
+    if ctx.run["kind"] == "lacrados":
+        from .sealed import price_packs
+
+        kept, missing = price_packs(ctx.settings, ctx.con, scan, ctx.progress)
+        save_scan(ctx.dir, scan)
+        total = sum(p.get("price_usd") or 0 for p in scan["packs"])
+        msg = f"boosters valiam {money_for(ctx.settings, 'USD').fmt(total)} no registro"
+        if kept:
+            msg += f" ({kept} com o preço do registro mantido)"
+        if missing:
+            msg += f" · sem preço agora para o set {', '.join(missing)}"
+        return msg
     fetched_at, offline = db.now(), []
     for code in sorted({c["set"] for c in scan["cards"]}):
         ctx.progress(None, f"Buscando preços atuais do set {code}")
@@ -271,6 +301,11 @@ def _prices(ctx: RunContext) -> str:
 
 def _commit(ctx: RunContext) -> str:
     scan = load_scan(ctx.dir)
+    if ctx.run["kind"] == "lacrados":
+        from .sealed import register_packs
+
+        n = register_packs(ctx.settings, ctx.con, ctx.run_id, scan, ctx.run["paid"], ctx.run["paid_currency"])
+        return f"{n} {'booster registrado' if n == 1 else 'boosters registrados'} nos lacrados"
     register(ctx.con, ctx.run_id, scan)
     db.record_value(ctx.con)
     return f"{len(scan['cards'])} cartas registradas na coleção"
@@ -341,10 +376,11 @@ def execute(settings: Settings, run_id: int, from_step: str | None = None) -> bo
     for name in todo:
         ctx.step, ctx._last = name, 0.0
         with con:
-            con.execute("UPDATE runs SET step = ?, progress = 0, message = ? WHERE id = ?", (name, LABELS[name], run_id))
+            con.execute("UPDATE runs SET step = ?, progress = 0, message = ? WHERE id = ?",
+                        (name, label(run["kind"], name), run_id))
             con.execute("UPDATE run_steps SET status = 'running', started_at = ? WHERE run_id = ? AND name = ?",
                         (db.now(), run_id, name))
-        print(f"→ {LABELS[name]}", flush=True)
+        print(f"→ {label(run['kind'], name)}", flush=True)
         try:
             message, status = STEP_FUNCS[name](ctx), "done"
         except Skip as e:
@@ -356,7 +392,7 @@ def execute(settings: Settings, run_id: int, from_step: str | None = None) -> bo
                 con.execute("UPDATE runs SET status = 'failed', error = ?, message = ?, resume_from = ?,"
                             " finished_at = ?, pid = NULL WHERE id = ?",
                             (traceback.format_exc(), str(e), name, db.now(), run_id))
-            print(f"\n✗ {LABELS[name]}: {e}", flush=True)
+            print(f"\n✗ {label(run['kind'], name)}: {e}", flush=True)
             traceback.print_exc()
             return False
         with con:
@@ -408,11 +444,16 @@ def mark_stale(settings: Settings, run_id: int, from_step: str) -> None:
 
 def update_paid(settings: Settings, run_id: int, paid: float | None, currency: str) -> None:
     con = db.connect(settings.db_path)
-    if con.execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()["kind"] != "abertura":
+    kind = con.execute("SELECT kind FROM runs WHERE id = ?", (run_id,)).fetchone()["kind"]
+    if kind not in VIDEO_KINDS:
         raise ValueError("Cadastro de coleção não tem valor pago.")
     with con:
         con.execute("UPDATE runs SET paid = ?, paid_currency = ?, paid_usd = ? WHERE id = ?",
                     (paid, currency.upper() if paid else None, to_usd(settings, paid, currency), run_id))
+    if kind == "lacrados":  # o pago de cada booster registrado (dividido igualmente) muda ao reprocessar
+        if con.execute("SELECT status FROM run_steps WHERE run_id = ? AND name = 'commit'", (run_id,)).fetchone()[0] == "done":
+            mark_stale(settings, run_id, "commit")
+        return
     # o resumo do vídeo mostra o valor pago
     if con.execute("SELECT status FROM run_steps WHERE run_id = ? AND name = 'overlay'", (run_id,)).fetchone()[0] == "done":
         mark_stale(settings, run_id, "overlay")
@@ -426,7 +467,7 @@ def update_logo(settings: Settings, run_id: int, name: str | None) -> None:
         raise LookupError(f"Pipeline #{run_id} não existe.")
     if run["status"] in ("queued", "running"):
         raise RuntimeError("A pipeline está rodando; espere terminar para mudar o logo.")
-    if run["kind"] != "abertura":
+    if run["kind"] not in VIDEO_KINDS:
         raise ValueError("Cadastro de coleção não gera vídeo.")
     options = json.loads(run["options"])
     if options.get("logo") == name:
@@ -445,7 +486,7 @@ def update_overlay_currency(settings: Settings, run_id: int, currency: str) -> N
         raise LookupError(f"Pipeline #{run_id} não existe.")
     if run["status"] in ("queued", "running"):
         raise RuntimeError("A pipeline está rodando; espere terminar para mudar a moeda do vídeo.")
-    if run["kind"] != "abertura":
+    if run["kind"] not in VIDEO_KINDS:
         raise ValueError("Cadastro de coleção não gera vídeo.")
     options = json.loads(run["options"])
     if options.get("currency") == currency:
@@ -466,7 +507,7 @@ def update_narration(settings: Settings, run_id: int, enabled: bool) -> None:
         raise LookupError(f"Pipeline #{run_id} não existe.")
     if run["status"] in ("queued", "running"):
         raise RuntimeError("A pipeline está rodando; espere terminar para mudar a narração.")
-    if run["kind"] != "abertura":
+    if run["kind"] not in VIDEO_KINDS:
         raise ValueError("Cadastro de coleção não gera vídeo.")
     options = json.loads(run["options"])
     if bool(options.get("narration")) == enabled:

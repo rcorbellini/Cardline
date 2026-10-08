@@ -140,3 +140,72 @@ def refresh_prices(settings: Settings, con, progress=lambda fraction, message=No
                     n += 1
     db.record_value(con)
     return n
+
+
+# --- pipeline de lacrados: os boosters do vídeo ---------------------------------------------
+
+
+def booster_product(settings: Settings, con, set_code: str) -> dict | None:
+    """O booster avulso do set no TCGplayer (todas as artes têm o mesmo produto e preço)."""
+    return next((p for p in products(settings, con, set_code) if p["name"] == "Booster Pack"), None)
+
+
+def price_packs(settings: Settings, con, scan: dict, progress=lambda fraction, message=None: None) -> tuple[int, list[str]]:
+    """Preço de mercado de cada booster na hora do registro. Fica como estava ao reprocessar (o booster que
+    trocou de set recebe o preço de agora). Devolve (quantos mantiveram o preço, sets sem preço agora)."""
+    found, missing = {}, []
+    names = {r["code"]: r["name"] for r in con.execute("SELECT code, name FROM sets")}
+    for code in sorted({p["set"] for p in scan["packs"]}):
+        progress(None, f"Buscando o preço do booster de {names.get(code, code)}")
+        try:
+            found[code] = booster_product(settings, con, code)
+        except (OSError, ValueError, KeyError, LookupError):
+            found[code] = None
+        if found[code] is None:
+            missing.append(code)
+    kept = 0
+    for p in scan["packs"]:
+        product = found.get(p["set"])
+        if p.get("price_usd") is not None and p.get("price_key") == p["set"]:
+            kept += 1
+        elif product:
+            p.update(price_usd=product["usd"], price_key=p["set"])
+        if product:
+            p.update(product_id=product["product_id"], image=product["image"])
+    return kept, missing
+
+
+def register_packs(settings: Settings, con, run_id: int, scan: dict, paid: float | None, currency: str | None) -> int:
+    """Os boosters do vídeo viram lacrados da coleção, um item por set (substitui o que esta pipeline tinha
+    registrado; os já abertos numa abertura continuam abertos). O valor pago é dividido igualmente entre eles."""
+    groups: dict[str, list[dict]] = {}
+    for p in scan["packs"]:
+        groups.setdefault(p["set"], []).append(p)
+    each = round(paid / len(scan["packs"]), 2) if paid and scan["packs"] else None
+    each_usd = to_usd(settings, each, currency or "BRL") if each else None
+    now = db.now()
+    with con:
+        existing = {r["set_code"]: r for r in con.execute("SELECT * FROM sealed WHERE run_id = ?", (run_id,))}
+        for code, items in groups.items():
+            first = items[0]
+            prices = [i["price_usd"] for i in items if i.get("price_usd") is not None]
+            registered = round(sum(prices) / len(prices), 4) if prices else None
+            values = (first.get("product_id"), first.get("image"), len(items), each, currency if each else None, each_usd,
+                      registered)
+            if code in existing:
+                con.execute("UPDATE sealed SET product_id = ?, image = ?, qty = MAX(?, opened), paid = ?, paid_currency = ?,"
+                            " paid_usd = ?, registered_usd = ?, usd = COALESCE(usd, ?), name = 'Booster Pack' WHERE id = ?",
+                            (*values, registered, existing[code]["id"]))
+            else:
+                con.execute("INSERT INTO sealed(product_id, image, qty, paid, paid_currency, paid_usd, registered_usd, usd,"
+                            " set_code, name, price_updated_at, added_at, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (*values, registered, code, "Booster Pack", now, now, run_id))
+        for code, row in existing.items():
+            if code not in groups:  # saiu da identificação: o que já foi aberto fica registrado como aberto
+                if row["opened"]:
+                    con.execute("UPDATE sealed SET qty = opened WHERE id = ?", (row["id"],))
+                else:
+                    con.execute("DELETE FROM sealed WHERE id = ?", (row["id"],))
+    db.record_value(con)
+    return sum(len(v) for v in groups.values())
+

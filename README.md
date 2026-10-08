@@ -107,6 +107,13 @@ nem com esse botão nem ao reprocessar uma pipeline. É ele que aparece no víde
      gera o vídeo com overlay.
    - **Cadastro de coleção**: para cartas que você já tem. Identifica, precifica e registra na coleção, sem
      valor pago e sem vídeo. Como não há booster, a foil não é deduzida: marque as foils pela edição.
+   - **Registro de lacrados**: para boosters fechados. Filme de cima, colocando um booster por vez na pilha e
+     deixando cada um parado por ~1 s. O cardline reconhece o set de cada booster pela foto oficial dele
+     (TCGplayer), registra nos **lacrados** com o preço de mercado do dia (o valor pago, se informado, é
+     dividido igualmente) e gera o vídeo com o painel de valor: a capa com os sets, a etiqueta de cada
+     booster, o total da pilha e o resumo por set. Logo, narração e redes funcionam como na abertura. Dois
+     boosters seguidos do mesmo set são separados pela arte ou por pararem em lugares diferentes; se algo
+     escapar, o detalhe permite trocar o set, remover e incluir o booster que faltou (no segundo do vídeo).
 2. Arraste o vídeo (MP4 ou MOV, do jeito que sai do celular).
 3. Na abertura, escolha a **moeda** uma vez (R$ ou US$): ela vale para o **valor pago** pelo(s) booster(s) e para
    os preços no vídeo. O valor pago é opcional e pode ser preenchido depois. Se o booster estava nos **lacrados**,
@@ -131,8 +138,8 @@ Um vídeo que já foi processado é recusado, com um link para a pipeline origin
 
 A lista mostra cada pipeline com o tipo, o status (na fila, rodando, concluída, falhou, interrompida ou
 desatualizada), o progresso ao vivo, as miniaturas das cartas e os valores: pago, hoje e resultado numa
-abertura; no cadastro e hoje num cadastro. O filtro no topo separa **Todas**, **Aberturas**, **Cadastros** e
-**Atualizações**: cada **↻ Atualizar preços**, **↻ Atualizar números** e **Sincronizar** (Sets) disparado na
+abertura; no cadastro e hoje num cadastro. O filtro no topo separa **Todas**, **Aberturas**, **Cadastros**,
+**Lacrados** e **Atualizações**: cada **↻ Atualizar preços**, **↻ Atualizar números** e **Sincronizar** (Sets) disparado na
 página também vira uma linha, com o andamento enquanto roda e, depois, o que mudou (valor das cartas antes e
 depois, visualizações antes e depois, sets sincronizados). Clicar abre o detalhe, com o log da sincronização.
 A leitura automática dos números ao abrir o Resumo não vira linha.
@@ -329,6 +336,8 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs/{id}/posts/{rede}` | `{"title", "caption", "privacy", "variant", "tags"}`: posta pela API (`youtube` ou `instagram`, em segundo plano); com `"publish_at": "2026-10-08T21:30:00Z"`, programa |
 | DELETE | `/api/runs/{id}/scheduled/{rede}` | cancela a publicação que o cardline faria na hora marcada (ou descarta a que falhou) |
 | PUT | `/api/runs/{id}/posts` | `{"url": "…"}`: vincula um post já feito (YouTube, Instagram ou TikTok, reconhecido pelo link) |
+| PATCH / DELETE | `/api/runs/{id}/packs/{uid}` | registro de lacrados: `{"set": "9"}` corrige o set do booster; DELETE tira (`/restore` devolve) |
+| POST | `/api/runs/{id}/packs` | `{"set": "9", "t": 48.5}`: inclui um booster que a identificação não pegou |
 | PATCH / DELETE | `/api/runs/{id}/posts/{rede}` | `{"views": 1500, "likes": 120, …}` informa os números à mão; DELETE desvincula |
 | GET | `/api/sets` | sets com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo |
 | POST | `/api/sets/sync` | inicia o `cardline sync` em segundo plano (um por vez); `GET` na mesma rota mostra o andamento e o log |
@@ -348,7 +357,11 @@ no túnel, ou só redes de confiança.
 | Gerar vídeo com overlay | vídeo 1080×1920: capa (o primeiro frame parado, com o booster e o valor pago), etiquetas com um "ka-ching" de caixa registradora a cada carta, aplausos quando a soma alcança o valor pago, painel do booster (ícone do set e total animado) e resumo (com valor pago e resultado) | `overlay.mp4`, `overlay.jpg` (a capa), `overlay.json` (tempos) |
 | Narrar o vídeo | (opcional) escreve o roteiro, grava cada fala com a voz e mistura com o som do vídeo | `narrado.mp4`, `narracao/` |
 
-Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo).
+Uma abertura passa pelos cinco passos; um **cadastro** para em "Registrar na coleção" (não tem vídeo). Um
+**registro de lacrados** troca os três primeiros por "Identificar boosters" (cada booster colocado na pilha,
+contra as fotos dos boosters de cada set), "Preço dos boosters" (o preço de mercado do booster avulso do set no
+TCGplayer, fixado no registro) e "Registrar nos lacrados" (um item por set, com a quantidade; os já abertos numa
+abertura continuam abertos ao reprocessar); vídeo e narração seguem iguais.
 
 Cada passo grava seu estado. Se algo falhar ou o servidor cair, a pipeline pode **continuar de onde parou**,
 e qualquer pipeline pode **rodar de novo a partir de um passo** (na página ou com `cardline run ID --from passo`).
