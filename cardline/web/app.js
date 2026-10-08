@@ -228,6 +228,9 @@ function setIcon(code, cls = 'seticon') {
 const setTitle = code => S.meta.sets.find(x => x.code === code)?.name || `set ${code}`;
 const KIND_LABEL = { abertura: 'Abertura de booster', cadastro: 'Cadastro de coleção' };
 function kindChip(r) { return `<span class="kindchip ${r.kind}">${KIND_LABEL[r.kind] || r.kind}</span>`; }
+function dupChip(r) {  // as mesmas cartas de outra pipeline (ordem, foil e repetidas não contam)
+  return r.duplicates?.length ? `<span class="dupchip" title="Mesmas cartas da pipeline ${r.duplicates.map(i => `#${i}`).join(', ')}">⚠ Repetida</span>` : '';
+}
 let runKind = store.get('runkind', 'todas');
 function resultHtml(r) {
   if (r.paid_usd == null || r.value_now == null) return '';
@@ -276,7 +279,7 @@ function renderRuns() {
   }
   patch($('#view-pipelines'), head + '<div class="runs">' + list.map(r => `
     <a class="panel runcard" href="#/pipelines/${r.id}">
-      <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}${(r.sets || []).map(c => setIcon(c, 'seticon small')).join('')}${netBadges(r)}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
+      <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}${dupChip(r)}${(r.sets || []).map(c => setIcon(c, 'seticon small')).join('')}${netBadges(r)}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
         <span class="spacer"></span>${statusChip(r)}</div>
       ${progressHtml(r)}
       ${r.thumbs.length ? `<div class="thumbs">${r.thumbs.map(t => `<img loading="lazy" src="${esc(t)}" alt="">`).join('')}</div>` : ''}
@@ -302,11 +305,11 @@ $('#view-pipelines').addEventListener('click', ev => {
 function runSkeleton() {
   patch($('#view-run'), `
     <a class="back" href="#/pipelines">← Pipelines</a>
-    <div id="r-title"></div><p class="runsub" id="r-sub"></p>
+    <div id="r-title"></div><p class="runsub" id="r-sub"></p><p class="warnbox" id="r-dup" hidden></p>
     <div class="kpis"><div class="panel kpi" id="r-paid"></div><div id="r-kpis" style="display:contents"></div></div>
     <p class="error" id="r-error"></p>
     <div class="cols">
-      <div><div class="sectionhead"><h3>Cartas</h3><span class="muted" id="r-cards-sub"></span></div>
+      <div><div class="sectionhead"><h3>Cartas</h3><span class="secside"><span class="muted" id="r-cards-sub"></span><span id="r-sanitize"></span></span></div>
         <ul class="pulls" id="r-cards"></ul><div id="r-edits"></div></div>
       <div class="side"><div class="panel"><ul class="steps" id="r-steps"></ul></div><div id="r-video"></div><div id="r-narr"></div><div id="r-yt"></div></div>
     </div>
@@ -320,7 +323,7 @@ function renderRun() {
   const cadastro = r.kind === 'cadastro';
   const canRun = !active(r);
   const resumeLabel = steps.find(s => s.name === r.resume_from)?.label;
-  patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${kindChip(r)}${statusChip(r)}${netBadges(r, true)}<span class="spacer"></span>
+  patch($('#r-title'), `<div class="runtitle"><h2>Pipeline #${r.id}</h2>${kindChip(r)}${dupChip(r)}${statusChip(r)}${netBadges(r, true)}<span class="spacer"></span>
     ${canRun && r.resume_from && r.status !== 'done' ? `<button class="btn" data-action="resume">${r.status === 'stale' ? 'Reprocessar com as edições' : `Continuar de “${esc(resumeLabel)}”`}</button>` : ''}
     ${canRun ? `<span class="rerun"><select id="r-from" aria-label="Passo inicial">${steps.map(s => `<option value="${s.name}">${esc(s.label)}</option>`).join('')}</select>
       <button class="btn ghost" data-action="rerun">Rodar de novo daqui</button></span>
@@ -328,6 +331,11 @@ function renderRun() {
   patch($('#r-sub'), `${esc(r.video_name)} · gravado ${dt(r.recorded_at || r.created_at)}${r.sets ? ` · ${r.sets.map(c => `<span class="setref">${setIcon(c, 'seticon small')}${esc(setTitle(c))}</span>`).join(', ')}` : ''}` +
     `${r.n_cards ? ` · ${r.n_cards} cartas${cadastro ? '' : ` · ${r.packs} ${r.packs === 1 ? 'booster' : 'boosters'}`}` : ''}`);
 
+  const twins = (r.duplicates || []).map(id => S.runs.find(x => x.id === id) || { id });
+  $('#r-dup').hidden = !twins.length;
+  patch($('#r-dup'), twins.length ? `<b>Pipeline repetida:</b> as cartas identificadas são as mesmas da ${twins.map(o =>
+    `<a href="#/pipelines/${o.id}">#${o.id}</a>${o.video_name ? ` (${esc(o.video_name)}, ${dt(o.recorded_at || o.created_at)})` : ''}`).join(' e da ')}.
+    Ordem, foil e cartas repetidas não contam. Se for o mesmo booster, exclua uma delas para a coleção não contar as cartas em dobro.` : '');
   $('#r-paid').hidden = cadastro;
   if (!editingPaid && !cadastro) {
     patch($('#r-paid'), `<small>Valor pago</small><b class="num">${r.paid != null ? `${sym(r.paid_currency)} ${nf.format(r.paid)}` : '—'}</b>
@@ -382,6 +390,9 @@ function renderRun() {
   const editable = !active(r);
   const best = cards.reduce((b, x) => (x.price_now ?? 0) > (b?.price_now ?? -1) ? x : b, null);
   patch($('#r-cards-sub'), !cards.length ? '' : editable ? 'deslize uma carta para editar ou remover' : 'recorte do vídeo ao lado da imagem oficial');
+  const nrep = r.repeated || 0;
+  patch($('#r-sanitize'), cards.length ? `<button class="btn ghost small" data-action="sanitize" ${nrep && editable ? '' : 'disabled'}
+    title="${nrep ? `Tira ${nrep === 1 ? 'a carta repetida' : `as ${nrep} cartas repetidas`}, deixando a primeira aparição de cada uma` : 'Nenhuma carta repetida'}">Sanitizar${nrep ? ` (${nrep})` : ''}</button>` : '');
   patch($('#r-cards'), cards.length ? cards.map(x => {
     const c = r.card_info[x.card], rr = rar(c.rarity);
     const check = x.check?.status === 'divergente'
@@ -396,7 +407,8 @@ function renderRun() {
       ${img(c)}
       <div class="info"><div><b>${esc(c.name)}</b></div><div class="ver">${esc(c.version || ' ')}</div>
         <div class="line"><span class="rar" style="--c:${rr.color}"><i></i>${esc(rr.label)}</span>${x.foil ? '<span class="foilpill">FOIL</span>' : ''}
-          <span class="price num" style="color:var(--text)">${money(x.price_now ?? x.price_open)}</span>${x.manual ? '<span>· corrigida</span>' : ''}${check}</div>
+          <span class="price num" style="color:var(--text)">${money(x.price_now ?? x.price_open)}</span>${x.manual ? '<span>· corrigida</span>' : ''}${check}
+          ${x.repeat_of ? `<span class="warn" title="A mesma carta já apareceu antes no vídeo; Sanitizar tira esta e deixa a #${x.repeat_of}">↺ repete a #${x.repeat_of}</span>` : ''}</div>
         <div class="line" title="${x.inliers ? `${x.inliers} pontos casados com a imagem oficial` : 'inserida manualmente'}">${esc(c.set)}/${esc(c.number)} · ${x.t != null ? x.t.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 's' : '—'}</div>
       </div></div></li>`;
   }).join('') : `<p class="muted">${active(r) ? 'As cartas aparecem aqui quando a identificação terminar.' : 'Nenhuma carta identificada.'}</p>`);
@@ -535,6 +547,12 @@ $('#view-run').addEventListener('click', async ev => {
       const uid = encodeURIComponent(target.dataset.uid);
       await api(action === 'remove-card' ? `/api/runs/${id}/cards/${uid}` : `/api/runs/${id}/cards/${uid}/restore`,
                 { method: action === 'remove-card' ? 'DELETE' : 'POST' });
+    }
+    if (action === 'sanitize') {
+      const n = S.run?.repeated || 0;
+      if (!confirm(`Tirar ${n === 1 ? 'a carta repetida' : `as ${n} cartas repetidas`}? Fica a primeira aparição de cada carta; as tiradas vão para "Removidas" (dá para restaurar) e valem depois de reprocessar.`)) return;
+      target.disabled = true;
+      await api(`/api/runs/${id}/sanitize`, { method: 'POST' });
     }
     if (action === 'resume') await api(`/api/runs/${id}/rerun`, json({ from_step: null }));
     if (action === 'rerun') await api(`/api/runs/${id}/rerun`, json({ from_step: $('#r-from').value }));

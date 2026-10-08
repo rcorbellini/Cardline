@@ -116,6 +116,33 @@ def restore_card(settings: Settings, run_dir: Path, uid: str) -> dict:
     return c
 
 
+def repeated(cards: list[dict]) -> dict[int, int]:
+    """Cartas que já tinham aparecido antes no vídeo (a mesma carta, foil ou não): índice → índice da 1ª aparição."""
+    first: dict[str, int] = {}
+    out = {}
+    for i in sorted(range(len(cards)), key=lambda i: cards[i]["t"]):
+        if cards[i]["card_id"] in first:
+            out[i] = first[cards[i]["card_id"]]
+        else:
+            first[cards[i]["card_id"]] = i
+    return out
+
+
+def remove_repeated(settings: Settings, run_dir: Path) -> list[dict]:
+    """Sanitiza: tira as cartas repetidas, deixando a primeira aparição de cada uma (vão para `removed`)."""
+    scan = load_scan(run_dir)
+    gone = [scan["cards"][i] for i in sorted(repeated(scan["cards"]))]
+    if gone:
+        now = db.now()
+        for c in gone:
+            c.update(uid=card_uid(c), removed_at=now)
+        scan["cards"] = [c for c in scan["cards"] if not any(c is g for g in gone)]
+        scan.setdefault("removed", []).extend(gone)
+        _renumber(scan, settings.pack_size)
+        save_scan(run_dir, scan)
+    return gone
+
+
 def _renumber(scan: dict, pack_size: int) -> None:
     """Reordena pelo vídeo e refaz boosters e foil (a composição de cada booster pode ter mudado)."""
     cards = scan["cards"]

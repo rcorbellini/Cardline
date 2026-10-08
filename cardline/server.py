@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from . import db, instagram, narration, pipeline, rarity, social, youtube
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
-from .collection import card_uid, load_scan, remove_card, restore_card, set_card_foil
+from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
 from .config import Settings
 from .index import image_path, indexed_sets
 from .money import CURRENCIES, usd_brl
@@ -319,11 +319,36 @@ def create_app(settings: Settings) -> FastAPI:
                  "value_now": sum(db.price_usd(rows[x["card_id"]], x["foil"]) or 0 for x in xs)}
                 for p, xs in sorted(packs.items())]
 
-    def run_json(c, run, detail: bool = False) -> dict:
+    card_sets: dict[int, tuple[tuple, frozenset]] = {}  # pipeline → (versão do scan.json, cartas distintas)
+
+    def distinct_cards(run) -> frozenset:
+        """As cartas distintas identificadas na pipeline, já com as edições (lidas de novo quando o scan muda)."""
+        path = settings.root / run["dir"] / "scan.json"
+        try:
+            st = path.stat()
+        except OSError:
+            return frozenset()
+        version = (st.st_mtime_ns, st.st_size)  # o tamanho também: duas gravações podem cair no mesmo tique do relógio
+        cached = card_sets.get(run["id"])
+        if not cached or cached[0] != version:
+            cached = card_sets[run["id"]] = (version, frozenset(x["card_id"] for x in load_scan(path.parent)["cards"]))
+        return cached[1]
+
+    def duplicates(c) -> dict[int, list[int]]:
+        """Pipelines repetidas: as que têm as mesmas cartas (sem contar ordem, foil nem cartas repetidas dentro
+        delas), cada uma → as outras do grupo."""
+        groups: dict[frozenset, list[int]] = {}
+        for r in c.execute("SELECT id, dir FROM runs ORDER BY id"):
+            if ids := distinct_cards(r):
+                groups.setdefault(ids, []).append(r["id"])
+        return {rid: [o for o in g if o != rid] for g in groups.values() if len(g) > 1 for rid in g}
+
+    def run_json(c, run, detail: bool = False, dups: dict[int, list[int]] | None = None) -> dict:
         folder = settings.root / run["dir"]
         url = f"/runs/{folder.name}"
         scan = load_scan(folder) if (folder / "scan.json").exists() else None
         cards = scan["cards"] if scan else []
+        repeats = repeated(cards)
         removed = scan.get("removed", []) if scan else []
         ids = sorted({x["card_id"] for x in cards + removed})
         rows = {r["id"]: r for r in c.execute(
@@ -347,6 +372,7 @@ def create_app(settings: Settings) -> FastAPI:
                         and (folder / "narrado.mp4").exists() else None,
             "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
             "posts": social.posts(c, run["id"]), "post_jobs": jobs.of(run["id"]), "scheduled": social.scheduled(c, run["id"]),
+            "duplicates": (duplicates(c) if dups is None else dups).get(run["id"], []), "repeated": len(repeats),
             "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
         }
@@ -358,6 +384,7 @@ def create_app(settings: Settings) -> FastAPI:
                     "price_now": db.price_usd(rows[x["card_id"]], x["foil"]),
                     "crop": f"{url}/{x['crop']}" if x.get("crop") else None, "inliers": x.get("inliers"),
                     "manual": x.get("manual", False), "check": x.get("check"),
+                    "repeat_of": repeats[n - 1] + 1 if n - 1 in repeats else None,  # nº da 1ª aparição da carta
                 }
                 for n, x in enumerate(cards, 1)
             ]
@@ -426,7 +453,8 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/runs")
     def runs():
         c = con()
-        return [run_json(c, r) for r in c.execute("SELECT * FROM runs ORDER BY created_at DESC, id DESC")]
+        dups = duplicates(c)
+        return [run_json(c, r, dups=dups) for r in c.execute("SELECT * FROM runs ORDER BY created_at DESC, id DESC")]
 
     @app.get("/api/runs/{run_id}")
     def run_detail(run_id: int):
@@ -538,6 +566,15 @@ def create_app(settings: Settings) -> FastAPI:
                 raise HTTPException(404, str(e)) from e
             pipeline.mark_stale(settings, run_id, "prices")
         return {"ok": True}
+
+    @app.post("/api/runs/{run_id}/sanitize")
+    def sanitize(run_id: int):
+        """Tira as cartas repetidas, deixando a primeira aparição de cada uma; vale ao reprocessar."""
+        with edit_lock:
+            gone = remove_repeated(settings, editable_run(run_id))
+            if gone:
+                pipeline.mark_stale(settings, run_id, "prices")
+        return {"removed": len(gone)}
 
     @app.patch("/api/runs/{run_id}")
     def update_run(run_id: int, body: RunPatch):

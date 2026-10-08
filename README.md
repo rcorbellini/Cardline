@@ -120,6 +120,12 @@ desatualizada), o progresso ao vivo, as miniaturas das cartas e os valores: pago
 abertura; no cadastro e hoje num cadastro. O filtro no topo separa **Todas**, **Aberturas** e **Cadastros**.
 O detalhe de um cadastro tem o mesmo editar/remover por deslize e o mesmo reprocessar, mas sem vídeo.
 
+**⚠ Repetida** marca a pipeline cujas cartas identificadas são as mesmas de outra pipeline (aberturas e
+cadastros), sem contar a ordem, o foil nem as cartas repetidas dentro dela. Vale também depois de editar:
+remover uma carta lida errado pode deixar a pipeline igual a outra, e restaurar desfaz o aviso. No detalhe, o
+aviso tem o link da outra pipeline. O mesmo arquivo de vídeo enviado de novo já é recusado no envio; o aviso
+pega o mesmo booster gravado de novo.
+
 ![Detalhe de uma pipeline: valor pago, valor das cartas e resultado; cartas com o recorte do vídeo ao lado da imagem oficial; passos com tempo de cada um; vídeo com overlay](docs/pagina-pipeline.jpg)
 
 No detalhe de uma pipeline:
@@ -133,6 +139,9 @@ No detalhe de uma pipeline:
     marcação que o sistema tinha deduzido em outra do mesmo booster. Encantada, Épica e Icônica são sempre foil.
   - **Remover** tira uma carta identificada errada ou duplicada; ela vai para "Removidas", de onde pode ser
     restaurada.
+  - **Sanitizar**, no topo das cartas, fica disponível quando a mesma carta aparece mais de uma vez (foil ou
+    não; "↺ repete a #N" marca as que saem). Tira as repetidas de uma vez, deixando a primeira aparição de cada
+    carta no vídeo; as tiradas também vão para "Removidas".
   - As edições ficam pendentes até **Reprocessar com as edições**, no fim da lista: preços, coleção e vídeo
     são refeitos. Cartas que não mudaram mantêm o preço da abertura, e uma carta que mudou de acabamento recebe
     o preço daquele acabamento no dia da abertura.
@@ -255,7 +264,7 @@ no túnel, ou só redes de confiança.
 |---|---|---|
 | GET | `/api/meta` | moedas e cotação, passos, sets, raridades e se o Ollama está disponível |
 | GET | `/api/collection` | cartas da coleção, agrupadas por carta e acabamento, com as cópias |
-| GET | `/api/runs` | pipelines com status, progresso e valores |
+| GET | `/api/runs` | pipelines com status, progresso e valores; `duplicates` lista as pipelines com as mesmas cartas e `repeated` conta as cartas repetidas |
 | GET | `/api/runs/{id}` | detalhe: passos, cartas e log |
 | POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL&narration=true` | cria a pipeline (`kind`: `abertura` ou `cadastro`); o corpo da requisição é o vídeo |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
@@ -263,6 +272,7 @@ no túnel, ou só redes de confiança.
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
 | PATCH | `/api/runs/{id}/cards/{uid}` | `{"foil": true}`: edita a carta (por enquanto, só o acabamento); fica pendente até reprocessar |
 | DELETE | `/api/runs/{id}/cards/{uid}` | tira uma carta da identificação (fica pendente até reprocessar) |
+| POST | `/api/runs/{id}/sanitize` | tira as cartas repetidas, deixando a primeira aparição de cada uma (pendente até reprocessar) |
 | POST | `/api/runs/{id}/cards/{uid}/restore` | devolve uma carta removida |
 | DELETE | `/api/runs/{id}` | exclui a pipeline e as cartas dela |
 | PUT | `/api/runs/{id}/narration` | `{"lines": [{"t": 6.2, "texto": "Hakuna matata... sei."}]}`: salva o roteiro editado (vale na próxima narração) |
