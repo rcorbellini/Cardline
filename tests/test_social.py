@@ -1,6 +1,8 @@
+import io
 import json
 import sqlite3
 import time
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +28,34 @@ def new_run(settings, name="v.mp4"):
         con.execute("UPDATE runs SET status = 'done' WHERE id = ?", (run_id,))
     (settings.runs_dir / str(run_id) / "overlay.mp4").write_bytes(b"video")
     return run_id
+
+
+def ig_connected(settings):
+    instagram.folder(settings).mkdir(parents=True, exist_ok=True)
+    (instagram.folder(settings) / "token.json").write_text(json.dumps({"access_token": "IG" + "x" * 40, "user_id": "17",
+                                                                       "username": "eu", "saved_at": time.time()}))
+
+
+class Tunnel:
+    """A API local do ngrok: fechada (sem ngrok) ou com o túnel para a porta 8000."""
+
+    def __init__(self):
+        self.open = False
+
+    def __call__(self, *args, **kwargs):
+        if not self.open:
+            raise OSError("sem ngrok")
+        return io.BytesIO(json.dumps({"tunnels": [{"public_url": "https://abc.ngrok-free.app",
+                                                   "config": {"addr": "http://localhost:8000"}}]}).encode())
+
+
+def wait_job(client, run_id, network):
+    for _ in range(50):
+        job = client.get(f"/api/runs/{run_id}").json()["post_jobs"].get(network)
+        if job and job["status"] != "sending":
+            return job
+        time.sleep(0.05)
+    return job
 
 
 def test_links_tell_the_network():
@@ -69,6 +99,24 @@ def test_youtube_posts_of_the_old_schema_move_to_the_network_table(tmp_path):
     assert "youtube_posts" not in tables and "youtube_stats" not in tables
 
 
+def test_posts_of_schema_6_get_the_scheduled_date(tmp_path):
+    path = tmp_path / "v6.db"
+    old = sqlite3.connect(path)
+    old.executescript("""
+        CREATE TABLE runs (id INTEGER PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'abertura', video TEXT NOT NULL);
+        INSERT INTO runs(id, video) VALUES (1, 'v.mp4');
+        CREATE TABLE posts (run_id INTEGER NOT NULL, network TEXT NOT NULL, post_id TEXT, url TEXT NOT NULL, title TEXT,
+            via TEXT NOT NULL, variant TEXT, privacy TEXT, posted_at TEXT NOT NULL, published_at TEXT,
+            PRIMARY KEY (run_id, network));
+        INSERT INTO posts VALUES (1, 'youtube', 'abc', 'https://youtu.be/abc', NULL, 'link', NULL, NULL,
+                                  '2026-10-07T09:00:00-03:00', NULL);
+        PRAGMA user_version = 6;
+    """)
+    old.close()
+    con = db.connect(path)
+    assert social.posts(con, 1)["youtube"]["scheduled_at"] is None and social.scheduled(con, 1) == {}
+
+
 def test_changing_the_linked_post_drops_the_old_numbers(settings):
     run_id = new_run(settings)
     con = db.connect(settings.db_path)
@@ -109,9 +157,7 @@ def test_routes_link_any_network_take_manual_numbers_and_unlink(settings):
 
 def test_instagram_post_needs_a_public_address(settings, monkeypatch):
     run_id = new_run(settings)
-    (instagram.folder(settings)).mkdir(parents=True, exist_ok=True)
-    (instagram.folder(settings) / "token.json").write_text(json.dumps({"access_token": "IG" + "x" * 40, "user_id": "17",
-                                                                       "username": "eu", "saved_at": time.time()}))
+    ig_connected(settings)
     monkeypatch.setattr("cardline.server.urllib.request.urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("sem ngrok")))
     published = []
 
@@ -126,6 +172,8 @@ def test_instagram_post_needs_a_public_address(settings, monkeypatch):
         body = {"caption": "Legenda", "variant": "overlay"}
         local = client.post(f"/api/runs/{run_id}/posts/instagram", json=body, headers={"host": "127.0.0.1:8000"})
         assert local.status_code == 409 and "túnel" in local.json()["detail"]  # aberta localmente e sem ngrok
+        lan = client.post(f"/api/runs/{run_id}/posts/instagram", json=body, headers={"host": "192.168.31.51:8000"})
+        assert lan.status_code == 409  # pelo IP da rede de casa: o Instagram não chega nele
         r = client.post(f"/api/runs/{run_id}/posts/instagram", json=body, headers={"host": "abc.ngrok-free.app"})
         assert r.status_code == 200
         for _ in range(50):
@@ -138,3 +186,63 @@ def test_instagram_post_needs_a_public_address(settings, monkeypatch):
         assert url.startswith(f"https://abc.ngrok-free.app/runs/{run_id}/overlay.mp4?v=") and caption == "Legenda\n\n#reels"
         post = client.get(f"/api/runs/{run_id}").json()["posts"]["instagram"]
         assert post["post_id"] == "1799" and post["url"] == "https://www.instagram.com/reel/DAbc/" and post["via"] == "api"
+
+
+def test_the_cardline_publishes_the_scheduled_reel_at_the_time(settings, monkeypatch):
+    run_id = new_run(settings)
+    ig_connected(settings)
+    tunnel = Tunnel()
+    monkeypatch.setattr("cardline.server.urllib.request.urlopen", tunnel)
+    published = []
+
+    def fake_publish(s, video_url, caption, progress):
+        published.append((video_url, caption))
+        return {"id": "1799", "permalink": "https://www.instagram.com/reel/DAbc/", "timestamp": "2026-10-08T21:00:00+0000"}
+
+    monkeypatch.setattr(instagram, "publish_reel", fake_publish)
+    monkeypatch.setattr(instagram, "stats", lambda s, ids: {})
+    at = (datetime.now().astimezone() + timedelta(hours=2)).replace(microsecond=0)
+    body = {"caption": "Legenda", "variant": "overlay", "publish_at": at.isoformat()}
+    lan = {"host": "192.168.31.51:8000"}  # pela rede de casa, sem túnel agora: programa mesmo assim
+    with TestClient(create_app(settings)) as client:
+        r = client.post(f"/api/runs/{run_id}/posts/instagram", json=body, headers=lan)
+        assert r.status_code == 200 and r.json()["scheduled"] == at.isoformat()
+        assert client.post(f"/api/runs/{run_id}/posts/instagram", json=body, headers=lan).status_code == 409
+        publish_due = client.app.state.publish_due
+        publish_due(at - timedelta(minutes=1))
+        assert not published and client.get(f"/api/runs/{run_id}").json()["scheduled"]["instagram"]["status"] == "waiting"
+        publish_due(at + timedelta(minutes=1))  # na hora, com o túnel fechado: espera e diz por quê
+        waiting = client.get(f"/api/runs/{run_id}").json()["scheduled"]["instagram"]
+        assert not published and waiting["status"] == "waiting" and "túnel" in waiting["error"]
+        tunnel.open = True
+        publish_due(at + timedelta(minutes=2))
+        assert wait_job(client, run_id, "instagram")["status"] == "done"
+        url, caption = published[0]
+        assert url.startswith(f"https://abc.ngrok-free.app/runs/{run_id}/overlay.mp4?v=") and caption == "Legenda\n\n#reels"
+        detail = client.get(f"/api/runs/{run_id}").json()
+        assert detail["scheduled"] == {} and detail["posts"]["instagram"]["post_id"] == "1799"
+
+
+def test_a_scheduled_reel_is_not_published_long_after_the_time(settings, monkeypatch):
+    run_id = new_run(settings)
+    ig_connected(settings)
+    monkeypatch.setattr("cardline.server.urllib.request.urlopen", Tunnel())
+    monkeypatch.setattr(instagram, "publish_reel", lambda *a: pytest.fail("publicou fora da hora"))
+    monkeypatch.setattr(instagram, "find_media", lambda s, code: {"id": "1800", "timestamp": "2026-10-08T21:00:00+0000"})
+    monkeypatch.setattr(instagram, "stats", lambda s, ids: {})
+    at = (datetime.now().astimezone() + timedelta(hours=2)).replace(microsecond=0)
+    body = {"caption": "Legenda", "variant": "overlay", "publish_at": at.isoformat()}
+    with TestClient(create_app(settings)) as client:
+        assert client.post(f"/api/runs/{run_id}/posts/instagram", json=body).status_code == 200
+        client.app.state.publish_due(at + timedelta(hours=2))  # o cardline estava desligado na hora
+        failed = client.get(f"/api/runs/{run_id}").json()["scheduled"]["instagram"]
+        assert failed["status"] == "failed" and "desligado" in failed["error"]
+        later = {**body, "publish_at": (at + timedelta(days=1)).isoformat()}  # programar de novo substitui a que falhou
+        assert client.post(f"/api/runs/{run_id}/posts/instagram", json=later).status_code == 200
+        assert client.get(f"/api/runs/{run_id}").json()["scheduled"]["instagram"]["status"] == "waiting"
+        assert client.delete(f"/api/runs/{run_id}/scheduled/instagram").status_code == 200
+        assert client.get(f"/api/runs/{run_id}").json()["scheduled"] == {}
+        assert client.post(f"/api/runs/{run_id}/posts/instagram", json=later).status_code == 200
+        assert client.put(f"/api/runs/{run_id}/posts", json={"url": "https://www.instagram.com/reel/DAbc_12-xY/"}).status_code == 200
+        assert client.get(f"/api/runs/{run_id}").json()["scheduled"] == {}  # postou pelo app: a programação sai
+

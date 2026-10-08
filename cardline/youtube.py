@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Settings
@@ -240,14 +241,20 @@ def clean_tags(tags: list[str]) -> list[str]:
 
 
 def upload(settings: Settings, path: Path, title: str, description: str, tags: list[str], privacy: str,
-           progress=lambda fraction: None) -> dict:
-    """Envia o vídeo (upload retomável, em partes, com progresso) e devolve o recurso que o YouTube criou."""
+           progress=lambda fraction: None, publish_at: datetime | None = None) -> dict:
+    """Envia o vídeo (upload retomável, em partes, com progresso) e devolve o recurso que o YouTube criou.
+
+    Com `publish_at`, o vídeo fica privado e o próprio YouTube publica (público) na data, mesmo com o cardline
+    desligado. Projeto sem auditoria: o vídeo fica travado como privado e a data não vale."""
     if privacy not in PRIVACY:
         raise ValueError("Visibilidade deve ser public, unlisted ou private.")
     size = path.stat().st_size
+    status = {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}
+    if publish_at:
+        status.update(privacyStatus="private", publishAt=publish_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     meta = {"snippet": {"title": title[:100], "description": description[:5000], "tags": clean_tags(tags),
                         "categoryId": GAMING, "defaultLanguage": "pt-BR", "defaultAudioLanguage": "pt-BR"},
-            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}}
+            "status": status}
     auth = {"Authorization": f"Bearer {access_token(settings)}"}
     code, headers, payload = _request("POST", UPLOAD_URL, body=meta, headers={
         **auth, "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": str(size)})
@@ -302,6 +309,7 @@ def stats(settings: Settings, ids: list[str]) -> dict[str, dict]:
                 "comments": int(s["commentCount"]) if "commentCount" in s else None,
                 "privacy": st.get("privacyStatus"), "upload_status": st.get("uploadStatus"),
                 "title": item.get("snippet", {}).get("title"), "published_at": item.get("snippet", {}).get("publishedAt"),
+                "scheduled_at": st.get("publishAt"),  # programado: some quando o YouTube publica
             }
     return out
 

@@ -19,7 +19,7 @@ import urllib.request
 import uuid
 from collections import Counter
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -144,6 +144,7 @@ class PostBody(BaseModel):
     privacy: str = "public"  # só o YouTube tem visibilidade
     variant: str = "narrado"  # narrado | overlay
     tags: list[str] | None = None  # tags do YouTube (vazio = as sugeridas)
+    publish_at: str | None = None  # programar: data e hora (ISO 8601, com fuso); vazio = agora
 
 
 class LinkBody(BaseModel):
@@ -224,23 +225,35 @@ class PostJobs:
             job.update(status="failed", error=str(e))
 
 
-def public_base(settings: Settings, request: Request) -> str | None:
+# endereços que só valem em casa: o próprio PC, IPs da rede local e nomes sem domínio (o Instagram não chega neles)
+LOCAL_HOST = re.compile(r"^(localhost|127\.|0\.0\.0\.0|\[|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|[^.:]+(:\d+)?$)")
+
+
+def public_base(settings: Settings, request: Request | None = None, *, port: int | None = None,
+                fallback: str | None = None) -> str | None:
     """Endereço público do cardline (para o Instagram baixar o vídeo): o configurado, o do túnel pelo qual a
-    página foi aberta ou o que o ngrok informa na API local dele."""
+    página foi aberta, o que o ngrok informa na API local dele ou, por último, `fallback`."""
     if settings.public_url:
         return settings.public_url.rstrip("/")
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
-    if host and not re.match(r"^(localhost|127\.|0\.0\.0\.0|\[::1\])", host):
-        return f"{request.headers.get('x-forwarded-proto', 'https')}://{host}"
+    if request is not None:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        if host and not LOCAL_HOST.match(host):
+            return f"{request.headers.get('x-forwarded-proto', 'https')}://{host}"
+        port = request.url.port or port
     try:
         tunnels = json.loads(urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=3).read())["tunnels"]
     except (OSError, ValueError, KeyError):
-        return None
-    port = str(request.url.port or 8000)
+        return fallback
     for t in tunnels:
-        if t.get("public_url", "").startswith("https://") and t.get("config", {}).get("addr", "").endswith(f":{port}"):
+        if t.get("public_url", "").startswith("https://") and t.get("config", {}).get("addr", "").endswith(f":{port or 8000}"):
             return t["public_url"]
-    return None
+    return fallback
+
+
+def local_time(value: str | datetime) -> str:
+    """Data e hora no fuso do servidor, para as mensagens ("08/10 às 18:00")."""
+    when = datetime.fromisoformat(value) if isinstance(value, str) else value
+    return when.astimezone().strftime("%d/%m às %H:%M")
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -255,8 +268,12 @@ def create_app(settings: Settings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         pipeline.recover_interrupted(settings)
+        social.interrupted(con())
         runner.start()
+        stop = threading.Event()
+        threading.Thread(target=agenda, args=(stop,), name="cardline-agenda", daemon=True).start()
         yield
+        stop.set()
 
     app = FastAPI(title="cardline", lifespan=lifespan)
 
@@ -329,7 +346,7 @@ def create_app(settings: Settings) -> FastAPI:
             "narrated": f"{url}/narrado.mp4" if json.loads(run["options"]).get("narration")
                         and (folder / "narrado.mp4").exists() else None,
             "poster": f"{url}/overlay.jpg" if (folder / "overlay.jpg").exists() else None,
-            "posts": social.posts(c, run["id"]), "post_jobs": jobs.of(run["id"]),
+            "posts": social.posts(c, run["id"]), "post_jobs": jobs.of(run["id"]), "scheduled": social.scheduled(c, run["id"]),
             "steps": [{"name": n, "label": pipeline.LABELS[n], **{k: steps.get(n, {}).get(k) for k in
                        ("status", "message", "started_at", "finished_at")}} for n in pipeline.steps_for(run["kind"])],
         }
@@ -633,7 +650,7 @@ def create_app(settings: Settings) -> FastAPI:
                     if info := found.get(vid):
                         social.save_stats(c, run_id, "youtube", info)
                         social.update_post(c, run_id, "youtube", title=info["title"], privacy=info["privacy"],
-                                           published_at=info["published_at"])
+                                           published_at=info["published_at"], scheduled_at=info["scheduled_at"])
                         n += 1
         if instagram.status(settings)["connected"]:
             posts = [(r, m) for r, m in social.linked(c, "instagram") if only_run in (None, r)]
@@ -676,14 +693,61 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(409, "Gere o vídeo com overlay antes de postar.")
         return folder / "overlay.mp4", "overlay"
 
+    def publish_time(value: str | None) -> datetime | None:
+        """A data de programar a publicação (ISO 8601); sem fuso, vale o do servidor."""
+        if not value:
+            return None
+        try:
+            when = datetime.fromisoformat(value).astimezone()
+        except ValueError as e:
+            raise HTTPException(400, "Data de publicação inválida.") from e
+        if when < datetime.now().astimezone() + timedelta(minutes=5):
+            raise HTTPException(400, "Escolha uma data pelo menos 5 minutos no futuro.")
+        return when
+
+    def start_instagram(run, variant: str, caption: str, base: str, scheduled: bool = False) -> None:
+        """Publica o Reel em segundo plano; o Instagram baixa o vídeo pelo endereço público `base`."""
+        run_id = run["id"]
+        video, variant = video_of(run, variant)
+        video_url = f"{base}/runs/{video.parent.name}/{video.name}?v={int(video.stat().st_mtime)}"
+        caption = f"{caption}\n\n{social.HASHTAGS['instagram']}".strip()
+
+        def work(progress):
+            c = db.connect(settings.db_path)
+            try:
+                media = instagram.publish_reel(settings, video_url, caption, progress)
+            except Exception as e:
+                if scheduled:
+                    social.set_schedule(c, run_id, "instagram", "failed", str(e))
+                raise
+            social.save_post(c, run_id, "instagram", media["id"], media.get("permalink") or "https://www.instagram.com/",
+                             via="api", variant=variant, title=(media.get("caption") or "")[:120] or None,
+                             privacy="public", published_at=media.get("timestamp"))
+            social.unschedule(c, run_id, "instagram")
+            try:
+                refresh_numbers(c, run_id)
+            except HTTPException:
+                pass
+
+        jobs.start(run_id, "instagram", work)
+
     @app.post("/api/runs/{run_id}/posts/{network}")
     def post_video(run_id: int, network: str, body: PostBody, request: Request):
-        """Publica pela API da rede, em segundo plano (YouTube: envio do arquivo; Instagram: o Reel pelo túnel)."""
+        """Publica pela API da rede, em segundo plano (YouTube: envio do arquivo; Instagram: o Reel pelo túnel).
+
+        Com `publish_at`, programa: o YouTube recebe o vídeo agora e publica sozinho na data; o Instagram não
+        programa pela API, então o cardline guarda o pedido e publica na hora (agenda)."""
         run = opening(run_id)
         if network not in ("youtube", "instagram"):
             raise HTTPException(400, "Pela API, só YouTube e Instagram; o TikTok é pelo app (e depois vincule o link).")
-        if network in social.posts(con(), run_id):
+        c = con()
+        if network in social.posts(c, run_id):
             raise HTTPException(409, f"Esta pipeline já tem um post no {social.NETWORKS[network]}; desvincule para postar de novo.")
+        pending = social.scheduled(c, run_id).get(network)
+        if pending and pending["status"] != "failed":
+            raise HTTPException(409, f"Esta pipeline já tem publicação programada no {social.NETWORKS[network]} "
+                                     f"({local_time(pending['publish_at'])}); cancele para mudar.")
+        when = publish_time(body.publish_at)
         video, variant = video_of(run, body.variant)
         if network == "youtube":
             if body.privacy not in youtube.PRIVACY:
@@ -697,45 +761,98 @@ def create_app(settings: Settings) -> FastAPI:
             if not tags:
                 folder = settings.root / run["dir"]
                 scan = load_scan(folder) if (folder / "scan.json").exists() else {"cards": []}
-                names = {r["code"]: r["name"] for r in con().execute("SELECT code, name FROM sets")}
+                names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
                 tags = social.suggestion(scan, names, settings.youtube_tags)["tags"]
 
             def work(progress):
                 created = youtube.upload(settings, video, body.title, caption, tags, body.privacy,
-                                         progress=lambda f: progress(f, "Enviando o vídeo"))
+                                         progress=lambda f: progress(f, "Enviando o vídeo"), publish_at=when)
                 c = db.connect(settings.db_path)
+                status = created.get("status", {})
                 social.save_post(c, run_id, "youtube", created["id"], youtube.url(created["id"]), via="api", variant=variant,
-                                 title=created.get("snippet", {}).get("title"),
-                                 privacy=created.get("status", {}).get("privacyStatus"),
-                                 published_at=created.get("snippet", {}).get("publishedAt"))
+                                 title=created.get("snippet", {}).get("title"), privacy=status.get("privacyStatus"),
+                                 published_at=created.get("snippet", {}).get("publishedAt"),
+                                 scheduled_at=status.get("publishAt"))
                 try:  # a visibilidade de verdade (projeto sem auditoria: travado como privado)
                     refresh_numbers(c, run_id)
                 except HTTPException:
                     pass
-        else:
-            if not instagram.status(settings)["connected"]:
-                raise HTTPException(409, "Conecte o Instagram (cole o token gerado no painel da Meta).")
-            base = public_base(settings, request)
-            if not base:
-                raise HTTPException(409, "O Instagram baixa o vídeo de um endereço público: abra a página pelo túnel "
-                                         "(ngrok) ou configure public_url no cardline.toml.")
-            video_url = f"{base}/runs/{video.parent.name}/{video.name}?v={int(video.stat().st_mtime)}"
-            caption = f"{body.caption}\n\n{social.HASHTAGS['instagram']}".strip()
 
-            def work(progress):
-                media = instagram.publish_reel(settings, video_url, caption, progress)
-                c = db.connect(settings.db_path)
-                social.save_post(c, run_id, "instagram", media["id"], media.get("permalink") or "https://www.instagram.com/",
-                                 via="api", variant=variant, title=(media.get("caption") or "")[:120] or None,
-                                 privacy="public", published_at=media.get("timestamp"))
-                try:
-                    refresh_numbers(c, run_id)
-                except HTTPException:
-                    pass
+            try:
+                jobs.start(run_id, network, work)
+            except RuntimeError as e:
+                raise HTTPException(409, str(e)) from e
+            return {"ok": True}
+        if not instagram.status(settings)["connected"]:
+            raise HTTPException(409, "Conecte o Instagram (cole o token gerado no painel da Meta).")
+        base = public_base(settings, request)
+        if when:  # na hora, o endereço vem do public_url ou do ngrok; o de agora fica de reserva
+            at = when.isoformat(timespec="seconds")
+            social.schedule(c, run_id, network, at, {"caption": body.caption, "variant": variant, "base": base,
+                                                     "port": request.url.port})
+            return {"ok": True, "scheduled": at}
+        if not base:
+            raise HTTPException(409, "O Instagram baixa o vídeo de um endereço público: abra a página pelo túnel "
+                                     "(ngrok) ou configure public_url no cardline.toml.")
         try:
-            jobs.start(run_id, network, work)
+            start_instagram(run, variant, body.caption, base)
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
+        social.unschedule(c, run_id, network)  # a programação que tinha falhado (se houver) dá lugar a este post
+        return {"ok": True}
+
+    def publish_due(now: datetime | None = None) -> None:
+        """Publica o que foi programado para agora (Instagram). O que não der para publicar ainda (túnel fechado,
+        Instagram desconectado) espera com o motivo e tenta de novo a cada ciclo; 1 h depois da hora, desiste."""
+        now = now or datetime.now().astimezone()
+        c = con()
+        for s in social.due(c, now):
+            run_id, network = s["run_id"], s["network"]
+            if network in social.posts(c, run_id):  # postou pelo app e vinculou: não publica de novo
+                social.unschedule(c, run_id, network)
+                continue
+            at = datetime.fromisoformat(s["publish_at"])
+            if (now - at).total_seconds() > social.LATE_LIMIT:
+                social.set_schedule(c, run_id, network, "failed",
+                                    f"Não publicou até 1 h depois da hora marcada: {s['error']}" if s["error"] else
+                                    f"O cardline estava desligado na hora marcada ({local_time(at)}).")
+                continue
+            req = json.loads(s["request"])
+            base = public_base(settings, port=req.get("port"), fallback=req.get("base"))
+            problem = ("O Instagram está desconectado: conecte de novo para publicar."
+                       if not instagram.status(settings)["connected"] else
+                       None if base else "Sem endereço público: o túnel (ngrok) está fechado.")
+            if problem:
+                social.set_schedule(c, run_id, network, "waiting", problem)
+                continue
+            social.set_schedule(c, run_id, network, "sending")
+            try:
+                start_instagram(opening(run_id), req["variant"], req["caption"], base, scheduled=True)
+            except RuntimeError:  # outro vídeo sendo publicado: tenta no próximo ciclo
+                social.set_schedule(c, run_id, network, "waiting", s["error"])
+                return
+            except HTTPException as e:
+                social.set_schedule(c, run_id, network, "failed", e.detail)
+
+    def agenda(stop: threading.Event) -> None:
+        """A cada 30 s, publica as programações que chegaram na hora."""
+        while True:
+            try:
+                publish_due()
+            except Exception as e:  # noqa: BLE001 - o laço não pode parar
+                print(f"agenda: {e}", file=sys.stderr, flush=True)
+            if stop.wait(30):
+                return
+
+    app.state.publish_due = publish_due
+
+    @app.delete("/api/runs/{run_id}/scheduled/{network}")
+    def cancel_scheduled(run_id: int, network: str):
+        """Cancela a publicação que o cardline faria na hora marcada (ou descarta a que falhou)."""
+        c = con()
+        if (social.scheduled(c, run_id).get(network) or {}).get("status") == "sending":
+            raise HTTPException(409, "A publicação já começou; espere terminar.")
+        social.unschedule(c, run_id, network)
         return {"ok": True}
 
     @app.put("/api/runs/{run_id}/posts")
@@ -752,7 +869,7 @@ def create_app(settings: Settings) -> FastAPI:
             if info is None:
                 raise HTTPException(404, "O YouTube não encontrou esse vídeo (ou ele é privado de outra conta).")
             social.save_post(c, run_id, network, post_id, url, via="link", title=info["title"], privacy=info["privacy"],
-                             published_at=info["published_at"])
+                             published_at=info["published_at"], scheduled_at=info["scheduled_at"])
             social.save_stats(c, run_id, network, info)
         elif network == "instagram" and instagram.status(settings)["connected"]:
             media = net_call(instagram.find_media, settings, post_id)  # o link traz o código; a API usa o ID da mídia
@@ -763,6 +880,8 @@ def create_app(settings: Settings) -> FastAPI:
                 refresh_numbers(c, run_id)
         else:
             social.save_post(c, run_id, network, None if network == "instagram" else post_id, url, via="link")
+        if (social.scheduled(c, run_id).get(network) or {}).get("status") != "sending":
+            social.unschedule(c, run_id, network)  # já postou: a publicação programada não acontece mais
         return {"ok": True, "network": network}
 
     @app.patch("/api/runs/{run_id}/posts/{network}")

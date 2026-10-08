@@ -190,6 +190,13 @@ O painel **Postar nas redes**, no detalhe de uma abertura, posta o vídeo e vinc
   Com o YouTube conectado, a lista dos últimos vídeos do canal já aparece para vincular com um toque.
 - **Números:** YouTube e Instagram conectados são lidos pela API ao abrir o Resumo (no máximo a cada 30 min) ou
   em **Atualizar números**. No TikTok, sem API, use **Informar números**. Cada leitura fica guardada.
+- **Programar:** preencha **Programar a publicação** e os botões viram **Programar no YouTube / no Instagram**.
+  No YouTube, o vídeo sobe na hora, fica privado e o próprio YouTube publica na data, mesmo com o PC desligado
+  (sem a auditoria do Google, porém, o vídeo fica travado como privado e a data não vale). O Instagram não programa
+  pela API: o cardline guarda o pedido e publica na hora marcada, então o PC precisa estar ligado e o túnel
+  aberto. Se não der (túnel fechado, Instagram desconectado), tenta de novo a cada 30 s e, 1 h depois da hora,
+  desiste e avisa na página. No TikTok, use o agendamento do próprio app. Na lista de pipelines, a rede
+  programada aparece com o ícone apagado.
 
 **YouTube (postar pela API e ler os números):**
 
@@ -266,7 +273,8 @@ no túnel, ou só redes de confiança.
 | GET | `/api/youtube/recent` | últimos vídeos do canal (para vincular o que foi postado pelo app) |
 | GET / POST | `/api/instagram`, `/api/instagram/token` | situação do Instagram; `{"token": "IG…"}` conecta (`/api/instagram/disconnect` esquece) |
 | POST | `/api/social/stats?max_age=1800` | atualiza os números dos posts no YouTube e no Instagram |
-| POST | `/api/runs/{id}/posts/{rede}` | `{"title", "caption", "privacy", "variant"}`: posta pela API (`youtube` ou `instagram`, em segundo plano) |
+| POST | `/api/runs/{id}/posts/{rede}` | `{"title", "caption", "privacy", "variant", "tags"}`: posta pela API (`youtube` ou `instagram`, em segundo plano); com `"publish_at": "2026-10-08T21:30:00Z"`, programa |
+| DELETE | `/api/runs/{id}/scheduled/{rede}` | cancela a publicação que o cardline faria na hora marcada (ou descarta a que falhou) |
 | PUT | `/api/runs/{id}/posts` | `{"url": "…"}`: vincula um post já feito (YouTube, Instagram ou TikTok, reconhecido pelo link) |
 | PATCH / DELETE | `/api/runs/{id}/posts/{rede}` | `{"views": 1500, "likes": 120, …}` informa os números à mão; DELETE desvincula |
 | GET | `/api/sets` | sets com ícone, cartas no catálogo e na coleção, e se já são reconhecidos em vídeo |

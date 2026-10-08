@@ -426,6 +426,9 @@ dialog.dlg.narrow { width: min(460px, calc(100vw - 32px)); }
 .ytfield textarea { resize: vertical; line-height: 1.35; }
 .ytlink { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
 .ytlink .ytrow input { flex: 1; }
+.ytwhen { align-items: flex-end; flex-wrap: nowrap; }
+.ytwhen .ytfield { flex: 1 1 200px; max-width: 280px; }
+.ytwhen .linkbtn { flex: none; padding-bottom: 8px; }
 .ytbox { display: grid; gap: 8px; padding: 12px; border-radius: 10px; background: var(--panel-2); font-size: 13px; }
 .ytbox p { margin: 0; }
 .ytclient { display: grid; gap: 8px; }
@@ -473,3 +476,4 @@ svg .tick.down { fill: var(--down); }
 .netbadge svg { width: 20px; height: 20px; display: block; }
 a.netbadge { border-radius: 6px; }
 a.netbadge:hover { background: var(--panel-2); }
+.netbadge.pending { opacity: .5; outline: 1px dashed var(--muted); outline-offset: -1px; border-radius: 6px; }

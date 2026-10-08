@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -111,6 +111,18 @@ CREATE TABLE IF NOT EXISTS posts (  -- o vídeo de uma abertura numa rede
     privacy      TEXT,            -- public | unlisted | private, quando a rede informa
     posted_at    TEXT NOT NULL,
     published_at TEXT,
+    scheduled_at TEXT,            -- publicação programada na própria rede (YouTube: publishAt); vazio = já saiu
+    PRIMARY KEY (run_id, network)
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_posts (  -- o que o cardline publica na hora marcada (a rede não programa sozinha)
+    run_id     INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    network    TEXT NOT NULL,
+    publish_at TEXT NOT NULL,
+    request    TEXT NOT NULL,                    -- JSON: legenda, versão do vídeo, endereço público de quando programou
+    status     TEXT NOT NULL DEFAULT 'waiting',  -- waiting | sending | failed
+    error      TEXT,                             -- o último problema (esperando: o que impediu de publicar até agora)
+    created_at TEXT NOT NULL,
     PRIMARY KEY (run_id, network)
 );
 
@@ -184,6 +196,7 @@ MIGRATIONS = {
     4: _set_icon_columns,
     5: _narrate_steps,
     6: _posts_per_network,
+    7: lambda con: _add_column(con, "posts", "scheduled_at", "TEXT"),
 }
 
 

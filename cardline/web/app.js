@@ -35,6 +35,8 @@ function money(usd, sign = false) {
 const pctTxt = (now, base) => base ? `${now >= base ? '+' : '−'}${Math.abs((now - base) / base * 100).toFixed(0)}%` : '';
 const cls = v => v > 0.004 ? 'up' : v < -0.004 ? 'down' : '';
 const dt = s => s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+const dtShort = s => new Date(s).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const localInput = d => new Date(d - d.getTimezoneOffset() * 60e3).toISOString().slice(0, 16);  // valor de <input type=datetime-local>
 function dur(a, b) {
   if (!a) return '';
   const s = Math.max(0, Math.round(((b ? new Date(b) : new Date()) - new Date(a)) / 1000));
@@ -243,12 +245,15 @@ const NET_ICONS = {
   instagram: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5.5" fill="none" stroke="#E1306C" stroke-width="2"/><circle cx="12" cy="12" r="4.2" fill="none" stroke="#E1306C" stroke-width="2"/><circle cx="17.4" cy="6.6" r="1.2" fill="#E1306C"/></svg>',
   tiktok: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h3c.2 1.9 1.6 3.4 3.6 3.6v3a6.6 6.6 0 0 1-3.6-1.1v6.4a5.3 5.3 0 1 1-5.3-5.3l.8.1v3.1a2.3 2.3 0 1 0 1.5 2.1z" fill="currentColor"/></svg>',
 };
-function netBadges(r, links = false) {
-  return ['youtube', 'instagram', 'tiktok'].filter(n => r.posts?.[n]).map(n => {
-    const p = r.posts[n], label = NETS.find(x => x.key === n).label;
-    const title = `Postado no ${label}${p.views != null ? ` · ${fmtInt(p.views)} visualizações` : ''}`;
-    return links ? `<a class="netbadge" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(title)}" aria-label="${esc(title)}">${NET_ICONS[n]}</a>`
-      : `<span class="netbadge" title="${esc(title)}" role="img" aria-label="${esc(title)}">${NET_ICONS[n]}</span>`;
+const upcoming = at => at && new Date(at) > Date.now() ? at : null;
+function netBadges(r, links = false) {  // postado; apagado = programado (ainda não saiu)
+  return ['youtube', 'instagram', 'tiktok'].filter(n => r.posts?.[n] || r.scheduled?.[n]?.status === 'waiting').map(n => {
+    const p = r.posts?.[n], label = NETS.find(x => x.key === n).label;
+    const at = p ? upcoming(p.scheduled_at) : r.scheduled[n].publish_at;
+    const title = at ? `Programado no ${label} para ${dt(at)}` : `Postado no ${label}${p.views != null ? ` · ${fmtInt(p.views)} visualizações` : ''}`;
+    const cls = `netbadge${at ? ' pending' : ''}`;
+    return links && p ? `<a class="${cls}" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(title)}" aria-label="${esc(title)}">${NET_ICONS[n]}</a>`
+      : `<span class="${cls}" title="${esc(title)}" role="img" aria-label="${esc(title)}">${NET_ICONS[n]}</span>`;
   }).join('');
 }
 function progressHtml(r) {
@@ -734,6 +739,7 @@ function syncNarrationOption() {  // a narração é sobre o vídeo com overlay
   if ($('#opt-narration').disabled) $('#opt-narration').checked = false;
 }
 $('#opt-overlay').addEventListener('change', syncNarrationOption);
+document.addEventListener('input', ev => { if (ev.target.id === 'sp-when' && S.run) renderSocial(S.run); });
 const newKind = () => document.querySelector('input[name="kind"]:checked').value;
 function applyKind() {  // valor pago, moeda e vídeo só existem na abertura de booster
   const cadastro = newKind() === 'cadastro';
@@ -1168,7 +1174,8 @@ function numbersLine(p) {
   return `<div class="netnums">${parts.join('')}</div><p class="muted small">${when}</p>`;
 }
 function netRowHtml(r, n) {
-  const post = r.posts?.[n.key], job = r.post_jobs?.[n.key];
+  const post = r.posts?.[n.key], job = r.post_jobs?.[n.key], sched = r.scheduled?.[n.key];
+  const verb = $('#sp-when')?.value ? 'Programar' : 'Postar';
   const ytm = S.meta.youtube || {}, ig = S.meta.instagram || {};
   const head = (extra = '') => `<div class="nethead"><i class="netdot" style="--c:${n.color}"></i><b>${n.label}</b>${extra}`;
   const editing = sp.editing[n.key];
@@ -1188,22 +1195,33 @@ function netRowHtml(r, n) {
       <div class="ytactions"><button class="btn small" data-sp="save-token">Salvar token</button>
         <button class="linkbtn" data-sp="cancel" data-net="instagram">Cancelar</button></div></div>`;
   if (post) {
-    const locked = n.key === 'youtube' && post.via === 'api' && post.privacy === 'private';
+    const soon = upcoming(post.scheduled_at);  // programado no YouTube: privado até a data
+    const locked = n.key === 'youtube' && post.via === 'api' && post.privacy === 'private' && !soon;
     const auto = (n.key === 'youtube' && ytm.connected) || (n.key === 'instagram' && ig.connected && post.post_id);
-    return `${head(`${n.key === 'youtube' && post.privacy ? `<span class="chip">${esc(PRIVACY[post.privacy] || post.privacy)}</span>` : ''}
+    const chip = soon ? `<span class="chip" title="${esc(dt(soon))}">Programado · ${dtShort(soon)}</span>`
+      : n.key === 'youtube' && post.privacy ? `<span class="chip">${esc(PRIVACY[post.privacy] || post.privacy)}</span>` : '';
+    return `${head(`${chip}
         <span class="spacer"></span><a href="${esc(post.url)}" target="_blank" rel="noopener">Abrir ↗</a></div>`)}
-      ${numbersLine(post)}
+      ${soon ? '<p class="muted small">Fica privado até lá; o próprio YouTube publica na data, mesmo com o PC desligado.</p>' : numbersLine(post)}
       ${locked ? '<p class="warnbox">O YouTube travou este vídeo como privado: ele foi enviado por um projeto da API que ainda não passou pela auditoria do Google. Para publicar, poste pelo app e vincule o novo link (desvinculando este).</p>' : ''}
       <div class="ytactions">${auto ? `<button class="linkbtn" data-sp="stats" data-net="${n.key}">Atualizar números</button>`
         : `<button class="linkbtn" data-sp="numbers" data-net="${n.key}">Informar números</button>`}
         <span class="spacer"></span><button class="linkbtn" data-sp="unlink" data-net="${n.key}">Desvincular</button></div>`;
   }
-  const failed = job?.status === 'failed' ? `<p class="error">${esc(job.error)}</p>` : '';
-  if (n.key === 'youtube') return `${head(`<span class="spacer"></span>${ytm.connected ? '<button class="btn small" data-sp="post" data-net="youtube">Postar no YouTube</button>' : ''}</div>`)}
+  if (sched && sched.status !== 'failed') {  // Instagram: a API não programa, o cardline publica na hora
+    return `${head(`<span class="chip" title="${esc(dt(sched.publish_at))}">Programado · ${dtShort(sched.publish_at)}</span><span class="spacer"></span></div>`)}
+      <p class="muted small">O cardline publica nessa hora: deixe o PC ligado e o túnel (ngrok) aberto.</p>
+      ${sched.error ? `<p class="warnbox">${esc(sched.error)} Tento de novo a cada 30 s, até 1 h depois da hora marcada.</p>` : ''}
+      <div class="ytactions"><span class="spacer"></span><button class="linkbtn" data-sp="unschedule" data-net="${n.key}">Cancelar a programação</button></div>`;
+  }
+  const failed = sched?.status === 'failed'
+    ? `<p class="error">A publicação programada para ${dt(sched.publish_at)} não saiu: ${esc(sched.error)} <button class="linkbtn" data-sp="unschedule" data-net="${n.key}">Descartar</button></p>`
+    : job?.status === 'failed' ? `<p class="error">${esc(job.error)}</p>` : '';
+  if (n.key === 'youtube') return `${head(`<span class="spacer"></span>${ytm.connected ? `<button class="btn small" data-sp="post" data-net="youtube">${verb} no YouTube</button>` : ''}</div>`)}
     ${failed}${ytm.connected ? `<p class="muted small">${esc(ytm.channel?.title || 'canal conectado')} · pela API, o YouTube deixa o vídeo privado até o seu projeto passar pela auditoria do Google · <button class="linkbtn" data-yt="disconnect">desconectar</button></p>` : ytConnectBox()}`;
-  if (n.key === 'instagram') return `${head(`<span class="spacer"></span>${ig.connected ? '<button class="btn small" data-sp="post" data-net="instagram">Postar no Instagram</button>' : '<button class="btn ghost small" data-sp="token">Conectar o Instagram</button>'}</div>`)}
+  if (n.key === 'instagram') return `${head(`<span class="spacer"></span>${ig.connected ? `<button class="btn small" data-sp="post" data-net="instagram">${verb} no Instagram</button>` : '<button class="btn ghost small" data-sp="token">Conectar o Instagram</button>'}</div>`)}
     ${failed}${ig.connected ? `<p class="muted small">@${esc(ig.username || '')} · o Reel sai público; o Instagram baixa o vídeo pelo túnel · <button class="linkbtn" data-sp="ig-disconnect">desconectar</button></p>` : ''}`;
-  return `${head('<span class="spacer"></span></div>')}<p class="muted small">Sem API (o TikTok exige aprovar o app): compartilhe o vídeo, poste pelo app e vincule o link; os números você informa aqui.</p>`;
+  return `${head('<span class="spacer"></span></div>')}<p class="muted small">Sem API (o TikTok exige aprovar o app): compartilhe o vídeo, poste pelo app e vincule o link; os números você informa aqui.${verb === 'Programar' ? ' Para programar, use o agendamento do próprio TikTok.' : ''}</p>`;
 }
 function renderSocial(r) {
   const box = $('#r-yt');
@@ -1217,6 +1235,10 @@ function renderSocial(r) {
       <label class="ytfield">Tags (YouTube, separadas por vírgula)<input id="sp-tags" value="${esc((sug.tags || []).join(', '))}"></label>
       <div class="ytrow"><label class="ytfield" id="sp-variant-box">Versão<select id="sp-variant"><option value="narrado">com narração</option><option value="overlay">sem narração</option></select></label>
         <label class="ytfield">Visibilidade no YouTube<select id="sp-privacy">${Object.entries(PRIVACY).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label></div>
+      <div class="ytrow ytwhen"><label class="ytfield">Programar a publicação (opcional)<input type="datetime-local" id="sp-when"></label>
+        <button class="linkbtn" data-sp="when-clear" id="sp-when-clear" hidden>Publicar agora</button></div>
+      <p class="muted small" id="sp-when-note" hidden>YouTube: o vídeo sobe agora, fica privado e o próprio YouTube publica na data, mesmo com o PC desligado.
+        Instagram: a API não programa, então o cardline publica na hora marcada (deixe o PC ligado e o túnel aberto).</p>
       <div class="netrows">${NETS.map(n => `<div class="netrow" id="net-${n.key}"></div>`).join('')}</div>
       <div class="ytactions"><button class="btn ghost" data-sp="share" id="sp-share">Compartilhar o vídeo</button></div>
       <p class="muted small">No celular, abre o compartilhamento com o vídeo (escolha YouTube, Instagram ou TikTok) e copia a legenda;
@@ -1227,6 +1249,10 @@ function renderSocial(r) {
     box._html = null;
   }
   $('#sp-variant-box').hidden = !r.narrated;
+  const when = $('#sp-when');
+  when.min = localInput(new Date(Date.now() + 5 * 60e3));
+  $('#sp-when-clear').hidden = $('#sp-when-note').hidden = !when.value;
+  $('#sp-privacy').disabled = !!when.value;  // programado: privado até a data, público depois
   for (const n of NETS) {
     const el = $(`#net-${n.key}`);
     if (el && !(sp.editing[n.key] && el.querySelector('.netform'))) patch(el, netRowHtml(r, n));
@@ -1300,6 +1326,7 @@ document.addEventListener('click', async ev => {
       return;
     }
     if (action === 'share') { await spShare(r); return; }
+    if (action === 'when-clear') { $('#sp-when').value = ''; renderSocial(r); return; }
     if (action === 'token') { sp.editing.instagram = 'token'; renderSocial(r); $('#ig-token')?.focus(); return; }
     if (action === 'numbers') { sp.editing[net] = 'numbers'; renderSocial(r); return; }
     if (action === 'cancel') { delete sp.editing[net]; renderSocial(r); return; }
@@ -1322,9 +1349,17 @@ document.addEventListener('click', async ev => {
     if (action === 'stats') { b.disabled = true; await api(`/api/social/stats?run=${id}`, { method: 'POST' }); }
     if (action === 'post') {
       b.disabled = true;
+      const when = $('#sp-when').value;  // horário do aparelho; vai com o fuso
       await api(`/api/runs/${id}/posts/${net}`, json({ title: $('#sp-title').value, caption: $('#sp-caption').value,
         privacy: $('#sp-privacy').value, variant: $('#sp-variant').value,
-        tags: $('#sp-tags').value.split(',').map(t => t.trim()).filter(Boolean) }));
+        tags: $('#sp-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+        publish_at: when ? new Date(when).toISOString() : null }));
+    }
+    if (action === 'unschedule') {
+      const s = r.scheduled?.[net], label = NETS.find(n => n.key === net).label;
+      if (s?.status !== 'failed' && !confirm(`Cancelar a publicação programada no ${label} para ${dt(s?.publish_at)}?`)) return;
+      b.disabled = true;
+      await api(`/api/runs/${id}/scheduled/${net}`, { method: 'DELETE' });
     }
     if (action === 'link' || action === 'link-id') {
       const url = action === 'link' ? $('#sp-url').value : `https://youtu.be/${b.dataset.vid}`;

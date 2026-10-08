@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,6 +131,20 @@ def test_stats_come_from_the_api(settings, monkeypatch):
         "status": {"privacyStatus": "public"}, "snippet": {"title": "Abrindo", "publishedAt": "2026-10-06T20:00:00Z"}}]}))
     info = youtube.stats(settings, ["vid12345678"])["vid12345678"]
     assert (info["views"], info["likes"], info["comments"], info["privacy"], info["title"]) == (120, 9, 2, "public", "Abrindo")
+    assert info["scheduled_at"] is None  # já publicado
+
+
+def test_scheduled_upload_is_private_until_youtube_publishes_it(settings, monkeypatch, tmp_path):
+    connected(settings)
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"0123")
+    g = FakeGoogle(monkeypatch)
+    g.on("POST", youtube.UPLOAD_URL, (200, {"Location": "https://upload/sessao"}, {}))
+    g.on("PUT", "https://upload/sessao", (201, {}, {"id": "vid12345678", "status": {"privacyStatus": "private"}}))
+    when = datetime(2026, 10, 8, 18, 30, tzinfo=timezone(timedelta(hours=-3)))
+    youtube.upload(settings, video, "Título", "Descrição", [], "unlisted", publish_at=when)
+    assert g.calls[0][2]["body"]["status"] == {"privacyStatus": "private", "publishAt": "2026-10-08T21:30:00Z",
+                                               "selfDeclaredMadeForKids": False}
 
 
 def new_run(settings, name="v.mp4"):
@@ -146,13 +161,15 @@ def test_routes_link_unlink_and_post(settings, monkeypatch):
     run_id = new_run(settings)
     folder = settings.runs_dir / str(run_id)
     (folder / "overlay.mp4").write_bytes(b"video")
-    uploads, sent_tags = [], []
+    uploads, sent_tags, sent_when = [], [], []
 
-    def fake_upload(s, path, title, description, tags, privacy, progress=lambda f: None):
+    def fake_upload(s, path, title, description, tags, privacy, progress=lambda f: None, publish_at=None):
         uploads.append((path.name, title, privacy, description))
         sent_tags.append(tags)
+        sent_when.append(publish_at)
         progress(1.0)
-        return {"id": "novo1234567", "snippet": {"title": title}, "status": {"privacyStatus": "private"}}
+        status = {"privacyStatus": "private", **({"publishAt": "2026-10-08T21:30:00Z"} if publish_at else {})}
+        return {"id": "novo1234567", "snippet": {"title": title}, "status": status}
 
     monkeypatch.setattr(youtube, "upload", fake_upload)
     monkeypatch.setattr(youtube, "stats", lambda s, ids: {})
@@ -190,6 +207,21 @@ def test_routes_link_unlink_and_post(settings, monkeypatch):
                 break
             time.sleep(0.05)
         assert sent_tags[1] == ["minha tag", "br"]  # as tags editadas na página
+        assert client.get(f"/api/runs/{run_id}").json()["posts"]["youtube"]["scheduled_at"] is None  # postou na hora
+
+        assert client.delete(f"/api/runs/{run_id}/posts/youtube").status_code == 200
+        past = (datetime.now().astimezone() - timedelta(minutes=1)).isoformat()
+        r = client.post(f"/api/runs/{run_id}/posts/youtube", json={"title": "Depois", "publish_at": past})
+        assert r.status_code == 400 and "futuro" in r.json()["detail"]
+        later = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0)
+        r = client.post(f"/api/runs/{run_id}/posts/youtube", json={"title": "Depois", "publish_at": later.isoformat()})
+        assert r.status_code == 200
+        for _ in range(50):
+            if client.get(f"/api/runs/{run_id}").json()["post_jobs"]["youtube"]["status"] != "sending":
+                break
+            time.sleep(0.05)
+        assert sent_when[-1] == later  # o YouTube publica sozinho na data
+        assert client.get(f"/api/runs/{run_id}").json()["posts"]["youtube"]["scheduled_at"] == "2026-10-08T21:30:00Z"
 
 
 def test_tags_follow_youtube_rules():
