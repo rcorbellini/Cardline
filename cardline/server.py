@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, instagram, logo, narration, pipeline, rarity, sealed, social, youtube
+from . import db, instagram, jobs as job_log, logo, narration, pipeline, rarity, sealed, social, youtube
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
 from .config import Settings
@@ -84,6 +84,7 @@ class SyncJob:
         self.proc: subprocess.Popen | None = None
         self.started_at = self.finished_at = None
         self.code: int | None = None
+        self.job: int | None = None  # a linha desta sincronização na aba Pipelines
 
     @property
     def running(self) -> bool:
@@ -99,6 +100,18 @@ class SyncJob:
                 stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
         self.started_at, self.finished_at, self.code = db.now(), None, None
+        self.job = job_log.create(db.connect(self.settings.db_path), "sync")
+        threading.Thread(target=self._watch, args=(self.proc, self.job), daemon=True).start()
+
+    def _watch(self, proc: subprocess.Popen, job: int) -> None:
+        """Quando o `cardline sync` termina, a linha dele na aba Pipelines ganha o resultado e o log."""
+        code = proc.wait()
+        log = self.log_path.read_text(errors="replace") if self.log_path.exists() else ""
+        lines = [line.rsplit("\r", 1)[-1] for line in log.splitlines() if line.strip()]
+        new_sets = [line.strip() for line in lines if line.startswith("  ") and "cartas" in line]
+        job_log.finish(db.connect(self.settings.db_path), job, "done" if code == 0 else "failed",
+                       "Sincronizado." if code == 0 else (lines[-1] if lines else f"O sync terminou com código {code}."),
+                       {"sets": len(new_sets)}, "\n".join(lines[-400:]))
 
     def status(self) -> dict:
         if self.proc is not None and not self.running and self.finished_at is None:
@@ -112,33 +125,41 @@ class SyncJob:
 
 
 class Task:
-    """Tarefa de fundo do Resumo (preços, números das redes): roda numa thread, uma de cada vez por tipo, e a
-    página acompanha pelo /api/tasks."""
+    """Tarefa de fundo (preços, números das redes): roda numa thread, uma de cada vez por tipo. O Resumo acompanha
+    pelo /api/tasks, e a execução disparada pelo botão vira uma linha na aba Pipelines (tabela jobs)."""
 
-    def __init__(self):
+    def __init__(self, settings: Settings, kind: str):
+        self.settings, self.kind = settings, kind
         self.lock = threading.Lock()
         self.state = {"running": False, "started_at": None, "finished_at": None, "ok": None, "message": None,
-                      "progress": None}
+                      "progress": None, "job": None}
 
-    def start(self, work) -> dict:
+    def start(self, work, record: bool = True) -> dict:
+        """`work(progress)` devolve a mensagem do fim, ou (mensagem, resultado) para guardar na linha."""
         with self.lock:
             if self.state["running"]:
                 raise RuntimeError("Já está rodando; espere terminar.")
+            job = job_log.create(db.connect(self.settings.db_path), self.kind) if record else None
             self.state = {"running": True, "started_at": db.now(), "finished_at": None, "ok": None,
-                          "message": "Começando", "progress": 0.0}
-        threading.Thread(target=self._run, args=(work,), daemon=True).start()
+                          "message": "Começando", "progress": 0.0, "job": job}
+        threading.Thread(target=self._run, args=(work, job), daemon=True).start()
         return dict(self.state)
 
-    def _run(self, work) -> None:
+    def _run(self, work, job: int | None) -> None:
         def progress(fraction: float, message: str | None = None) -> None:
             self.state.update(progress=round(fraction, 3), **({"message": message} if message else {}))
 
         try:
-            message = work(progress)
+            out = work(progress)
+            message, result = out if isinstance(out, tuple) else (out, None)
             self.state.update(running=False, ok=True, progress=1.0, message=message, finished_at=db.now())
+            status = "done"
         except Exception as e:  # noqa: BLE001 - qualquer falha vira mensagem na página
-            detail = e.detail if isinstance(e, HTTPException) else str(e)
-            self.state.update(running=False, ok=False, message=detail, finished_at=db.now())
+            message, result = e.detail if isinstance(e, HTTPException) else str(e), None
+            self.state.update(running=False, ok=False, message=message, finished_at=db.now())
+            status = "failed"
+        if job:
+            job_log.finish(db.connect(self.settings.db_path), job, status, message, result)
 
 
 class SealedBody(BaseModel):
@@ -306,7 +327,7 @@ def create_app(settings: Settings) -> FastAPI:
     sync_job = SyncJob(settings)
     yt = YouTubeLogin(settings)
     jobs = PostJobs(settings)
-    tasks = {"prices": Task(), "social": Task()}  # o Resumo mostra quando estão rodando
+    tasks = {"prices": Task(settings, "precos"), "social": Task(settings, "redes")}  # o Resumo mostra quando rodam
     edit_lock = threading.Lock()  # edições do scan.json não podem se intercalar
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     ollama = {"checked": 0.0, "available": False}
@@ -315,6 +336,7 @@ def create_app(settings: Settings) -> FastAPI:
     async def lifespan(_: FastAPI):
         pipeline.recover_interrupted(settings)
         social.interrupted(con())
+        job_log.interrupted(con())
         runner.start()
         stop = threading.Event()
         threading.Thread(target=agenda, args=(stop,), name="cardline-agenda", daemon=True).start()
@@ -1096,6 +1118,31 @@ def create_app(settings: Settings) -> FastAPI:
         return {"value": [dict(r) for r in c.execute("SELECT day, cards_usd, sealed_usd, cards FROM value_history ORDER BY day")],
                 "views": social.views_by_day(c)}
 
+    def live_job(j: dict) -> dict:
+        """A linha da atualização com o andamento de agora, se ela ainda estiver rodando."""
+        if j["status"] != "running":
+            return j
+        for t in tasks.values():
+            if t.state.get("job") == j["id"] and t.state["running"]:
+                return {**j, "progress": t.state["progress"], "message": t.state["message"]}
+        if j["kind"] == "sync" and sync_job.job == j["id"]:
+            st = sync_job.status()
+            last = [line for line in st["log"].splitlines() if line.strip()][-1:] or ["Começando"]
+            return {**j, "message": last[0].strip(), "log": st["log"]}
+        return j
+
+    @app.get("/api/jobs")
+    def jobs_list():
+        """As atualizações disparadas na página (preços, números das redes, sincronização), da mais nova."""
+        return [live_job(j) for j in job_log.recent(con())]
+
+    @app.get("/api/jobs/{job_id}")
+    def job_detail(job_id: int):
+        j = job_log.get(con(), job_id)
+        if j is None:
+            raise HTTPException(404, "Atualização não encontrada.")
+        return live_job(j)
+
     @app.get("/api/tasks")
     def task_status():
         """As tarefas de fundo do Resumo: preços e números das redes."""
@@ -1105,16 +1152,23 @@ def create_app(settings: Settings) -> FastAPI:
     def start_prices():
         """Atualiza os preços de hoje em segundo plano (uma consulta ao Lorcast por set da coleção)."""
         def work(progress):
+            c = db.connect(settings.db_path)
+            before = db.collection_value(c)
+            names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
             try:
                 done = refresh_prices(settings, collection_sets(), lambda f, m=None: progress(0.8 * f, m))["sets"]
             except OSError as e:
                 raise RuntimeError(f"Não consegui buscar os preços no Lorcast ({e}).") from e
+            note, n = "", 0
             try:  # os lacrados: preço do TCGplayer via tcgcsv
-                n = sealed.refresh_prices(settings, db.connect(settings.db_path), lambda f, m=None: progress(0.8 + 0.2 * f, m))
+                n = sealed.refresh_prices(settings, c, lambda f, m=None: progress(0.8 + 0.2 * f, m))
             except (OSError, ValueError, KeyError, LookupError) as e:
-                return f"Preços das cartas atualizados; os dos lacrados não ({e})."
+                note = f"; os dos lacrados não vieram ({e})"
+            after = db.collection_value(c)
+            result = {"sets": [names.get(x, x) for x in done], "sealed": n, "cards_before": before[0],
+                      "cards_after": after[0], "sealed_before": before[1], "sealed_after": after[1]}
             return (f"Preços de hoje atualizados ({len(done)} {'set' if len(done) == 1 else 'sets'}"
-                    + (f" e {n} {'lacrado' if n == 1 else 'lacrados'}" if n else "") + ").")
+                    + (f" e {n} {'lacrado' if n == 1 else 'lacrados'}" if n else "") + f"){note}.", result)
 
         try:
             return tasks["prices"].start(work)
@@ -1132,11 +1186,14 @@ def create_app(settings: Settings) -> FastAPI:
             return {**tasks["social"].state, "fresh": True}
 
         def work(progress):
-            n = refresh_numbers(con(), None, progress)
-            return f"{n} {'vídeo atualizado' if n == 1 else 'vídeos atualizados'}."
+            c = con()
+            before = social.total_views(c)
+            n = refresh_numbers(c, None, progress)
+            return (f"{n} {'vídeo atualizado' if n == 1 else 'vídeos atualizados'}.",
+                    {"videos": n, "views_before": before, "views_after": social.total_views(c)})
 
-        try:
-            return tasks["social"].start(work)
+        try:  # a leitura automática (ao abrir o Resumo) não vira linha na aba Pipelines; a do botão vira
+            return tasks["social"].start(work, record=not max_age)
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
 

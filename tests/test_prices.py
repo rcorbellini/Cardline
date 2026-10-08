@@ -137,6 +137,19 @@ def test_prices_update_in_the_background_one_at_a_time(settings, run, monkeypatc
         assert task["ok"] is True and task["message"] == "Preços de hoje atualizados (1 set)."
         assert client.get("/api/collection").json()["owned"][0]["price"] == 3.0
         assert client.post("/api/tasks/social").json()["skipped"] is True  # nenhum vídeo para ler pela API
+        job = client.get("/api/jobs").json()[0]  # a atualização vira uma linha na aba Pipelines
+        assert (job["kind"], job["label"], job["status"]) == ("precos", "Atualização de preços", "done")
+        assert job["result"]["sets"] == ["The First Chapter"] and job["result"]["cards_after"] == 3.0
+        assert client.get(f"/api/jobs/{job['id']}").json()["message"] == "Preços de hoje atualizados (1 set)."
+        assert client.get("/api/jobs/999").status_code == 404
+
+
+def test_an_update_cut_by_a_restart_shows_as_interrupted(settings):
+    from cardline import jobs
+
+    jobs.create(db.connect(settings.db_path), "precos")
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/jobs").json()[0]["status"] == "interrupted"
 
 
 
@@ -165,3 +178,24 @@ def test_each_update_is_one_point_per_day(settings, run, monkeypatch):
         value = client.get("/api/history").json()["value"]
     today = db.now()[:10]
     assert [(p["day"], p["cards_usd"], p["cards"]) for p in value] == [(today, 4.0, 1)]  # a última do dia vale
+
+
+def test_sets_sync_is_recorded_with_its_log(settings, monkeypatch):
+    import subprocess
+    import sys
+
+    real = subprocess.Popen
+
+    def quick_sync(args, **kwargs):  # no lugar do `cardline sync` de verdade
+        return real([sys.executable, "-c", "print('Catálogo: 1 sets'); print('         1  The First Chapter  204 cartas')"], **kwargs)
+
+    monkeypatch.setattr("cardline.server.subprocess.Popen", quick_sync)
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/sets/sync").status_code == 200
+        for _ in range(100):
+            job = client.get("/api/jobs").json()[0]
+            if job["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert (job["kind"], job["status"], job["result"]) == ("sync", "done", {"sets": 1})
+        assert "The First Chapter" in client.get(f"/api/jobs/{job['id']}").json()["log"]

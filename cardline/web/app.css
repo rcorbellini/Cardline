@@ -371,6 +371,14 @@ dialog.dlg.narrow { width: min(460px, calc(100vw - 32px)); }
 .kindchip { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
 .kindchip.abertura { background: var(--accent-soft); color: var(--accent); }
 .kindchip.cadastro { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
+.kindchip.job { background: var(--panel-2); color: var(--muted); }
+.jobcard .jobmsg { margin: 6px 0 0; font-size: 13px; }
+.jobcard .jobsum { margin: 4px 0 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.jobinfo { padding: 14px 16px; margin: 14px 0; }
+.jobinfo dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; font-size: 14px; }
+.jobinfo dt { color: var(--muted); }
+.jobinfo dd { margin: 0; font-variant-numeric: tabular-nums; }
+.bar i.indeterminate { animation: pulse 1.2s ease-in-out infinite; }
 .dupchip { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 3px 9px; white-space: nowrap;
   background: color-mix(in srgb, var(--down) 14%, transparent); color: var(--down); }
 .toolbar .spacer { flex: 1; }

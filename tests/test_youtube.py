@@ -245,4 +245,12 @@ def test_reading_one_video_does_not_hide_the_others_from_the_automatic_refresh(s
         assert client.post("/api/social/stats?max_age=1800").json() == {"updated": 2}  # a outra nunca tinha sido lida
         assert client.post("/api/social/stats?max_age=1800").json() == {"updated": 0, "fresh": True}
         assert client.post("/api/social/stats").json() == {"updated": 2}  # o botão do Resumo lê todos de novo
+        assert client.post("/api/tasks/social?max_age=1800").json()["fresh"] is True  # automática: nada a fazer
+        assert client.post("/api/tasks/social").json()["running"] is True  # o botão
+        for _ in range(100):
+            if not client.get("/api/tasks").json()["social"]["running"]:
+                break
+            time.sleep(0.02)
+        listed = client.get("/api/jobs").json()
+        assert len(listed) == 1 and listed[0]["kind"] == "redes" and listed[0]["result"]["views_after"] == 20
 

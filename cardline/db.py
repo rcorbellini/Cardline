@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -135,7 +135,20 @@ CREATE TABLE IF NOT EXISTS sealed (  -- produtos lacrados da coleção (booster,
     paid_usd         REAL,
     usd              REAL,            -- preço de mercado por unidade
     price_updated_at TEXT,
-    added_at         TEXT NOT NULL
+    added_at         TEXT NOT NULL,
+    registered_usd   REAL,            -- preço de mercado quando entrou na coleção (não muda)
+    run_id           INTEGER REFERENCES runs(id) ON DELETE CASCADE  -- registrado por uma pipeline de lacrados
+);
+
+CREATE TABLE IF NOT EXISTS jobs (  -- atualizações disparadas na página: preços, números das redes, sincronização de sets
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,   -- precos | redes | sync
+    status      TEXT NOT NULL,   -- running | done | failed | interrupted
+    message     TEXT,
+    result      TEXT,            -- JSON: o que a atualização mudou
+    log         TEXT,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS scheduled_posts (  -- o que o cardline publica na hora marcada (a rede não programa sozinha)
@@ -221,6 +234,7 @@ MIGRATIONS = {
     6: _posts_per_network,
     7: lambda con: _add_column(con, "posts", "scheduled_at", "TEXT"),
     8: lambda con: _value_history(con),
+    9: lambda con: _sealed_origin(con),
 }
 
 
@@ -340,13 +354,26 @@ def record_value(con: sqlite3.Connection) -> None:
 
     Chamado quando os preços mudam (atualizar preços, sincronizar) e quando a coleção muda (pipeline registrada,
     excluída, carta avulsa), para o último ponto do gráfico ser o valor da coleção que o Resumo mostra."""
-    rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id").fetchall()
-    sealed = con.execute("SELECT SUM(qty * usd) FROM sealed WHERE usd IS NOT NULL").fetchone()[0]  # None sem lacrados
+    cards_usd, sealed, n = collection_value(con)
     with con:
         con.execute("INSERT INTO value_history(day, cards_usd, sealed_usd, cards, recorded_at) VALUES (?, ?, ?, ?, ?)"
                     " ON CONFLICT(day) DO UPDATE SET cards_usd = excluded.cards_usd, sealed_usd = excluded.sealed_usd,"
                     " cards = excluded.cards, recorded_at = excluded.recorded_at",
-                    (now()[:10], sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), sealed, len(rows), now()))
+                    (now()[:10], cards_usd, sealed, n, now()))
+
+
+def _sealed_origin(con: sqlite3.Connection) -> None:
+    """Lacrados de antes: o valor de registro é o preço de mercado que eles tinham."""
+    _add_column(con, "sealed", "registered_usd", "REAL")
+    _add_column(con, "sealed", "run_id", "INTEGER REFERENCES runs(id) ON DELETE CASCADE")
+    con.execute("UPDATE sealed SET registered_usd = usd WHERE registered_usd IS NULL")
+
+
+def collection_value(con: sqlite3.Connection) -> tuple[float, float | None, int]:
+    """(cartas pelo preço de mercado atual, lacrados ou None, quantas cartas)."""
+    rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id").fetchall()
+    sealed = con.execute("SELECT SUM(qty * usd) FROM sealed WHERE usd IS NOT NULL AND qty > 0").fetchone()[0]
+    return sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), sealed, len(rows)
 
 
 def _value_history(con: sqlite3.Connection) -> None:

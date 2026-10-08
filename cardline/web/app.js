@@ -105,7 +105,7 @@ function renderStats() {
   const brl = S.meta.rates.BRL;
   $('#updated').textContent = `Preços de mercado TCGplayer via Lorcast, atualizados em ${dt(S.meta.prices_updated_at)}` +
     (brl ? ` · US$ 1 = R$ ${nf.format(brl)} (${S.meta.rate_day.split('-').reverse().join('/')})` : '') + '.';
-  const n = S.runs.filter(active).length;
+  const n = S.runs.filter(active).length + S.jobs.filter(j => j.status === 'running').length;
   $('#active-badge').hidden = !n;
   $('#active-badge').textContent = n ? `${n} rodando` : '';
 }
@@ -289,19 +289,64 @@ function progressHtml(r) {
   const p = r.status === 'queued' ? 0 : Math.round((r.progress ?? 0) * 100);
   return `<div class="bar"><i style="width:${p}%"></i></div><div class="muted" style="font-size:13px">${esc(label)}</div>`;
 }
+// ---- atualizações (preços, números das redes, sincronização): linhas na aba Pipelines ----
+S.jobs = [];
+const pctDelta = (a, b) => a ? ` (${b >= a ? '+' : '−'}${Math.abs((b - a) / a * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%)` : '';
+function jobSummary(j) {  // o que a atualização mudou, numa linha
+  const r = j.result;
+  if (!r) return '';
+  if (j.kind === 'precos') {
+    const parts = [`Cartas ${money(r.cards_before)} → ${money(r.cards_after)}${pctDelta(r.cards_before, r.cards_after)}`];
+    if (r.sealed) parts.push(`lacrados ${money(r.sealed_before)} → ${money(r.sealed_after)}`);
+    parts.push(`${r.sets.length} ${r.sets.length === 1 ? 'set' : 'sets'}`);
+    return parts.join(' · ');
+  }
+  if (j.kind === 'redes') return `Visualizações ${fmtInt(r.views_before)} → ${fmtInt(r.views_after)} (${r.views_after >= r.views_before ? '+' : '−'}${fmtInt(Math.abs(r.views_after - r.views_before))}) · ${r.videos} ${r.videos === 1 ? 'vídeo' : 'vídeos'}`;
+  if (j.kind === 'sync' && r.sets) return `${r.sets} sets no catálogo`;
+  return '';
+}
+function jobCard(j) {
+  const running = j.status === 'running', p = Math.round((j.progress ?? 0) * 100);
+  return `<a class="panel runcard jobcard" href="#/atualizacoes/${j.id}">
+    <div class="runhead"><h3>Atualização #${j.id}</h3><span class="kindchip job">${esc(j.label)}</span>
+      <span class="when">${dt(j.started_at)}${j.finished_at ? ` · ${dur(j.started_at, j.finished_at)}` : ''}</span>
+      <span class="spacer"></span>${statusChip(j)}</div>
+    ${running ? `<div class="bar"><i style="width:${j.kind === 'sync' ? 100 : p}%"${j.kind === 'sync' ? ' class="indeterminate"' : ''}></i></div>` : ''}
+    <p class="jobmsg${j.status === 'failed' ? ' error' : ''}">${esc(j.message || '')}</p>
+    ${jobSummary(j) ? `<p class="jobsum">${jobSummary(j)}</p>` : ''}
+  </a>`;
+}
+function renderJob() {
+  const j = S.job;
+  if (!j || j.id !== S.jobId) return;
+  const r = j.result || {};
+  const rows = [['Início', dt(j.started_at)], ['Fim', j.finished_at ? dt(j.finished_at) : '—'], ['Duração', j.started_at ? dur(j.started_at, j.finished_at) : '—']];
+  if (j.kind === 'precos' && j.result) rows.push(['Sets', (r.sets || []).map(esc).join(', ') || '—'], ['Cartas', `${money(r.cards_before)} → ${money(r.cards_after)}${pctDelta(r.cards_before, r.cards_after)}`],
+    ...(r.sealed ? [['Lacrados', `${money(r.sealed_before)} → ${money(r.sealed_after)} (${r.sealed} ${r.sealed === 1 ? 'item' : 'itens'})`]] : []));
+  if (j.kind === 'redes' && j.result) rows.push(['Vídeos lidos', r.videos], ['Visualizações', `${fmtInt(r.views_before)} → ${fmtInt(r.views_after)}`]);
+  patch($('#view-job'), `<a class="back" href="#/pipelines">← Pipelines</a>
+    <div class="runtitle"><h2>Atualização #${j.id}</h2><span class="kindchip job">${esc(j.label)}</span>${statusChip(j)}</div>
+    ${j.status === 'running' && j.kind !== 'sync' ? `<div class="bar"><i style="width:${Math.round((j.progress ?? 0) * 100)}%"></i></div>` : ''}
+    <p class="${j.status === 'failed' ? 'error' : 'runsub'}">${esc(j.message || '')}</p>
+    <div class="panel jobinfo"><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>
+    ${j.log ? `<details class="log" open><summary>Log</summary><pre>${esc(j.log)}</pre></details>` : ''}`);
+}
 function renderRuns() {
-  const filters = [['todas', 'Todas'], ['abertura', 'Aberturas'], ['cadastro', 'Cadastros']];
+  const filters = [['todas', 'Todas'], ['abertura', 'Aberturas'], ['cadastro', 'Cadastros'], ['atualizacao', 'Atualizações']];
   const head = `<div class="toolbar"><h2>Pipelines</h2>
     <div class="seg" role="group" aria-label="Tipo de pipeline">${filters.map(([k, label]) =>
       `<button data-runkind="${k}" aria-pressed="${runKind === k}">${label}</button>`).join('')}</div>
     <span class="spacer"></span><a class="btn" href="#/nova">+ Nova pipeline</a></div>`;
-  const list = S.runs.filter(r => runKind === 'todas' || r.kind === runKind);
+  const runs = runKind === 'atualizacao' ? [] : S.runs.filter(r => runKind === 'todas' || r.kind === runKind);
+  const jobs = ['todas', 'atualizacao'].includes(runKind) ? S.jobs : [];
+  const list = [...runs.map(r => ({ r, t: new Date(r.created_at) })), ...jobs.map(j => ({ j, t: new Date(j.started_at) }))]
+    .sort((a, b) => b.t - a.t);  // pipelines e atualizações juntas, da mais nova
   if (!list.length) {
-    patch($('#view-pipelines'), head + `<p class="empty">${S.runs.length ? 'Nenhuma pipeline deste tipo.' : 'Nenhuma pipeline ainda.'}
-      Envie um vídeo em <a href="#/nova">Nova pipeline</a>.</p>`);
+    patch($('#view-pipelines'), head + `<p class="empty">${runKind === 'atualizacao' ? 'Nenhuma atualização ainda: use ↻ Atualizar preços no Resumo ou Sincronizar em Sets.'
+      : S.runs.length ? 'Nenhuma pipeline deste tipo.' : 'Nenhuma pipeline ainda. Envie um vídeo em <a href="#/nova">Nova pipeline</a>.'}</p>`);
     return;
   }
-  patch($('#view-pipelines'), head + '<div class="runs">' + list.map(r => `
+  patch($('#view-pipelines'), head + '<div class="runs">' + list.map(({ r, j }) => j ? jobCard(j) : `
     <a class="panel runcard" href="#/pipelines/${r.id}">
       <div class="runhead"><h3>#${r.id}</h3>${kindChip(r)}${dupChip(r)}${(r.sets || []).map(c => setIcon(c, 'seticon small')).join('')}${netBadges(r)}<span class="when">${dt(r.recorded_at || r.created_at)} · ${esc(r.video_name)}</span>
         <span class="spacer"></span>${statusChip(r)}</div>
@@ -1143,7 +1188,8 @@ function renderTasks() {
     const t = S.tasks[name] || {}, btn = $(ui.btn), status = $(ui.status);
     btn.disabled = !!t.running;
     btn.textContent = t.running ? ui.busy : ui.idle;
-    status.textContent = t.running ? `${t.message || 'Começando'}…` : taskSeen[name] ? t.message || '' : '';
+    const text = t.running ? `${t.message || 'Começando'}…` : taskSeen[name] ? t.message || '' : '';
+    patch(status, esc(text) + (text && t.job ? ` <a href="#/atualizacoes/${t.job}">ver na aba Pipelines</a>` : ''));
     status.classList.toggle('taskerr', t.ok === false);
   }
 }
@@ -1830,6 +1876,7 @@ new ResizeObserver(([entry]) => {
 function currentView() {
   const h = location.hash || '#/resumo';  // a página abre no Resumo
   if (/^#\/pipelines\/\d+/.test(h)) return 'run';
+  if (/^#\/atualizacoes\/\d+/.test(h)) return 'job';
   if (h.startsWith('#/pipelines')) return 'pipelines';
   if (h.startsWith('#/nova')) return 'nova';
   if (h.startsWith('#/colecao')) return 'colecao';
@@ -1838,18 +1885,21 @@ function currentView() {
 }
 async function route() {
   const view = currentView();
-  for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
+  for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'job', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
   if (view === 'sets') loadSets();
   ytSync();
   if (view === 'resumo') { refreshSocialStats(1800); pollTasks(); loadHistory(); }
   if (view === 'resumo' || view === 'colecao') loadSealed();
   document.querySelectorAll('nav.tabs a').forEach(a => {
-    const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
+    const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && ['run', 'job', 'nova'].includes(view));
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   const m = location.hash.match(/^#\/pipelines\/(\d+)/);
   const runId = m ? +m[1] : null;
   if (runId !== S.runId) { S.runId = runId; S.run = null; editingPaid = false; if (runId) runSkeleton(); }
+  const jm = location.hash.match(/^#\/atualizacoes\/(\d+)/);
+  S.jobId = jm ? +jm[1] : null;
+  if (S.jobId) { try { S.job = await api(`/api/jobs/${S.jobId}`); } catch (e) { patch($('#view-job'), `<p class="empty">${esc(e.message)}</p>`); return; } }
   if (view === 'nova') prepareNew();
   if (runId) { try { S.run = await api(`/api/runs/${runId}`); } catch (e) { patch($('#view-run'), `<p class="empty">${esc(e.message)}</p>`); return; } }
   renderAll();
@@ -1864,6 +1914,7 @@ function renderAll() {
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();
   if (view === 'run') renderRun();
+  if (view === 'job') renderJob();
   if (view === 'sets') renderSets();
 }
 
@@ -1872,6 +1923,8 @@ async function refresh(collectionToo = false) {
   clearTimeout(timer);
   try {
     S.runs = await api('/api/runs');
+    S.jobs = await api('/api/jobs');
+    if (S.jobId) S.job = await api(`/api/jobs/${S.jobId}`);
     const now = new Set(S.runs.filter(active).map(r => r.id));
     const finished = [...prevActive].some(id => !now.has(id));
     prevActive = now;
@@ -1884,7 +1937,7 @@ async function refresh(collectionToo = false) {
     if (['resumo', 'colecao'].includes(currentView())) S.sealed = await api('/api/sealed');
     renderAll();
   } catch (e) { console.warn(e); }
-  timer = setTimeout(refresh, prevActive.size ? 1500 : 8000);
+  timer = setTimeout(refresh, prevActive.size || S.jobs.some(j => j.status === 'running') ? 1500 : 8000);
 }
 
 (async () => {

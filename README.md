@@ -128,7 +128,11 @@ Um vídeo que já foi processado é recusado, com um link para a pipeline origin
 
 A lista mostra cada pipeline com o tipo, o status (na fila, rodando, concluída, falhou, interrompida ou
 desatualizada), o progresso ao vivo, as miniaturas das cartas e os valores: pago, hoje e resultado numa
-abertura; no cadastro e hoje num cadastro. O filtro no topo separa **Todas**, **Aberturas** e **Cadastros**.
+abertura; no cadastro e hoje num cadastro. O filtro no topo separa **Todas**, **Aberturas**, **Cadastros** e
+**Atualizações**: cada **↻ Atualizar preços**, **↻ Atualizar números** e **Sincronizar** (Sets) disparado na
+página também vira uma linha, com o andamento enquanto roda e, depois, o que mudou (valor das cartas antes e
+depois, visualizações antes e depois, sets sincronizados). Clicar abre o detalhe, com o log da sincronização.
+A leitura automática dos números ao abrir o Resumo não vira linha.
 O detalhe de um cadastro tem o mesmo editar/remover por deslize e o mesmo reprocessar, mas sem vídeo.
 
 **⚠ Repetida** marca a pipeline cujas cartas identificadas são as mesmas de outra pipeline (aberturas e
@@ -301,6 +305,7 @@ no túnel, ou só redes de confiança.
 | PATCH / DELETE | `/api/sealed/{id}` | `{"qty": 3}` e/ou `{"paid": 30}` (`null` apaga o pago); DELETE remove |
 | GET | `/api/sealed/products?set=1` | os lacrados do set no TCGplayer, com o preço de mercado de hoje |
 | GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) e `views` (visualizações por rede) |
+| GET | `/api/jobs`, `/api/jobs/{id}` | as atualizações disparadas na página (preços, números das redes, sincronização), com o resultado e o log |
 | GET | `/api/tasks` | tarefas de fundo do Resumo (`prices`, `social`): rodando, progresso e a mensagem do fim |
 | POST | `/api/tasks/prices`, `/api/tasks/social?max_age=1800` | atualiza os preços / os números das redes em segundo plano (uma de cada vez) |
 | PATCH | `/api/runs/{id}/cards/{uid}` | `{"foil": true}`: edita a carta (por enquanto, só o acabamento); fica pendente até reprocessar |

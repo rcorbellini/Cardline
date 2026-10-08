@@ -100,6 +100,13 @@ def linked(con, network: str) -> list[tuple[int, str]]:
                                               (network,))]
 
 
+def total_views(con) -> int:
+    """Visualizações somadas de todos os posts vinculados (a última leitura de cada um)."""
+    return con.execute("SELECT COALESCE(SUM(v), 0) FROM (SELECT (SELECT views FROM post_stats s WHERE s.run_id = p.run_id"
+                       " AND s.network = p.network AND s.views IS NOT NULL ORDER BY fetched_at DESC LIMIT 1) AS v FROM posts p)"
+                       ).fetchone()[0]
+
+
 def views_by_day(con) -> list[dict]:
     """Visualizações por dia de leitura, somadas por rede: em cada dia, a última leitura de cada post até ele
     (um post entra no dia da primeira leitura; um post desvinculado sai com os números dele)."""
