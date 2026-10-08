@@ -111,6 +111,9 @@ nem com esse botão nem ao reprocessar uma pipeline. É ele que aparece no víde
 4. **Set das cartas**: deixe em "Detectar automaticamente" ou escolha o set. Na abertura, escolha também a
    **moeda do vídeo com overlay**, se quer gerar o vídeo e se quer **narrar o vídeo** (precisa do extra
    `narracao`; ~2 min a mais).
+   **Logo no vídeo** põe o logo semitransparente num canto, da capa ao resumo: vem marcado com o logo padrão
+   (`data/logos/padrao.png`), e **Trocar logo** usa outra imagem só nesta pipeline (PNG com fundo transparente
+   fica melhor).
 5. **Conferir com IA local** só fica habilitado com o Ollama rodando. Com `verify_model` no
    `cardline.toml`, ele já vem marcado.
 6. **Enviar e processar** (ou **Enviar e cadastrar**): a barra mostra o envio. Ao terminar, a página abre a
@@ -155,8 +158,9 @@ No detalhe de uma pipeline:
 
   <img src="docs/pagina-editar.jpg" width="560" alt="No celular: carta deslizada para a direita mostrando Editar, outra deslizada para a esquerda mostrando Remover, e a janela de edição com a chave Foil">
 - **Passos** com status, mensagem e tempo de cada um. O passo em andamento mostra a barra de progresso.
-- **Vídeo com overlay** para assistir ou baixar, e o **log** da execução. A **moeda do vídeo** (US$ ou R$)
-  pode ser trocada acima do player; o vídeo é refeito ao reprocessar. Com narração, **Com/Sem** escolhe a versão.
+- **Vídeo com overlay** para assistir ou baixar, e o **log** da execução. A **moeda do vídeo** (US$ ou R$) e o
+  **logo no vídeo** (com/sem; "com" usa o logo padrão) podem ser trocados acima do player; o vídeo é refeito ao
+  reprocessar. Com narração, **Com/Sem** escolhe a versão.
 - **Narração**: **Narrar este vídeo** liga a narração numa pipeline já feita. O painel tem a **voz** (as 58 do
   XTTS-v2, agrupadas em graves, médias e agudas pelo tom; ▶ toca uma amostra) e o roteiro, e
   cada fala pode ser editada no texto e no instante (▶ leva o vídeo àquele momento), apagada ou criada (**+ Fala**).
@@ -281,9 +285,10 @@ no túnel, ou só redes de confiança.
 | GET | `/api/collection` | cartas da coleção, agrupadas por carta e acabamento, com as cópias |
 | GET | `/api/runs` | pipelines com status, progresso e valores; `duplicates` lista as pipelines com as mesmas cartas e `repeated` conta as cartas repetidas |
 | GET | `/api/runs/{id}` | detalhe: passos, cartas e log |
-| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL&narration=true` | cria a pipeline (`kind`: `abertura` ou `cadastro`); o corpo da requisição é o vídeo |
+| POST | `/api/runs?filename=…&kind=abertura&paid=…&paid_currency=BRL&narration=true&logo=padrao.png` | cria a pipeline (`kind`: `abertura` ou `cadastro`; `logo` vazio = sem logo); o corpo da requisição é o vídeo |
+| POST | `/api/logos` | o corpo é a imagem: guarda o logo (PNG, até 600 px) e devolve o nome para `logo=` na criação |
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
-| PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo) e/ou `{"narration": true}`; só o que for enviado muda |
+| PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo), `{"narration": true}` e/ou `{"logo": "padrao.png"}` (`null` tira); só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
 | GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) e `views` (visualizações por rede) |
 | GET | `/api/tasks` | tarefas de fundo do Resumo (`prices`, `social`): rodando, progresso e a mensagem do fim |
@@ -352,7 +357,8 @@ Cartas obtidas fora de vídeo: `uv run cardline add 1/169 --foil --qty 2`.
 (`USD` ou `BRL`), cartas por booster, fps da análise, resolução de saída, duração do resumo, e o modelo do
 Ollama para conferência. Com `verify_model` preenchido, a opção já vem marcada no upload. Para a narração,
 `narration_voice` (a voz do XTTS-v2) e `narration_writer` (o modelo do Ollama que escreve as piadas).
-`intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa). `card_sound_volume` e
+`intro_seconds` é a duração da capa no começo do vídeo (3 s; 0 tira a capa). `logo_corner` e `logo_opacity` são o canto do logo
+(`top-right`, padrão; `top-left`, `bottom-right` ou `bottom-left`) e a opacidade (0,6). `card_sound_volume` e
 `celebration_volume` são os volumes do "ka-ching" de cada carta e dos aplausos (0,25 e 0,3), relativos à voz do
 narrador: 1 é tão alto quanto ela, 0,25 fica ~12 dB abaixo e 0 tira o efeito. `youtube_tags` são as tags dos
 vídeos postados no YouTube (o nome do set entra junto).
@@ -405,6 +411,7 @@ vídeos postados no YouTube (o nome do set entra junto).
 - `runs/<id>/`: vídeo enviado, recortes, `scan.json`, `overlay.mp4` (+ capa `overlay.jpg` e tempos `overlay.json`),
   `narrado.mp4` (+ o roteiro e as falas gravadas em `narracao/`) e `pipeline.log` de cada pipeline.
 - `data/youtube/` e `data/instagram/`: cliente OAuth e tokens das redes (só o seu usuário lê; fora do git).
+- `data/logos/`: o logo padrão do vídeo (`padrao.png`) e os enviados na criação das pipelines (fora do git).
 - `data/cache/`: imagens, índices e ícones dos sets (`sets/`), regeneráveis com `cardline sync`. Só um ícone
   que você enviou não volta: sem o arquivo, o set volta para a foto do booster.
 

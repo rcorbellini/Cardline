@@ -107,6 +107,7 @@ def create_run(
     move: bool = False,
     kind: str = "abertura",
     narration: bool = False,
+    logo: str | None = None,
 ) -> int:
     """Cadastra um run na fila. Com `move`, o vídeo (um upload) passa a morar na pasta do run."""
     if kind not in KINDS:
@@ -124,6 +125,7 @@ def create_run(
         "verify": bool(settings.verify_model) if verify is None else verify,
         "currency": (currency or settings.currency).upper(),
         "narration": narration,
+        "logo": logo if overlay else None,  # nome em data/logos; None = vídeo sem logo
     }
     paid_currency = paid_currency.upper()
     with con:
@@ -275,8 +277,10 @@ def _overlay(ctx: RunContext) -> str:
         raise Skip("desligado")
     money = money_for(ctx.settings, ctx.options.get("currency"))
     run = ctx.run
+    from . import logo
+
     render(ctx.settings, load_scan(ctx.dir), ctx.dir / "overlay.mp4", money, ctx.progress, run["paid_usd"],
-           run["paid"], run["paid_currency"])
+           run["paid"], run["paid_currency"], logo.load(ctx.settings, ctx.options.get("logo")))
     return "overlay.mp4 pronto" + (f" · capa de {ctx.settings.intro_seconds:g}s" if ctx.settings.intro_seconds > 0 else "")
 
 
@@ -406,6 +410,25 @@ def update_paid(settings: Settings, run_id: int, paid: float | None, currency: s
     # o resumo do vídeo mostra o valor pago
     if con.execute("SELECT status FROM run_steps WHERE run_id = ? AND name = 'overlay'", (run_id,)).fetchone()[0] == "done":
         mark_stale(settings, run_id, "overlay")
+
+
+def update_logo(settings: Settings, run_id: int, name: str | None) -> None:
+    """Põe, troca ou tira o logo do vídeo com overlay; o vídeo fica desatualizado até reprocessar."""
+    con = db.connect(settings.db_path)
+    run = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        raise LookupError(f"Pipeline #{run_id} não existe.")
+    if run["status"] in ("queued", "running"):
+        raise RuntimeError("A pipeline está rodando; espere terminar para mudar o logo.")
+    if run["kind"] != "abertura":
+        raise ValueError("Cadastro de coleção não gera vídeo.")
+    options = json.loads(run["options"])
+    if options.get("logo") == name:
+        return
+    options["logo"] = name
+    with con:
+        con.execute("UPDATE runs SET options = ? WHERE id = ?", (json.dumps(options), run_id))
+    mark_stale(settings, run_id, "overlay")
 
 
 def update_overlay_currency(settings: Settings, run_id: int, currency: str) -> None:

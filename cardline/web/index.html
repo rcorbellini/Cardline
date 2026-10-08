@@ -153,6 +153,13 @@
         </label>
       </div>
       <label class="check only-abertura"><input type="checkbox" id="opt-overlay" checked> Gerar vídeo com overlay de preços</label>
+      <div class="logoopt only-abertura">
+        <label class="check"><input type="checkbox" id="opt-logo"> <span id="logo-label">Logo no vídeo (semitransparente, num canto)</span></label>
+        <img id="logo-preview" alt="Logo escolhido" hidden>
+        <button type="button" class="linkbtn" id="logo-change">Trocar logo</button>
+        <button type="button" class="linkbtn" id="logo-default" hidden>Usar o padrão</button>
+        <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" hidden>
+      </div>
       <label class="check only-abertura"><input type="checkbox" id="opt-narration"> <span id="narration-label">Narrar o vídeo</span></label>
       <label class="check"><input type="checkbox" id="opt-verify"> <span id="verify-label">Conferir cada carta com IA local</span></label>
       <div class="actions">

@@ -396,6 +396,10 @@ function renderRun() {
   const curControl = cadastro || r.options?.overlay === false ? '' : `<div class="vidbar"><span>Moeda do vídeo com overlay</span>
     <div class="seg" role="group" aria-label="Moeda do vídeo com overlay">${['USD', 'BRL'].filter(c => c in S.meta.rates).map(c =>
       `<button data-action="video-currency" data-cur="${c}" aria-pressed="${c === videoCur}" ${active(r) ? 'disabled' : ''}>${sym(c)}</button>`).join('')}</div></div>`;
+  const logoOn = !!r.options?.logo, canLogo = logoOn || !!S.meta.logo?.default;  // ligar usa o logo padrão
+  const logoControl = cadastro || r.options?.overlay === false ? '' : `<div class="vidbar"><span>Logo no vídeo</span>
+    <div class="seg" role="group" aria-label="Logo no vídeo">${[[true, 'Com'], [false, 'Sem']].map(([on, label]) =>
+      `<button data-action="video-logo" data-on="${on}" aria-pressed="${on === logoOn}" ${active(r) || (on && !canLogo) ? 'disabled' : ''}>${label}</button>`).join('')}</div></div>`;
   const narrStep = r.steps.find(s => s.name === 'narrate');
   const narrated = r.narrated && narrStep?.status !== 'running';
   const mode = narrated && videoMode === 'narrated' ? 'narrated' : 'plain';
@@ -403,7 +407,7 @@ function renderRun() {
   const modeControl = narrated ? `<div class="vidbar"><span>Narração no vídeo</span>
     <div class="seg" role="group" aria-label="Versão do vídeo">${[['narrated', 'Com'], ['plain', 'Sem']].map(([m, label]) =>
       `<button data-action="video-mode" data-mode="${m}" aria-pressed="${m === mode}">${label}</button>`).join('')}</div></div>` : '';
-  patch($('#r-video'), curControl + modeControl + (vsrc && overlayStep && overlayStep.status !== 'running'
+  patch($('#r-video'), curControl + logoControl + modeControl + (vsrc && overlayStep && overlayStep.status !== 'running'
     ? `<video class="player" controls preload="metadata" src="${esc(vsrc)}?v=${encodeURIComponent(vstep?.finished_at || '')}"
          ${r.poster ? `poster="${esc(r.poster)}?v=${encodeURIComponent(overlayStep.finished_at || '')}"` : ''}></video>
        <p class="muted" style="font-size:13px"><a href="${esc(vsrc)}" download="pipeline-${r.id}-${mode === 'narrated' ? 'narrado' : 'overlay'}.mp4">Baixar ${mode === 'narrated' ? 'vídeo narrado' : 'vídeo com overlay'}</a></p>` : ''));
@@ -633,6 +637,10 @@ $('#view-run').addEventListener('click', async ev => {
       if (target.getAttribute('aria-pressed') === 'true') return;
       await api(`/api/runs/${id}`, json({ currency: target.dataset.cur }, 'PATCH'));
     }
+    if (action === 'video-logo') {  // vale ao reprocessar (o vídeo é refeito a partir do overlay)
+      if (target.getAttribute('aria-pressed') === 'true') return;
+      await api(`/api/runs/${id}`, json({ logo: target.dataset.on === 'true' ? S.meta.logo?.default : null }, 'PATCH'));
+    }
     await refresh();
   } catch (e) { alert(e.message); }
 });
@@ -773,14 +781,41 @@ function prepareNew() {
   $('#opt-narration').checked = false;
   $('#narration-label').textContent = nm.unavailable ? `Narrar o vídeo (para isso, ${nm.unavailable})`
     : 'Narrar o vídeo: um narrador comenta a abertura sem dar spoiler (voz em português, ~2 min a mais)';
+  newLogo = null;
+  $('#opt-logo').checked = !!S.meta.logo?.default;
   syncNarrationOption();
   applyKind();
 }
-function syncNarrationOption() {  // a narração é sobre o vídeo com overlay
+function syncNarrationOption() {  // a narração e o logo são do vídeo com overlay
   $('#opt-narration').disabled = !!S.meta.narration.unavailable || !$('#opt-overlay').checked;
   if ($('#opt-narration').disabled) $('#opt-narration').checked = false;
+  syncLogoOption();
 }
 $('#opt-overlay').addEventListener('change', syncNarrationOption);
+// ---- logo do vídeo: o padrão (data/logos/padrao.png) ou um enviado agora ----
+let newLogo = null;  // { logo, url } enviado nesta criação; null = o padrão
+function syncLogoOption() {
+  const def = S.meta.logo?.default, src = newLogo ? newLogo.url : def ? `/logos/${def}` : '';
+  $('#opt-logo').disabled = !$('#opt-overlay').checked || !src;
+  if ($('#opt-logo').disabled) $('#opt-logo').checked = false;
+  $('#logo-preview').hidden = !src;
+  if (src && $('#logo-preview').getAttribute('src') !== src) $('#logo-preview').src = src;
+  $('#logo-change').textContent = src ? 'Trocar logo' : 'Escolher um logo';
+  $('#logo-change').disabled = !$('#opt-overlay').checked;
+  $('#logo-default').hidden = !newLogo || !def;
+}
+$('#opt-logo').addEventListener('change', syncLogoOption);
+$('#logo-change').onclick = () => { $('#logo-file').value = ''; $('#logo-file').click(); };
+$('#logo-default').onclick = () => { newLogo = null; $('#opt-logo').checked = true; syncLogoOption(); };
+$('#logo-file').onchange = async ev => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  try {
+    newLogo = await api('/api/logos', { method: 'POST', body: f, headers: { 'Content-Type': 'application/octet-stream' } });
+    $('#opt-logo').checked = true;
+  } catch (e) { newError(esc(e.message)); }
+  syncLogoOption();
+};
 document.addEventListener('input', ev => { if (ev.target.id === 'sp-when' && S.run) renderSocial(S.run); });
 const newKind = () => document.querySelector('input[name="kind"]:checked').value;
 function applyKind() {  // valor pago, moeda e vídeo só existem na abertura de booster
@@ -817,6 +852,7 @@ $('#new-form').onsubmit = ev => {
     params.set('narration', $('#opt-narration').checked);
     params.set('currency', $('#new-currency').value);
     if (paid != null) params.set('paid', paid);
+    params.set('logo', $('#opt-logo').checked ? newLogo?.logo || S.meta.logo?.default || '' : '');
   }
   if ($('#new-set').value) params.set('set_hint', $('#new-set').value);
   const xhr = S.xhr = new XMLHttpRequest();

@@ -102,3 +102,32 @@ def test_narration_counts_the_cover_and_edited_scripts_follow_it(tmp_path):
     assert [line["t"] for line in script["lines"]] == [3.2, 6.6]
     assert narration.load_script(tmp_path)["intro"] == 3.0
     assert narration.follow_intro(tmp_path, script, 3.0) == script  # já está em dia
+
+
+def test_logo_is_stamped_semi_transparent_in_the_corner():
+    scan = {"cards": [card(1.0, "Mickey")]}
+    red = Image.new("RGBA", (400, 400), (255, 0, 0, 255))
+    ov = Overlay(scan, Money("USD", 1.0), (1080, 1920), 12, logo=red, logo_corner="top-right", logo_opacity=0.5)
+    frame = np.zeros((1920, 1080, 3), np.uint8)
+    ov.stamp(frame)
+    x, y = ov.logo_xy
+    assert ov.logo.shape[:2] == (110, 110) and (x, y) == (1080 - 20 - 110, 20)  # 110 px num vídeo de 1080, no canto
+    assert tuple(frame[y + 55, x + 55]) == (127, 0, 0)  # metade da opacidade sobre o preto
+    assert not frame[:, :x].any() and not frame[y + 110:].any()  # o resto do quadro fica igual
+    hud, cx, cy, _, _ = ov._hud_at(2.0)
+    panel = hud.getchannel("A").point(lambda a: 255 if a > 128 else 0).getbbox()  # o painel, sem a sombra
+    assert cx - hud.width / 2 + panel[2] <= x  # não cobre o painel do topo
+
+
+def test_logos_are_kept_as_png_by_content(tmp_path):
+    from cardline import logo
+
+    s = Settings(root=tmp_path)
+    buf = __import__("io").BytesIO()
+    Image.new("RGB", (1600, 800), (10, 20, 30)).save(buf, "JPEG")
+    name = logo.save(s, buf.getvalue())
+    assert name.endswith(".png") and logo.load(s, name).size == (600, 300)  # no máximo 600 de lado, com transparência
+    assert logo.save(s, buf.getvalue()) == name  # o mesmo arquivo não duplica
+    assert logo.path(s, "../cardline.db") is None and logo.default(s) is None
+    with pytest.raises(ValueError):
+        logo.save(s, b"isto nao e imagem")

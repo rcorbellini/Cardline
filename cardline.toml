@@ -19,6 +19,11 @@ outro_seconds = 4.0
 # entrando animados; na saída, o booster voa para o painel do topo. 0 = sem capa.
 intro_seconds = 3.0
 
+# Logo no vídeo com overlay (o padrão fica em data/logos/padrao.png; dá para trocar na criação da pipeline):
+# canto (top-right, top-left, bottom-right ou bottom-left) e opacidade, de 0 a 1.
+logo_corner = "top-right"
+logo_opacity = 0.6
+
 # Efeitos de fundo do vídeo, com volume relativo à voz do narrador (1 = tão alto quanto ela; 0,25 ≈ 12 dB abaixo;
 # 0 = sem o efeito). O "ka-ching" de caixa registradora toca quando a etiqueta de cada carta aparece; os aplausos,
 # quando a soma das cartas alcança o valor pago pelo booster.

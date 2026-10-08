@@ -250,3 +250,27 @@ def test_pipelines_with_the_same_cards_are_flagged_also_after_edits(settings, tm
         assert client.post(f"/api/runs/{c}/cards/04/restore").status_code == 200
         assert client.get(f"/api/runs/{c}").json()["duplicates"] == []
 
+
+
+def test_logo_of_the_video_can_be_changed_and_waits_for_reprocessing(settings, run, tmp_path):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (50, 50), (255, 0, 0, 255)).save(buf, "PNG")
+    with TestClient(create_app(settings)) as client:
+        name = client.post("/api/logos", content=buf.getvalue()).json()["logo"]
+        assert client.post("/api/logos", content=b"nada").status_code == 400
+        assert client.get(f"/logos/{name}").status_code == 200
+        assert client.patch(f"/api/runs/{run}", json={"logo": "naoexiste.png"}).status_code == 400
+        assert client.patch(f"/api/runs/{run}", json={"logo": name}).status_code == 200
+        detail = client.get(f"/api/runs/{run}").json()
+        assert detail["options"]["logo"] == name and detail["status"] == "stale" and detail["resume_from"] == "overlay"
+        assert client.patch(f"/api/runs/{run}", json={"logo": None}).status_code == 200
+        assert client.get(f"/api/runs/{run}").json()["options"]["logo"] is None
+    video = tmp_path / "cadastro.mp4"
+    video.write_bytes(b"outro")
+    cadastro = pipeline.create_run(settings, video, kind="cadastro", logo=name)  # cadastro não tem vídeo
+    assert json.loads(db.connect(settings.db_path).execute("SELECT options FROM runs WHERE id = ?", (cadastro,))
+                      .fetchone()[0])["logo"] is None

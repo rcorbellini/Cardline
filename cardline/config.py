@@ -17,6 +17,8 @@ class Settings:
     output_short_side: int = 1080  # lado menor do vídeo com overlay (1080 = 1080x1920 em retrato)
     outro_seconds: float = 4.0  # duração do resumo no fim do vídeo (frame congelado)
     intro_seconds: float = 3.0  # capa no começo do vídeo: booster e valor pago sobre o primeiro frame (0 = sem capa)
+    logo_corner: str = "top-right"  # canto do logo no vídeo: top-right, top-left, bottom-right ou bottom-left
+    logo_opacity: float = 0.6  # 0 a 1: o logo fica semitransparente
     card_sound_volume: float = 0.25  # "ka-ching" a cada carta, relativo à voz do narrador (0,25 ≈ 12 dB abaixo; 0 = sem)
     celebration_volume: float = 0.3  # aplausos quando a soma alcança o valor pago, relativo à voz (0 = sem)
     workers: int = max(1, min(8, (os.cpu_count() or 2) - 1))

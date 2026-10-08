@@ -22,11 +22,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, instagram, narration, pipeline, rarity, social, youtube
+from . import db, instagram, logo, narration, pipeline, rarity, social, youtube
 from .catalog import is_booster_set, refresh_prices, reset_icon, save_manual_icon
 from .collection import card_uid, load_scan, remove_card, remove_repeated, repeated, restore_card, set_card_foil
 from .config import Settings
@@ -156,6 +156,7 @@ class RunPatch(BaseModel):
     paid_currency: str | None = None
     currency: str | None = None  # moeda do vídeo com overlay
     narration: bool | None = None  # liga/desliga a narração do vídeo
+    logo: str | None = None  # logo do vídeo (nome em data/logos); null tira
 
 
 class ScriptBody(BaseModel):
@@ -456,6 +457,7 @@ def create_app(settings: Settings) -> FastAPI:
             "inks": [[k, label, color] for k, (label, color) in rarity.INKS.items()],
             "prices_updated_at": c.execute("SELECT MAX(prices_updated_at) FROM cards").fetchone()[0],
             "youtube": youtube.status(settings), "instagram": instagram.status(settings),
+            "logo": {"default": logo.default(settings), "corner": settings.logo_corner},
             "narration": {"unavailable": narration.unavailable(), "voice": settings.narration_voice,
                           "voices": [{**v, "sample": f"/vozes/{v['file']}" if v.get("file") else None}
                                      for v in narration.voices(settings)],
@@ -499,10 +501,12 @@ def create_app(settings: Settings) -> FastAPI:
     async def upload(
         request: Request, filename: str, paid: float | None = None, paid_currency: str = "BRL",
         set_hint: str | None = None, overlay: bool = True, verify: bool | None = None, currency: str | None = None,
-        kind: str = "abertura", narration: bool = False,
+        kind: str = "abertura", narration: bool = False, logo_name: str | None = Query(None, alias="logo"),
     ):
         if kind not in pipeline.KINDS:
             raise HTTPException(400, "Tipo de pipeline deve ser abertura ou cadastro.")
+        if logo_name and not logo.path(settings, logo_name):
+            raise HTTPException(400, "Logo não encontrado; envie a imagem de novo.")
         if paid_currency.upper() not in CURRENCIES or (currency and currency.upper() not in CURRENCIES):
             raise HTTPException(400, "Moeda deve ser USD ou BRL.")
         incoming = settings.runs_dir / "_incoming"
@@ -526,7 +530,7 @@ def create_app(settings: Settings) -> FastAPI:
                 run_id = pipeline.create_run(
                     settings, tmp, video_name=Path(filename).name, sha1=sha1.hexdigest(), paid=paid,
                     paid_currency=paid_currency, set_hint=set_hint, overlay=overlay, verify=verify,
-                    currency=currency, move=True, kind=kind, narration=narration,
+                    currency=currency, move=True, kind=kind, narration=narration, logo=logo_name or None,
                 )
             except pipeline.DuplicateVideo as e:
                 raise HTTPException(409, {"message": str(e), "run_id": e.run_id}) from e
@@ -534,6 +538,18 @@ def create_app(settings: Settings) -> FastAPI:
             tmp.unlink(missing_ok=True)
         runner.wake()
         return {"id": run_id}
+
+    @app.post("/api/logos")
+    async def upload_logo(request: Request):
+        """Logo para o vídeo de uma pipeline (PNG com transparência fica melhor); devolve o nome para a criação."""
+        data = await request.body()
+        if len(data) > 8 * 1024 * 1024:
+            raise HTTPException(413, "Imagem grande demais (máximo 8 MB).")
+        try:
+            name = logo.save(settings, data)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"logo": name, "url": f"/logos/{name}"}
 
     @app.post("/api/runs/{run_id}/rerun")
     def rerun(run_id: int, body: RerunBody):
@@ -621,6 +637,10 @@ def create_app(settings: Settings) -> FastAPI:
                 pipeline.update_overlay_currency(settings, run_id, body.currency.upper())
             if "narration" in sent and body.narration is not None:
                 pipeline.update_narration(settings, run_id, body.narration)
+            if "logo" in sent:
+                if body.logo and not logo.path(settings, body.logo):
+                    raise HTTPException(400, "Logo não encontrado; envie a imagem de novo.")
+                pipeline.update_logo(settings, run_id, body.logo or None)
         except ValueError as e:  # cadastro não tem valor pago nem vídeo
             raise HTTPException(400, str(e)) from e
         except RuntimeError as e:
@@ -1114,6 +1134,8 @@ def create_app(settings: Settings) -> FastAPI:
     narration.samples_dir(settings).mkdir(parents=True, exist_ok=True)
     app.mount("/vozes", StaticFiles(directory=narration.samples_dir(settings)), name="vozes")
     app.mount("/set-icons", StaticFiles(directory=settings.cache_dir / "sets"), name="set-icons")
+    logo.folder(settings).mkdir(parents=True, exist_ok=True)
+    app.mount("/logos", StaticFiles(directory=logo.folder(settings)), name="logos")
     app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
     return app
 

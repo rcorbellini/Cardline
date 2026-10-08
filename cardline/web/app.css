@@ -148,6 +148,8 @@ input, select {
 .morefilters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%; }
 .morefilters[hidden] { display: none; }
 .inkchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.logoopt { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.logoopt img { width: 44px; height: 44px; object-fit: contain; border-radius: 8px; background: var(--panel-2); }
 .inkchip {
   width: 40px; height: 38px; border: 1px solid var(--line); background: var(--panel); border-radius: 10px;
   display: grid; place-items: center; cursor: pointer; padding: 0; opacity: .75;

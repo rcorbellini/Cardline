@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from . import audio, db, rarity
 from .config import Settings
+from .logo import CORNERS
 from .money import Money
 from .scan import Progress
 from .video import VideoWriter, ffmpeg_exe, probe, read_frames
@@ -46,6 +47,8 @@ PULSE = 0.3
 INTRO_IN = 0.6  # entrada da capa
 INTRO_OUT = 0.6  # saída da capa: o booster voa até o lugar do ícone no painel
 HUD_IN = 0.35  # sem capa, o painel entra deslizando
+LOGO_SIZE = 110  # lado maior do logo, em px num vídeo de 1080 no lado menor: cabe ao lado do painel do topo
+LOGO_MARGIN = 20
 
 
 @lru_cache(maxsize=None)
@@ -188,7 +191,8 @@ def shine(img: Image.Image, p: float, width: float = 0.09) -> Image.Image:
 class Overlay:
     def __init__(self, scan: dict, money: Money, size: tuple[int, int], pack_size: int, paid_usd: float | None = None,
                  icons: dict[str, Image.Image] | None = None, names: dict[str, str] | None = None,
-                 paid: tuple[float, str] | None = None, intro: float = 0.0):
+                 paid: tuple[float, str] | None = None, intro: float = 0.0, logo: Image.Image | None = None,
+                 logo_corner: str = "top-right", logo_opacity: float = 0.6):
         self.cards = scan["cards"]
         self.money = money
         self.paid_usd = paid_usd
@@ -213,6 +217,20 @@ class Overlay:
         self._hud_cache: dict = {}
         # instante em que o valor de cada carta "chega" ao total (fim do voo)
         self.arrive = [c["t"] + POP_IN + FLY for c in self.cards]
+        self.logo = None
+        if logo is not None:  # semitransparente num canto, em todos os frames
+            img = logo.copy()
+            img.thumbnail((round(LOGO_SIZE * self.u),) * 2, Image.LANCZOS)
+            m = round(LOGO_MARGIN * self.u)
+            self.logo = np.asarray(img)
+            self.logo_xy = (m if "left" in logo_corner else self.W - m - img.width,
+                            m if "top" in logo_corner else self.H - m - img.height)
+            self.logo_opacity = max(0.0, min(1.0, logo_opacity))
+
+    def stamp(self, frame: np.ndarray) -> None:
+        """O logo no canto (capa, vídeo e resumo)."""
+        if self.logo is not None:
+            blend(frame, self.logo, *self.logo_xy, self.logo_opacity)
 
     # ---- sprites ---------------------------------------------------------------------------
 
@@ -588,7 +606,7 @@ class Overlay:
 
 def render(
     settings: Settings, scan: dict, out: Path, money: Money, progress: Progress, paid_usd: float | None = None,
-    paid: float | None = None, paid_currency: str | None = None,
+    paid: float | None = None, paid_currency: str | None = None, logo: Image.Image | None = None,
 ) -> Path:
     """Gera o vídeo com overlay e, ao lado, a capa (`.jpg`) e os tempos (`.json`: capa, resumo e fim)."""
     if not scan["cards"]:
@@ -605,7 +623,8 @@ def render(
             icons[r["code"]] = Image.open(settings.root / r["icon"]).convert("RGBA")
     intro = max(0.0, settings.intro_seconds)
     ov = Overlay(scan, money, size, settings.pack_size, paid_usd, icons, names,
-                 (paid, paid_currency or "BRL") if paid else None, intro)
+                 (paid, paid_currency or "BRL") if paid else None, intro, logo,
+                 settings.logo_corner if settings.logo_corner in CORNERS else CORNERS[0], settings.logo_opacity)
     tmp = out.with_name(out.stem + ".imagem.part.mp4")  # o vídeo anterior continua válido até o novo ficar pronto
     writer = VideoWriter(tmp, size, FPS)  # o som entra depois, misturado com o "ka-ching" de cada carta
     written = 0
@@ -620,6 +639,7 @@ def render(
         poster_at = min(n_intro - 1, round((ov.intro_in + 0.5) * FPS))
         for j in range(n_intro):
             canvas = ov.intro_frame(sharp, dim, j / FPS)
+            ov.stamp(canvas)
             writer.write(canvas)
             written += 1
             if j == poster_at:
@@ -628,6 +648,7 @@ def render(
     for i, frame in enumerate(itertools.chain([first], frames)):
         canvas = frame.copy()
         ov.draw(canvas, i / FPS)
+        ov.stamp(canvas)
         writer.write(canvas)
         written += 1
         progress(0.95 * (n_intro + i) / total_frames, f"Renderizando vídeo ({n_intro + i}/{total_frames} frames)")
@@ -636,6 +657,7 @@ def render(
     while t < max(ov.arrive) + COUNT_UP + 0.4:
         canvas = frame.copy()
         ov.draw(canvas, t)
+        ov.stamp(canvas)
         writer.write(canvas)
         written += 1
         t += 1 / FPS
@@ -644,7 +666,9 @@ def render(
     # e o painel entrando por cima
     last = canvas.astype(np.float32)
     bg = Image.fromarray(frame).filter(ImageFilter.GaussianBlur(14 * ov.u))
-    bg = np.asarray(bg).astype(np.float32) * 0.45
+    bg = (np.asarray(bg).astype(np.float32) * 0.45).astype(np.uint8)
+    ov.stamp(bg)  # o logo fica igual durante a transição (os dois lados já têm ele)
+    bg = bg.astype(np.float32)
     panel = ov.summary()
     out_frame = canvas
     for j in range(int(settings.outro_seconds * FPS)):
