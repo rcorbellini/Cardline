@@ -175,28 +175,33 @@
         <span id="drop-sub" class="muted">MP4 ou MOV, como sai da câmera do celular</span>
       </label>
       <div class="fields">
+        <div class="wide only-abertura curfield"><span>Moeda</span>
+          <span class="seg" role="group" aria-label="Moeda"><button type="button" data-newcur="BRL" aria-pressed="true">R$ (real)</button><button type="button" data-newcur="USD" aria-pressed="false">US$ (dólar)</button></span>
+          <small class="muted">Escolhida uma vez: vale para o valor pago e para os preços no vídeo.</small>
+        </div>
         <label class="wide only-abertura">Valor pago pelo(s) booster(s)
-          <span class="inline"><input type="text" id="paid" inputmode="decimal" placeholder="ex.: 34,90">
-          <select id="paid-currency"><option value="BRL">R$</option><option value="USD">US$</option></select></span>
+          <span class="inline"><span class="curtag" id="paid-cur">R$</span><input type="text" id="paid" inputmode="decimal" placeholder="ex.: 34,90"></span>
           <small class="muted">Se o vídeo tiver mais de um booster, informe o total. Pode deixar em branco e preencher depois.</small>
         </label>
         <label>Set das cartas
           <select id="new-set"><option value="">Detectar automaticamente</option></select>
         </label>
-        <label class="only-abertura">Moeda do vídeo com overlay
-          <select id="new-currency"><option value="USD">US$ (dólar)</option><option value="BRL">R$ (real)</option></select>
-        </label>
       </div>
-      <label class="check only-abertura"><input type="checkbox" id="opt-overlay" checked> Gerar vídeo com overlay de preços</label>
-      <div class="logoopt only-abertura">
-        <label class="check"><input type="checkbox" id="opt-logo"> <span id="logo-label">Logo no vídeo (semitransparente, num canto)</span></label>
-        <img id="logo-preview" alt="Logo escolhido" hidden>
-        <button type="button" class="linkbtn" id="logo-change">Trocar logo</button>
-        <button type="button" class="linkbtn" id="logo-default" hidden>Usar o padrão</button>
-        <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" hidden>
+      <div class="options">
+        <label class="switchrow only-abertura"><span><b>Vídeo com overlay de preços</b><small>As etiquetas de cada carta, o total do booster e o resumo</small></span>
+          <input type="checkbox" role="switch" class="switch" id="opt-overlay" checked></label>
+        <div class="switchrow only-abertura logoopt">
+          <img id="logo-preview" alt="Logo escolhido" hidden>
+          <span><label for="opt-logo"><b>Logo no vídeo</b></label><small id="logo-label">Semitransparente, num canto, da capa ao resumo ·
+            <button type="button" class="linkbtn" id="logo-change">Trocar logo</button> <button type="button" class="linkbtn" id="logo-default" hidden>Usar o padrão</button></small></span>
+          <input type="checkbox" role="switch" class="switch" id="opt-logo">
+          <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp" hidden>
+        </div>
+        <label class="switchrow only-abertura"><span><b>Narrar o vídeo</b><small id="narration-label"></small></span>
+          <input type="checkbox" role="switch" class="switch" id="opt-narration"></label>
+        <label class="switchrow"><span><b>Conferir cada carta com IA local</b><small id="verify-label"></small></span>
+          <input type="checkbox" role="switch" class="switch" id="opt-verify"></label>
       </div>
-      <label class="check only-abertura"><input type="checkbox" id="opt-narration"> <span id="narration-label">Narrar o vídeo</span></label>
-      <label class="check"><input type="checkbox" id="opt-verify"> <span id="verify-label">Conferir cada carta com IA local</span></label>
       <div class="actions">
         <button class="btn" type="submit" id="send">Enviar e processar</button>
         <a class="btn ghost" href="#/pipelines">Cancelar</a>

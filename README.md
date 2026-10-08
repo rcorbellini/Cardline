@@ -108,10 +108,10 @@ nem com esse botão nem ao reprocessar uma pipeline. É ele que aparece no víde
    - **Cadastro de coleção**: para cartas que você já tem. Identifica, precifica e registra na coleção, sem
      valor pago e sem vídeo. Como não há booster, a foil não é deduzida: marque as foils pela edição.
 2. Arraste o vídeo (MP4 ou MOV, do jeito que sai do celular).
-3. Na abertura, informe o **valor pago** pelo(s) booster(s), em R$ ou US$. É opcional e pode ser preenchido depois.
-4. **Set das cartas**: deixe em "Detectar automaticamente" ou escolha o set. Na abertura, escolha também a
-   **moeda do vídeo com overlay**, se quer gerar o vídeo e se quer **narrar o vídeo** (precisa do extra
-   `narracao`; ~2 min a mais).
+3. Na abertura, escolha a **moeda** uma vez (R$ ou US$): ela vale para o **valor pago** pelo(s) booster(s) e para
+   os preços no vídeo. O valor pago é opcional e pode ser preenchido depois.
+4. **Set das cartas**: deixe em "Detectar automaticamente" ou escolha o set. As opções ficam em chaves (liga/desliga):
+   **vídeo com overlay**, **logo no vídeo** e **narrar o vídeo** (precisa do extra `narracao`; ~2 min a mais).
    **Logo no vídeo** põe o logo semitransparente num canto, da capa ao resumo: vem marcado com o logo padrão
    (`data/logos/padrao.png`), e **Trocar logo** usa outra imagem só nesta pipeline (PNG com fundo transparente
    fica melhor).

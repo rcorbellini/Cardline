@@ -148,8 +148,7 @@ input, select {
 .morefilters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%; }
 .morefilters[hidden] { display: none; }
 .inkchips { display: flex; flex-wrap: wrap; gap: 6px; }
-.logoopt { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
-.logoopt img { width: 44px; height: 44px; object-fit: contain; border-radius: 8px; background: var(--panel-2); }
+.logoopt img { width: 40px; height: 40px; object-fit: contain; border-radius: 8px; background: var(--panel-2); flex: none; }
 .inkchip {
   width: 40px; height: 38px; border: 1px solid var(--line); background: var(--panel); border-radius: 10px;
   display: grid; place-items: center; cursor: pointer; padding: 0; opacity: .75;
@@ -331,9 +330,33 @@ code { background: var(--panel-2); border-radius: 6px; padding: 1px 6px; font-si
 .fields .wide { grid-column: 1 / -1; }
 .fields label { display: grid; gap: 6px; font-weight: 600; font-size: 14px; }
 .fields small { font-weight: 400; }
+.fields .curfield { display: grid; gap: 6px; font-weight: 600; font-size: 14px; justify-items: start; }
 .inline { display: flex; gap: 6px; max-width: 320px; }
 .inline input { flex: 1; }
 .check { display: flex; gap: 10px; align-items: center; font-size: 14px; }
+/* opções como as do Google: o texto à esquerda e a chave à direita */
+.options { display: grid; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.switchrow { display: flex; align-items: center; gap: 14px; padding: 12px 14px; cursor: pointer; }
+.switchrow + .switchrow { border-top: 1px solid var(--line); }
+.switchrow[hidden] { display: none; }
+.switchrow > span { flex: 1; display: grid; gap: 2px; min-width: 0; }
+.switchrow b { font-size: 14px; font-weight: 600; }
+.switchrow small { color: var(--muted); font-size: 12.5px; }
+.switchrow:has(.switch:disabled) b { color: var(--muted); }
+.switch {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none; position: relative; cursor: pointer;
+  width: 42px; height: 24px; border-radius: 999px; background: var(--line); transition: background .15s;
+}
+.switch::before {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); transition: transform .15s;
+}
+.switch:checked { background: var(--accent); }
+.switch:checked::before { transform: translateX(18px); }
+.switch:disabled { opacity: .45; cursor: not-allowed; }
+.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .switch, .switch::before { transition: none; } }
+.curtag { align-self: center; min-width: 34px; font-weight: 700; color: var(--muted); }
 .check input { width: 18px; height: 18px; }
 .actions { display: flex; gap: 10px; }
 

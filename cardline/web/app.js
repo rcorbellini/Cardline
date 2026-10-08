@@ -816,16 +816,15 @@ function editPaid() {
 function prepareNew() {
   const sets = S.meta.sets.filter(s => s.booster).reverse();
   $('#new-set').innerHTML = '<option value="">Detectar automaticamente</option>' + sets.map(s => `<option value="${esc(s.code)}">${esc(s.code)} · ${esc(s.name)}</option>`).join('');
-  $('#new-currency').value = S.meta.currency;
+  setNewCurrency(S.meta.currency);
   const v = S.meta.verify;
   $('#opt-verify').disabled = !v.available;
   $('#opt-verify').checked = v.available && v.default;
-  $('#verify-label').textContent = v.available
-    ? `Conferir cada carta com IA local (${v.model}, ~1 s por carta)` : `Conferir com IA local (Ollama não encontrado)`;
+  $('#verify-label').textContent = v.available ? `${v.model} lê o nome e o número de cada recorte (~1 s por carta)` : 'Precisa do Ollama rodando (não encontrado)';
   const nm = S.meta.narration;
   $('#opt-narration').checked = false;
-  $('#narration-label').textContent = nm.unavailable ? `Narrar o vídeo (para isso, ${nm.unavailable})`
-    : 'Narrar o vídeo: um narrador comenta a abertura sem dar spoiler (voz em português, ~2 min a mais)';
+  $('#narration-label').textContent = nm.unavailable ? `Para isso, ${nm.unavailable}`
+    : 'Um narrador comenta a abertura sem dar spoiler (voz em português, ~2 min a mais)';
   newLogo = null;
   $('#opt-logo').checked = !!S.meta.logo?.default;
   syncNarrationOption();
@@ -837,6 +836,14 @@ function syncNarrationOption() {  // a narração e o logo são do vídeo com ov
   syncLogoOption();
 }
 $('#opt-overlay').addEventListener('change', syncNarrationOption);
+// moeda escolhida uma vez: a do valor pago é a do vídeo
+let newCurrency = 'BRL';
+function setNewCurrency(cur) {
+  newCurrency = cur === 'USD' ? 'USD' : 'BRL';
+  document.querySelectorAll('[data-newcur]').forEach(b => b.setAttribute('aria-pressed', b.dataset.newcur === newCurrency));
+  $('#paid-cur').textContent = sym(newCurrency);
+}
+document.querySelectorAll('[data-newcur]').forEach(b => b.onclick = () => setNewCurrency(b.dataset.newcur));
 // ---- logo do vídeo: o padrão (data/logos/padrao.png) ou um enviado agora ----
 let newLogo = null;  // { logo, url } enviado nesta criação; null = o padrão
 function syncLogoOption() {
@@ -892,10 +899,10 @@ $('#new-form').onsubmit = ev => {
   const kind = newKind();
   const params = new URLSearchParams({ filename: S.file.name, kind, verify: $('#opt-verify').checked });
   if (kind === 'abertura') {
-    params.set('paid_currency', $('#paid-currency').value);
+    params.set('paid_currency', newCurrency);
     params.set('overlay', $('#opt-overlay').checked);
     params.set('narration', $('#opt-narration').checked);
-    params.set('currency', $('#new-currency').value);
+    params.set('currency', newCurrency);
     if (paid != null) params.set('paid', paid);
     params.set('logo', $('#opt-logo').checked ? newLogo?.logo || S.meta.logo?.default || '' : '');
   }
