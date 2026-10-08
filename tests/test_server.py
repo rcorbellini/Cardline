@@ -125,3 +125,16 @@ def test_cloudflare_visitors_go_to_https_on_the_bare_domain(client):
     assert r.status_code == 308 and r.headers["location"] == "https://cardiline.com.br/api/auth/me?x=1"
     assert via_cloudflare("/api/auth/me", "https", "cardiline.com.br").status_code == 200
     assert client.get("/api/auth/me").status_code == 200  # pela rede de casa, nada muda
+
+
+def test_an_old_domain_goes_to_the_public_address(tmp_path, monkeypatch):
+    monkeypatch.setattr("cardline.money.usd_brl", lambda s: (5.0, "2026-10-06"))
+    monkeypatch.setattr("cardline.server.usd_brl", lambda s: (5.0, "2026-10-06"))
+    with TestClient(create_app(Settings(root=tmp_path, public_url="https://cardline.com.br"))) as client:
+        def via(host, path="/api/auth/me?x=1"):
+            return client.get(path, headers={"cf-visitor": '{"scheme":"https"}', "host": host}, follow_redirects=False)
+
+        assert via("cardiline.com.br").headers["location"] == "https://cardline.com.br/api/auth/me?x=1"
+        assert via("www.cardline.com.br").headers["location"] == "https://cardline.com.br/api/auth/me?x=1"
+        assert via("cardline.com.br").status_code == 200
+        assert client.get("/api/auth/me").status_code == 200  # pela rede de casa, nada muda

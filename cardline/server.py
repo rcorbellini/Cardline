@@ -375,11 +375,14 @@ class CacheRules:
 
 
 class CanonicalHost:
-    """Quem chega pelo Cloudflare vai sempre para https e para o domínio sem "www." (a sessão fica num endereço
-    só). O acesso direto, pela rede de casa, não muda."""
+    """Quem chega pelo Cloudflare vai sempre para https e para o endereço público (`public_url`; sem ele, o domínio
+    sem "www."): a sessão fica num endereço só, e um domínio antigo ou digitado errado leva para o certo. O acesso
+    direto, pela rede de casa, não muda."""
 
-    def __init__(self, app):
+    def __init__(self, app, settings: Settings | None = None):
         self.app = app
+        public = settings.public_url if settings else ""
+        self.canonical = urllib.parse.urlparse(public).hostname if public else None
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -387,9 +390,10 @@ class CanonicalHost:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         visitor, host = headers.get("cf-visitor", ""), headers.get("host", "")
         insecure = '"http"' in visitor.replace(" ", "")
-        if visitor and (insecure or host.startswith("www.")):
+        target_host = self.canonical or host.removeprefix("www.")
+        if visitor and (insecure or host != target_host):
             query = scope.get("query_string", b"").decode("latin-1")
-            target = f"https://{host.removeprefix('www.')}{scope.get('path', '/')}{'?' + query if query else ''}"
+            target = f"https://{target_host}{scope.get('path', '/')}{'?' + query if query else ''}"
             return await RedirectResponse(target, 308)(scope, receive, send)
         await self.app(scope, receive, send)
 
@@ -487,7 +491,7 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="cardline", lifespan=lifespan)
     app.add_middleware(AuthGate, settings=settings)
     app.add_middleware(CacheRules)  # por fora: vale também para as recusas do porteiro
-    app.add_middleware(CanonicalHost)
+    app.add_middleware(CanonicalHost, settings=settings)
 
     def con():
         return db.connect(settings.db_path)
