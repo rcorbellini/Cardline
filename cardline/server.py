@@ -1000,9 +1000,10 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/history")
     def history():
-        """As séries por dia do Resumo: o valor da coleção (um ponto por dia com atualização)."""
+        """As séries por dia do Resumo: o valor da coleção e as visualizações nas redes (por dia de leitura)."""
         c = con()
-        return {"value": [dict(r) for r in c.execute("SELECT day, cards_usd, sealed_usd, cards FROM value_history ORDER BY day")]}
+        return {"value": [dict(r) for r in c.execute("SELECT day, cards_usd, sealed_usd, cards FROM value_history ORDER BY day")],
+                "views": social.views_by_day(c)}
 
     @app.get("/api/tasks")
     def task_status():

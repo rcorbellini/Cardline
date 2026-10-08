@@ -100,6 +100,25 @@ def linked(con, network: str) -> list[tuple[int, str]]:
                                               (network,))]
 
 
+def views_by_day(con) -> list[dict]:
+    """Visualizações por dia de leitura, somadas por rede: em cada dia, a última leitura de cada post até ele
+    (um post entra no dia da primeira leitura; um post desvinculado sai com os números dele)."""
+    reads = con.execute("SELECT s.run_id, s.network, s.fetched_at, s.views FROM post_stats s"
+                        " JOIN posts p ON p.run_id = s.run_id AND p.network = s.network"
+                        " WHERE s.views IS NOT NULL ORDER BY s.fetched_at").fetchall()
+    latest: dict[tuple[int, str], int] = {}
+    out: list[dict] = []
+    for i, r in enumerate(reads):
+        latest[(r["run_id"], r["network"])] = r["views"]
+        day = r["fetched_at"][:10]
+        if i + 1 == len(reads) or reads[i + 1]["fetched_at"][:10] != day:  # fim do dia: fecha o ponto
+            views: dict[str, int] = {}
+            for (_, net), n in latest.items():
+                views[net] = views.get(net, 0) + n
+            out.append({"day": day, "views": views})
+    return out
+
+
 def schedule(con, run_id: int, network: str, publish_at: str, request: dict) -> None:
     """Guarda o pedido para o cardline publicar na hora marcada (substitui a programação anterior da rede)."""
     with con:

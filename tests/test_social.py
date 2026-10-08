@@ -246,3 +246,24 @@ def test_a_scheduled_reel_is_not_published_long_after_the_time(settings, monkeyp
         assert client.put(f"/api/runs/{run_id}/posts", json={"url": "https://www.instagram.com/reel/DAbc_12-xY/"}).status_code == 200
         assert client.get(f"/api/runs/{run_id}").json()["scheduled"] == {}  # postou pelo app: a programação sai
 
+
+def test_views_by_day_add_up_the_last_read_of_each_post(settings):
+    a, b = new_run(settings, "a.mp4"), new_run(settings, "b.mp4")
+    con = db.connect(settings.db_path)
+    social.save_post(con, a, "youtube", "aaaaaaaaaaa", "https://youtu.be/aaaaaaaaaaa", via="link")
+    social.save_post(con, b, "youtube", "bbbbbbbbbbb", "https://youtu.be/bbbbbbbbbbb", via="link")
+    social.save_post(con, a, "tiktok", "1", "https://www.tiktok.com/@a/video/1", via="link")
+    with con:
+        con.executemany("INSERT INTO post_stats(run_id, network, fetched_at, views, manual) VALUES (?, ?, ?, ?, ?)", [
+            (a, "youtube", "2026-10-06T10:00:00-03:00", 50, 0),
+            (a, "youtube", "2026-10-06T20:00:00-03:00", 80, 0),   # mesmo dia: vale a última leitura
+            (a, "tiktok", "2026-10-07T09:00:00-03:00", 300, 1),   # à mão também conta
+            (b, "youtube", "2026-10-08T09:00:00-03:00", 20, 0),   # o B entra no dia em que foi lido
+            (a, "youtube", "2026-10-08T09:30:00-03:00", 120, 0),
+        ])
+    assert social.views_by_day(con) == [
+        {"day": "2026-10-06", "views": {"youtube": 80}},
+        {"day": "2026-10-07", "views": {"youtube": 80, "tiktok": 300}},
+        {"day": "2026-10-08", "views": {"youtube": 140, "tiktok": 300}},
+    ]
+

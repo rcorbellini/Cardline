@@ -244,6 +244,9 @@ poste pelo app e vincule o link.
    `instagram_business_basic`, `instagram_business_content_publish` e `instagram_business_manage_insights`, e cole
    na página (**Conectar o Instagram**). O token vale 60 dias e o cardline renova antes de vencer.
 
+O gráfico **Visualizações por data**, no Resumo, soma as visualizações dos vídeos vinculados por rede em cada
+dia em que os números foram lidos (a última leitura do dia de cada vídeo; o TikTok entra pelos números informados).
+
 Publicar na própria conta não precisa de revisão da Meta, e o Reel sai público. O Instagram baixa o vídeo de um
 endereço público: o cardline oferece o arquivo pelo túnel (ngrok) durante a publicação, então abra a página pelo
 túnel ou configure `public_url`.
@@ -279,7 +282,7 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo) e/ou `{"narration": true}`; só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
-| GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) |
+| GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) e `views` (visualizações por rede) |
 | GET | `/api/tasks` | tarefas de fundo do Resumo (`prices`, `social`): rodando, progresso e a mensagem do fim |
 | POST | `/api/tasks/prices`, `/api/tasks/social?max_age=1800` | atualiza os preços / os números das redes em segundo plano (uma de cada vez) |
 | PATCH | `/api/runs/{id}/cards/{uid}` | `{"foil": true}`: edita a carta (por enquanto, só o acabamento); fica pendente até reprocessar |

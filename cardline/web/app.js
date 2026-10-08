@@ -949,7 +949,7 @@ function watchWidth(el, render) {  // redesenha quando a largura real do painel 
 const dayLabel = d => d.split('-').reverse().slice(0, 2).join('/');  // "2026-10-08" → "08/10"
 const dayTime = d => new Date(`${d}T12:00:00`).getTime();
 // rows: [{ day: 'AAAA-MM-DD', v: { chave: valor } }]; display: valor → unidade do eixo; fmt: valor → texto
-function timeChart({ wrap, rows, series, display, fmt, axis, what }) {
+function timeChart({ wrap, rows, series, display, fmt, axis, what, minStep = 0 }) {
   const width = chartWidths.get(wrap);
   if (!width) return false;
   const W = Math.max(280, width), H = 210, m = { l: 66, r: 92, t: 12, b: 28 };
@@ -957,7 +957,7 @@ function timeChart({ wrap, rows, series, display, fmt, axis, what }) {
   const t0 = dayTime(rows[0].day), span = dayTime(rows.at(-1).day) - t0 || 1;
   const x = i => rows.length === 1 ? m.l + pw / 2 : m.l + (dayTime(rows[i].day) - t0) / span * pw;
   const max = Math.max(...rows.flatMap(r => series.map(s => display(r.v[s.key] ?? 0)))) || 1;
-  const st = niceStep(max), top = Math.ceil(max / st) * st;
+  const st = Math.max(minStep, niceStep(max)), top = Math.ceil(max / st) * st;
   const y = v => m.t + ph - display(v) / top * ph;
   let svg = '';
   for (let v = 0; v <= top + 1e-9; v += st) {
@@ -1048,9 +1048,26 @@ function renderValueChart() {
     <tbody>${rows.slice().reverse().map(r => `<tr><td>${new Date(`${r.day}T12:00:00`).toLocaleDateString('pt-BR')}</td>${series.map(s => `<td class="r">${money(r.v[s.key])}</td>`).join('')}<td class="r">${fmtInt(r.cards)}</td></tr>`).join('')}</tbody></table>`);
 }
 watchWidth($('#value-chart'), renderValueChart);
+function renderViewsChart() {
+  const wrap = $('#views-chart'), data = S.history?.views || [];
+  const series = NETS.filter(n => data.some(d => d.views[n.key] != null));  // a rede nomeia a linha: legenda mesmo com uma
+  patch($('#views-legend'), series.map(s => `<li><i style="--c:${s.color}"></i>${s.label}</li>`).join(''));
+  $('#views-tabledetails').hidden = !data.length;
+  if (!data.length) {
+    patch(wrap, '<p class="muted chartempty">Os pontos aparecem quando os números dos vídeos forem lidos (↻ Atualizar números, no gráfico acima).</p>');
+    patch($('#views-table'), '');
+    return;
+  }
+  const rows = data.map(d => ({ day: d.day, v: d.views }));
+  timeChart({ wrap, rows, series, display: v => v, fmt: fmtInt, axis: v => v.toLocaleString('pt-BR'), what: 'Visualizações', minStep: 1 });
+  const total = r => series.reduce((t, s) => t + (r.v[s.key] ?? 0), 0);
+  patch($('#views-table'), `<table><thead><tr><th>Data</th>${series.map(s => `<th class="r">${s.label}</th>`).join('')}${series.length > 1 ? '<th class="r">Total</th>' : ''}</tr></thead>
+    <tbody>${rows.slice().reverse().map(r => `<tr><td>${new Date(`${r.day}T12:00:00`).toLocaleDateString('pt-BR')}</td>${series.map(s => `<td class="r">${fmtInt(r.v[s.key])}</td>`).join('')}${series.length > 1 ? `<td class="r">${fmtInt(total(r))}</td>` : ''}</tr>`).join('')}</tbody></table>`);
+}
+watchWidth($('#views-chart'), renderViewsChart);
 async function loadHistory() {
   try { S.history = await api('/api/history'); } catch (e) { console.warn(e); return; }
-  renderValueChart();
+  renderValueChart(); renderViewsChart();
 }
 
 // ---- tarefas de fundo do Resumo: preços e números das redes (rodam no servidor; a página só acompanha) ----
@@ -1664,7 +1681,7 @@ window.addEventListener('hashchange', route);
 
 function renderAll() {
   buildEntries();
-  renderCurrency(); renderStats(); renderChart(); renderValueChart(); renderSetChart(); renderSocialChart();
+  renderCurrency(); renderStats(); renderChart(); renderValueChart(); renderSetChart(); renderSocialChart(); renderViewsChart();
   const view = currentView();
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();
