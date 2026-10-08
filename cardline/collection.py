@@ -220,5 +220,6 @@ def add(settings: Settings, card_ref: str, foil: bool, qty: int) -> None:
             "INSERT INTO collection(card_id, foil, price_usd, added_at) VALUES (?, ?, ?, ?)",
             [(row["id"], int(foil), price, db.now())] * qty,
         )
+    db.record_value(con)
     print(f"Adicionada: {qty}× {db.display_name(row)} ({row['set_code']}/{row['number']}){' foil' if foil else ''}"
           f" — {money_for(settings).fmt(price)} cada")

@@ -264,6 +264,7 @@ def _prices(ctx: RunContext) -> str:
 def _commit(ctx: RunContext) -> str:
     scan = load_scan(ctx.dir)
     register(ctx.con, ctx.run_id, scan)
+    db.record_value(ctx.con)
     return f"{len(scan['cards'])} cartas registradas na coleção"
 
 
@@ -468,6 +469,7 @@ def delete_run(settings: Settings, run_id: int) -> None:
         raise RuntimeError("A pipeline está rodando; espere terminar para apagar.")
     with con:
         con.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+    db.record_value(con)  # as cartas dela saíram da coleção
     folder = (settings.root / run["dir"]).resolve()
     if run["dir"] and folder.is_relative_to(settings.runs_dir.resolve()) and folder != settings.runs_dir.resolve():
         shutil.rmtree(folder, ignore_errors=True)

@@ -41,6 +41,7 @@ def sync(settings: Settings, set_codes: list[str] | None = None, images: bool = 
         db.upsert_cards(con, cards, fetched_at)
         con.commit()
         print(f"  {s['code']:>8}  {s['name']:<42} {len(cards):>4} cartas")
+    db.record_value(con)  # preços novos: um ponto no gráfico de valor da coleção por data
 
     if not images:
         return
@@ -194,4 +195,5 @@ def refresh_prices(settings: Settings, set_codes: list[str], progress=lambda fra
         with con:
             db.upsert_cards(con, cards, fetched_at)
         done.append(code)
+    db.record_value(con)  # um ponto no gráfico de valor da coleção por data
     return {"updated_at": fetched_at, "sets": done}

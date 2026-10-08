@@ -138,3 +138,30 @@ def test_prices_update_in_the_background_one_at_a_time(settings, run, monkeypatc
         assert client.get("/api/collection").json()["owned"][0]["price"] == 3.0
         assert client.post("/api/tasks/social").json()["skipped"] is True  # nenhum vídeo para ler pela API
 
+
+
+def test_value_history_backfills_the_days_with_saved_prices(settings):
+    con = db.connect(settings.db_path)
+    with con:
+        con.executemany("INSERT OR REPLACE INTO price_history(card_id, day, usd, usd_foil) VALUES (?, ?, ?, ?)",
+                        [("crd_a", "2026-10-06", 1.0, 5.0), ("crd_b", "2026-10-06", 2.0, 6.0), ("crd_a", "2026-10-07", 1.5, 5.0)])
+        con.executemany("INSERT INTO collection(card_id, foil, price_usd, added_at) VALUES (?, ?, ?, ?)",
+                        [("crd_a", 0, 1.0, "2026-10-06T14:00:00-03:00"), ("crd_b", 1, 6.0, "2026-10-07T10:00:00-03:00")])
+        db._value_history(con)
+    rows = [tuple(r) for r in con.execute("SELECT day, cards_usd, cards FROM value_history ORDER BY day")]
+    # o B (foil) entrou no dia 7 e vale o último preço guardado até ele
+    assert rows == [("2026-10-06", 1.0, 1), ("2026-10-07", 7.5, 2)]
+
+
+def test_each_update_is_one_point_per_day(settings, run, monkeypatch):
+    con = db.connect(settings.db_path)
+    with con:
+        con.execute("INSERT INTO collection(card_id, run_id, price_usd, added_at) VALUES ('crd_a', ?, 1.0, 'x')", (run,))
+    monkeypatch.setattr("cardline.catalog.lorcast.fetch_set_cards", lambda set_id: [lorcast_card("crd_a", "1", 3.0, 7.0)])
+    with TestClient(create_app(settings)) as client:
+        client.post("/api/prices/refresh")
+        monkeypatch.setattr("cardline.catalog.lorcast.fetch_set_cards", lambda set_id: [lorcast_card("crd_a", "1", 4.0, 7.0)])
+        client.post("/api/prices/refresh")
+        value = client.get("/api/history").json()["value"]
+    today = db.now()[:10]
+    assert [(p["day"], p["cards_usd"], p["cards"]) for p in value] == [(today, 4.0, 1)]  # a última do dia vale

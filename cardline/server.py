@@ -998,6 +998,12 @@ def create_app(settings: Settings) -> FastAPI:
         except OSError as e:
             raise HTTPException(502, f"Não consegui buscar os preços no Lorcast ({e}).") from e
 
+    @app.get("/api/history")
+    def history():
+        """As séries por dia do Resumo: o valor da coleção (um ponto por dia com atualização)."""
+        c = con()
+        return {"value": [dict(r) for r in c.execute("SELECT day, cards_usd, sealed_usd, cards FROM value_history ORDER BY day")]}
+
     @app.get("/api/tasks")
     def task_status():
         """As tarefas de fundo do Resumo: preços e números das redes."""

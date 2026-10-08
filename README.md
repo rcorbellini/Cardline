@@ -79,6 +79,11 @@ o total investido em boosters e o resultado das aberturas. O gráfico **Gasto vs
 abertura por abertura, quanto foi pago e quanto as cartas valiam na abertura e valem hoje. Ele tem tooltip
 (também pelo teclado, com as setas) e uma tabela com os mesmos números em "Ver tabela".
 
+O gráfico **Valor da coleção por data** ganha um ponto por dia sempre que os preços são atualizados (botão ou
+sincronização) ou a coleção muda (pipeline registrada ou excluída, carta avulsa); várias atualizações no mesmo
+dia viram um ponto só, o da última. Os dias de antes do gráfico existir vieram do histórico de preços que o
+cardline já guardava.
+
 O gráfico **Valor médio do booster por coleção** mostra, para cada set, quanto vale em média um booster aberto
 pelo valor das suas cartas (não pelo preço de compra), na abertura e hoje. Cada pacote do vídeo conta como um
 booster, e a coleção dele é a da maioria das cartas; embaixo de cada set aparece quantos boosters entraram na média.
@@ -274,6 +279,7 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo) e/ou `{"narration": true}`; só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
+| GET | `/api/history` | séries por dia do Resumo: `value` (valor da coleção) |
 | GET | `/api/tasks` | tarefas de fundo do Resumo (`prices`, `social`): rodando, progresso e a mensagem do fim |
 | POST | `/api/tasks/prices`, `/api/tasks/social?max_age=1800` | atualiza os preços / os números das redes em segundo plano (uma de cada vez) |
 | PATCH | `/api/runs/{id}/cards/{uid}` | `{"foil": true}`: edita a carta (por enquanto, só o acabamento); fica pendente até reprocessar |

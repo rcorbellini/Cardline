@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -115,6 +115,14 @@ CREATE TABLE IF NOT EXISTS posts (  -- o vídeo de uma abertura numa rede
     PRIMARY KEY (run_id, network)
 );
 
+CREATE TABLE IF NOT EXISTS value_history (  -- valor da coleção por dia: um ponto por dia, a última gravação do dia vale
+    day         TEXT PRIMARY KEY,
+    cards_usd   REAL NOT NULL,  -- as cartas da coleção pelo preço de mercado de então
+    sealed_usd  REAL,           -- os lacrados
+    cards       INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS scheduled_posts (  -- o que o cardline publica na hora marcada (a rede não programa sozinha)
     run_id     INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     network    TEXT NOT NULL,
@@ -197,6 +205,7 @@ MIGRATIONS = {
     5: _narrate_steps,
     6: _posts_per_network,
     7: lambda con: _add_column(con, "posts", "scheduled_at", "TEXT"),
+    8: lambda con: _value_history(con),
 }
 
 
@@ -309,3 +318,25 @@ def price_usd(row: sqlite3.Row | dict, foil: bool) -> float | None:
     if foil:
         return row["usd_foil"] if row["usd_foil"] is not None else row["usd"]
     return row["usd"] if row["usd"] is not None else row["usd_foil"]
+
+
+def record_value(con: sqlite3.Connection) -> None:
+    """Grava o valor da coleção de hoje pelos preços atuais (um ponto por dia: a última gravação do dia vale).
+
+    Chamado quando os preços mudam (atualizar preços, sincronizar) e quando a coleção muda (pipeline registrada,
+    excluída, carta avulsa), para o último ponto do gráfico ser o valor da coleção que o Resumo mostra."""
+    rows = con.execute("SELECT c.foil, k.usd, k.usd_foil FROM collection c JOIN cards k ON k.id = c.card_id").fetchall()
+    with con:
+        con.execute("INSERT INTO value_history(day, cards_usd, cards, recorded_at) VALUES (?, ?, ?, ?) ON CONFLICT(day)"
+                    " DO UPDATE SET cards_usd = excluded.cards_usd, cards = excluded.cards, recorded_at = excluded.recorded_at",
+                    (now()[:10], sum(price_usd(r, bool(r["foil"])) or 0 for r in rows), len(rows), now()))
+
+
+def _value_history(con: sqlite3.Connection) -> None:
+    """Os dias de antes do gráfico: o valor das cartas que já estavam na coleção pelo preço de cada dia guardado."""
+    rows = con.execute("SELECT card_id, foil, added_at FROM collection").fetchall()
+    for (day,) in con.execute("SELECT DISTINCT day FROM price_history WHERE day <= ? ORDER BY day", (now()[:10],)).fetchall():
+        owned = [r for r in rows if (r["added_at"] or "")[:10] <= day]
+        if owned:
+            con.execute("INSERT OR IGNORE INTO value_history(day, cards_usd, cards, recorded_at) VALUES (?, ?, ?, ?)",
+                        (day, sum(price_on(con, r["card_id"], bool(r["foil"]), day) or 0 for r in owned), len(owned), now()))

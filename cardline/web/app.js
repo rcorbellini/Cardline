@@ -938,7 +938,121 @@ new ResizeObserver(([entry]) => {
   if (Math.abs(w - chartWidth) > 2) { chartWidth = w; if (S.meta) renderChart(); }
 }).observe($('#chart'));
 
-// ---- atualizar preços de hoje (o valor na abertura de cada carta não muda) ----
+// ---- gráficos por data (valor da coleção, visualizações): um ponto por dia, eixo de tempo proporcional ----
+const chartWidths = new Map();
+function watchWidth(el, render) {  // redesenha quando a largura real do painel muda
+  new ResizeObserver(([entry]) => {
+    const w = Math.round(entry.contentRect.width);
+    if (Math.abs(w - (chartWidths.get(el) || 0)) > 2) { chartWidths.set(el, w); if (S.meta) render(); }
+  }).observe(el);
+}
+const dayLabel = d => d.split('-').reverse().slice(0, 2).join('/');  // "2026-10-08" → "08/10"
+const dayTime = d => new Date(`${d}T12:00:00`).getTime();
+// rows: [{ day: 'AAAA-MM-DD', v: { chave: valor } }]; display: valor → unidade do eixo; fmt: valor → texto
+function timeChart({ wrap, rows, series, display, fmt, axis, what }) {
+  const width = chartWidths.get(wrap);
+  if (!width) return false;
+  const W = Math.max(280, width), H = 210, m = { l: 66, r: 92, t: 12, b: 28 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const t0 = dayTime(rows[0].day), span = dayTime(rows.at(-1).day) - t0 || 1;
+  const x = i => rows.length === 1 ? m.l + pw / 2 : m.l + (dayTime(rows[i].day) - t0) / span * pw;
+  const max = Math.max(...rows.flatMap(r => series.map(s => display(r.v[s.key] ?? 0)))) || 1;
+  const st = niceStep(max), top = Math.ceil(max / st) * st;
+  const y = v => m.t + ph - display(v) / top * ph;
+  let svg = '';
+  for (let v = 0; v <= top + 1e-9; v += st) {
+    const yy = (m.t + ph - v / top * ph).toFixed(1);
+    svg += `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${yy}" y2="${yy}"/><text class="tick" x="${m.l - 8}" y="${yy}" text-anchor="end" dominant-baseline="middle">${axis(v, st)}</text>`;
+  }
+  let lastX = -1e9;  // datas no eixo só onde cabem (a última sempre)
+  rows.forEach((r, i) => {
+    const xx = x(i);
+    if (xx - lastX >= 48 && (i === rows.length - 1 || x(rows.length - 1) - xx >= 48)) { svg += `<text class="tick" x="${xx.toFixed(1)}" y="${H - 8}" text-anchor="middle">${dayLabel(r.day)}</text>`; lastX = xx; }
+    else if (i === rows.length - 1) svg += `<text class="tick" x="${xx.toFixed(1)}" y="${H - 8}" text-anchor="middle">${dayLabel(r.day)}</text>`;
+  });
+  const dots = pw / rows.length >= 14;  // com espaço, um marcador por dia; apertado (celular, muitos dias), só o último
+  for (const s of series) {
+    const idx = rows.map((r, i) => r.v[s.key] != null ? i : -1).filter(i => i >= 0);
+    if (idx.length > 1) svg += `<polyline points="${idx.map(i => `${x(i).toFixed(1)},${y(rows[i].v[s.key]).toFixed(1)}`).join(' ')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    for (const i of dots ? idx : idx.slice(-1)) svg += `<circle cx="${x(i).toFixed(1)}" cy="${y(rows[i].v[s.key]).toFixed(1)}" r="4" fill="${s.color}" stroke="var(--panel)" stroke-width="2"/>`;
+  }
+  const placed = [];  // rótulo no fim de cada linha só onde não colide; o resto fica na legenda, tooltip e tabela
+  for (const s of series) {
+    const i = rows.map(r => r.v[s.key]).findLastIndex(v => v != null);
+    if (i < 0) continue;
+    const yy = y(rows[i].v[s.key]);
+    if (placed.every(l => Math.abs(l - yy) >= 15)) { placed.push(yy); svg += `<text class="endlabel" x="${(x(i) + 10).toFixed(1)}" y="${yy.toFixed(1)}" dominant-baseline="middle">${fmt(rows[i].v[s.key])}</text>`; }
+  }
+  const last = rows.at(-1);
+  const summary = `${what}: ${series.map(s => `${s.label} ${fmt(last.v[s.key])}`).join(', ')} em ${dayLabel(last.day)}.`;
+  const changed = patch(wrap, `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" tabindex="0" aria-label="${esc(summary)} Use as setas para ver cada dia.">${svg}
+    <line class="xhair" y1="${m.t}" y2="${m.t + ph}" visibility="hidden"/><rect x="${m.l - 12}" y="0" width="${pw + 24}" height="${H}" fill="transparent"/></svg>
+    <div class="tip" hidden></div>`);
+  if (!changed) return true;
+  const el = wrap.querySelector('svg'), tip = wrap.querySelector('.tip'), hair = wrap.querySelector('.xhair');
+  let idx = rows.length - 1;
+  const show = i => {
+    idx = Math.max(0, Math.min(rows.length - 1, i));
+    const r = rows[idx], xx = x(idx);
+    hair.setAttribute('x1', xx); hair.setAttribute('x2', xx); hair.setAttribute('visibility', 'visible');
+    tip.replaceChildren();
+    const head = document.createElement('div'); head.className = 't-head';
+    head.textContent = new Date(`${r.day}T12:00:00`).toLocaleDateString('pt-BR');
+    tip.append(head);
+    for (const s of series) {
+      const row = document.createElement('div'); row.className = 't-row';
+      const key = document.createElement('i'); key.style.setProperty('--c', s.color);
+      const val = document.createElement('b'); val.textContent = fmt(r.v[s.key]);
+      const name = document.createElement('span'); name.textContent = s.label;
+      row.append(key, val, name); tip.append(row);
+    }
+    tip.hidden = false;
+    const tw = tip.offsetWidth;
+    tip.style.left = `${xx + 12 + tw > W ? xx - 12 - tw : xx + 12}px`;
+  };
+  const hide = () => { tip.hidden = true; hair.setAttribute('visibility', 'hidden'); };
+  const nearest = ev => {  // o dia mais perto do ponteiro (os dias não são igualmente espaçados)
+    const px = ev.clientX - el.getBoundingClientRect().left;
+    return rows.reduce((b, _, i) => Math.abs(x(i) - px) < Math.abs(x(b) - px) ? i : b, 0);
+  };
+  el.addEventListener('pointermove', ev => show(nearest(ev)));
+  el.addEventListener('pointerdown', ev => show(nearest(ev)));
+  el.addEventListener('pointerleave', hide);
+  el.addEventListener('focus', () => show(idx));
+  el.addEventListener('blur', hide);
+  el.addEventListener('keydown', ev => {
+    if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') { ev.preventDefault(); show(idx + (ev.key === 'ArrowRight' ? 1 : -1)); }
+    if (ev.key === 'Escape') hide();
+  });
+  return true;
+}
+const moneyAxis = (v, st) => {  // passo 2,5 → 7,5 e não "8"
+  const digits = st < 1 ? 2 : Number.isInteger(st) ? 0 : 1;
+  return `${sym(S.cur)} ${v.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+};
+function renderValueChart() {
+  const wrap = $('#value-chart');
+  const rows = (S.history?.value || []).map(p => ({ day: p.day, cards: p.cards, v: { cards: p.cards_usd, sealed: p.sealed_usd } }));
+  const series = [{ key: 'cards', label: 'Cartas', color: 'var(--s-now)' },
+    ...(rows.some(r => r.v.sealed) ? [{ key: 'sealed', label: 'Lacrados', color: 'var(--s-open)' }] : [])];
+  patch($('#value-legend'), series.length > 1 ? series.map(s => `<li><i style="--c:${s.color}"></i>${s.label}</li>`).join('') : '');
+  $('#value-tabledetails').hidden = !rows.length;
+  if (!rows.length) {
+    patch(wrap, '<p class="muted chartempty">O primeiro ponto aparece quando os preços forem atualizados ou uma pipeline registrar cartas.</p>');
+    patch($('#value-table'), '');
+    return;
+  }
+  const rate = () => S.meta.rates[S.cur] ?? 1;
+  timeChart({ wrap, rows, series, display: v => v * rate(), fmt: v => money(v), axis: moneyAxis, what: 'Valor da coleção' });
+  patch($('#value-table'), `<table><thead><tr><th>Data</th>${series.map(s => `<th class="r">${s.label}</th>`).join('')}<th class="r">Cartas na coleção</th></tr></thead>
+    <tbody>${rows.slice().reverse().map(r => `<tr><td>${new Date(`${r.day}T12:00:00`).toLocaleDateString('pt-BR')}</td>${series.map(s => `<td class="r">${money(r.v[s.key])}</td>`).join('')}<td class="r">${fmtInt(r.cards)}</td></tr>`).join('')}</tbody></table>`);
+}
+watchWidth($('#value-chart'), renderValueChart);
+async function loadHistory() {
+  try { S.history = await api('/api/history'); } catch (e) { console.warn(e); return; }
+  renderValueChart();
+}
+
 // ---- tarefas de fundo do Resumo: preços e números das redes (rodam no servidor; a página só acompanha) ----
 S.tasks = {};
 const taskSeen = {};  // tarefas que esta página viu rodando: só delas mostra a mensagem do fim
@@ -1534,7 +1648,7 @@ async function route() {
   for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
   if (view === 'sets') loadSets();
   ytSync();
-  if (view === 'resumo') { refreshSocialStats(1800); pollTasks(); }
+  if (view === 'resumo') { refreshSocialStats(1800); pollTasks(); loadHistory(); }
   document.querySelectorAll('nav.tabs a').forEach(a => {
     const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -1550,7 +1664,7 @@ window.addEventListener('hashchange', route);
 
 function renderAll() {
   buildEntries();
-  renderCurrency(); renderStats(); renderChart(); renderSetChart(); renderSocialChart();
+  renderCurrency(); renderStats(); renderChart(); renderValueChart(); renderSetChart(); renderSocialChart();
   const view = currentView();
   if (view === 'colecao') renderCollection();
   if (view === 'pipelines') renderRuns();
@@ -1571,6 +1685,7 @@ async function refresh(collectionToo = false) {
       buildEntries(); setupFilters();
     }
     if (S.runId) S.run = await api(`/api/runs/${S.runId}`);
+    if (currentView() === 'resumo') S.history = await api('/api/history');
     renderAll();
   } catch (e) { console.warn(e); }
   timer = setTimeout(refresh, prevActive.size ? 1500 : 8000);
