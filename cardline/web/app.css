@@ -68,6 +68,8 @@ header.top { padding: 24px 0 0; }
 .updated .linkbtn { font-size: 12px; font-weight: 600; }
 .updated .linkbtn:disabled { color: var(--muted); cursor: default; }
 .ytread { align-items: center; }
+.resumobar { margin: 12px 0; align-items: center; }
+.taskerr { color: var(--down); }
 
 /* gráfico gasto vs valor */
 .chartcard { margin: 12px 0 0; padding: 14px 18px 12px; }

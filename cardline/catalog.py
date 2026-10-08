@@ -177,15 +177,19 @@ def reset_icon(settings: Settings, code: str) -> None:
     sync_set_icons(settings, con, only=[code], force=True)
 
 
-def refresh_prices(settings: Settings, set_codes: list[str]) -> dict:
-    """Atualiza os preços de hoje dos sets; o preço de cada carta na abertura fica como estava."""
+def refresh_prices(settings: Settings, set_codes: list[str], progress=lambda fraction, message=None: None) -> dict:
+    """Atualiza os preços de hoje dos sets; o preço de cada carta na abertura fica como estava.
+
+    É uma consulta ao Lorcast por set (ela traz todas as cartas do set com o preço), não uma por carta: o tempo
+    cresce com o número de sets da coleção, não com o de cartas."""
     con = db.connect(settings.db_path)
     fetched_at = db.now()
     done = []
-    for code in set_codes:
-        row = con.execute("SELECT id FROM sets WHERE code = ?", (code,)).fetchone()
+    for i, code in enumerate(set_codes):
+        row = con.execute("SELECT id, name FROM sets WHERE code = ?", (code,)).fetchone()
         if row is None:
             continue
+        progress(i / max(1, len(set_codes)), f"Set {i + 1} de {len(set_codes)}: {row['name']}")
         cards = lorcast.fetch_set_cards(row["id"])
         with con:
             db.upsert_cards(con, cards, fetched_at)

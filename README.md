@@ -86,9 +86,11 @@ booster, e a coleção dele é a da maioria das cartas; embaixo de cada set apar
 Cadastros de coleção **não entram** no investido, no resultado nem nesses gráficos: são cartas que você já tinha,
 sem custo, e entrariam como valor sem gasto, inflando o resultado das aberturas.
 
-**Atualizar preços**, ao lado da data dos preços, busca os preços de mercado de hoje das cartas da
-coleção. O valor de cada carta **no momento da abertura** fica guardado e não muda, nem com esse botão
-nem ao reprocessar uma pipeline. É ele que aparece no vídeo e em "Na abertura".
+**↻ Atualizar preços**, no topo, ao lado da data dos preços, busca os preços de mercado de hoje das cartas da
+coleção. Roda em segundo plano (dá para navegar enquanto isso) e o Resumo mostra em que set está: é uma
+consulta ao Lorcast por set, que traz todas as cartas do set de uma vez, então o tempo depende de quantos sets a
+coleção tem, não de quantas cartas. O valor de cada carta **no momento da abertura** fica guardado e não muda,
+nem com esse botão nem ao reprocessar uma pipeline. É ele que aparece no vídeo e em "Na abertura".
 
 ### Nova pipeline
 
@@ -199,7 +201,7 @@ O painel **Postar nas redes**, no detalhe de uma abertura, posta o vídeo e vinc
   Com o YouTube conectado, a lista dos últimos vídeos do canal já aparece para vincular com um toque.
 - **Números:** YouTube e Instagram conectados são lidos pela API ao abrir o Resumo (quando algum vídeo está com a
   leitura de mais de 30 min) e em **↻ Atualizar números**, no gráfico de redes do Resumo, que lê todos os vídeos
-  vinculados de uma vez e mostra quando foi a leitura. **Atualizar números** no painel de uma pipeline lê só os
+  vinculados de uma vez, em segundo plano, e mostra quando foi a leitura. **Atualizar números** no painel de uma pipeline lê só os
   vídeos dela. No TikTok, sem API, use **Informar números**. Cada leitura fica guardada.
 - **Programar:** preencha **Programar a publicação** e os botões viram **Programar no YouTube / no Instagram**.
   No YouTube, o vídeo sobe na hora, fica privado e o próprio YouTube publica na data, mesmo com o PC desligado
@@ -272,6 +274,8 @@ no túnel, ou só redes de confiança.
 | POST | `/api/runs/{id}/rerun` | `{"from_step": "prices"}`, ou `null` para continuar de onde parou |
 | PATCH | `/api/runs/{id}` | `{"paid": 34.9, "paid_currency": "BRL"}`, `{"currency": "BRL"}` (moeda do vídeo) e/ou `{"narration": true}`; só o que for enviado muda |
 | POST | `/api/prices/refresh` | atualiza os preços de hoje dos sets da coleção (o preço na abertura não muda) |
+| GET | `/api/tasks` | tarefas de fundo do Resumo (`prices`, `social`): rodando, progresso e a mensagem do fim |
+| POST | `/api/tasks/prices`, `/api/tasks/social?max_age=1800` | atualiza os preços / os números das redes em segundo plano (uma de cada vez) |
 | PATCH | `/api/runs/{id}/cards/{uid}` | `{"foil": true}`: edita a carta (por enquanto, só o acabamento); fica pendente até reprocessar |
 | DELETE | `/api/runs/{id}/cards/{uid}` | tira uma carta da identificação (fica pendente até reprocessar) |
 | POST | `/api/runs/{id}/sanitize` | tira as cartas repetidas, deixando a primeira aparição de cada uma (pendente até reprocessar) |

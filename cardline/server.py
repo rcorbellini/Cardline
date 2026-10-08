@@ -111,6 +111,36 @@ class SyncJob:
         }
 
 
+class Task:
+    """Tarefa de fundo do Resumo (preços, números das redes): roda numa thread, uma de cada vez por tipo, e a
+    página acompanha pelo /api/tasks."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.state = {"running": False, "started_at": None, "finished_at": None, "ok": None, "message": None,
+                      "progress": None}
+
+    def start(self, work) -> dict:
+        with self.lock:
+            if self.state["running"]:
+                raise RuntimeError("Já está rodando; espere terminar.")
+            self.state = {"running": True, "started_at": db.now(), "finished_at": None, "ok": None,
+                          "message": "Começando", "progress": 0.0}
+        threading.Thread(target=self._run, args=(work,), daemon=True).start()
+        return dict(self.state)
+
+    def _run(self, work) -> None:
+        def progress(fraction: float, message: str | None = None) -> None:
+            self.state.update(progress=round(fraction, 3), **({"message": message} if message else {}))
+
+        try:
+            message = work(progress)
+            self.state.update(running=False, ok=True, progress=1.0, message=message, finished_at=db.now())
+        except Exception as e:  # noqa: BLE001 - qualquer falha vira mensagem na página
+            detail = e.detail if isinstance(e, HTTPException) else str(e)
+            self.state.update(running=False, ok=False, message=detail, finished_at=db.now())
+
+
 class RerunBody(BaseModel):
     from_step: str | None = None
 
@@ -261,6 +291,7 @@ def create_app(settings: Settings) -> FastAPI:
     sync_job = SyncJob(settings)
     yt = YouTubeLogin(settings)
     jobs = PostJobs(settings)
+    tasks = {"prices": Task(), "social": Task()}  # o Resumo mostra quando estão rodando
     edit_lock = threading.Lock()  # edições do scan.json não podem se intercalar
     settings.runs_dir.mkdir(parents=True, exist_ok=True)
     ollama = {"checked": 0.0, "available": False}
@@ -676,10 +707,11 @@ def create_app(settings: Settings) -> FastAPI:
         instagram.disconnect(settings)
         return instagram.status(settings)
 
-    def refresh_numbers(c, only_run: int | None = None) -> int:
+    def refresh_numbers(c, only_run: int | None = None, progress=lambda fraction, message=None: None) -> int:
         """Lê os números de cada post pela API da rede (YouTube e Instagram conectados); devolve quantos leu."""
         n = 0
         if youtube.status(settings)["connected"]:
+            progress(0.1, "Lendo o YouTube")
             posts = [(r, v) for r, v in social.linked(c, "youtube") if only_run in (None, r)]
             if posts:
                 found = net_call(youtube.stats, settings, [v for _, v in posts])
@@ -692,6 +724,7 @@ def create_app(settings: Settings) -> FastAPI:
         if instagram.status(settings)["connected"]:
             posts = [(r, m) for r, m in social.linked(c, "instagram") if only_run in (None, r)]
             if posts:
+                progress(0.5, "Lendo o Instagram")
                 try:
                     instagram.refresh(settings)  # renova o token de 60 dias com folga
                 except (instagram.InstagramError, OSError):
@@ -953,15 +986,56 @@ def create_app(settings: Settings) -> FastAPI:
         jobs.jobs.pop((run_id, network), None)
         return {"ok": True}
 
+    def collection_sets() -> list[str]:
+        return [r[0] for r in con().execute(
+            "SELECT DISTINCT cards.set_code FROM collection JOIN cards ON cards.id = collection.card_id ORDER BY 1")]
+
     @app.post("/api/prices/refresh")
     def refresh_current_prices():
         """Busca os preços de hoje dos sets da coleção; o preço na abertura de cada carta não muda."""
-        sets = [r[0] for r in con().execute(
-            "SELECT DISTINCT cards.set_code FROM collection JOIN cards ON cards.id = collection.card_id")]
         try:
-            return refresh_prices(settings, sets)
+            return refresh_prices(settings, collection_sets())
         except OSError as e:
             raise HTTPException(502, f"Não consegui buscar os preços no Lorcast ({e}).") from e
+
+    @app.get("/api/tasks")
+    def task_status():
+        """As tarefas de fundo do Resumo: preços e números das redes."""
+        return {name: dict(t.state) for name, t in tasks.items()}
+
+    @app.post("/api/tasks/prices")
+    def start_prices():
+        """Atualiza os preços de hoje em segundo plano (uma consulta ao Lorcast por set da coleção)."""
+        def work(progress):
+            try:
+                done = refresh_prices(settings, collection_sets(), progress)["sets"]
+            except OSError as e:
+                raise RuntimeError(f"Não consegui buscar os preços no Lorcast ({e}).") from e
+            return f"Preços de hoje atualizados ({len(done)} {'set' if len(done) == 1 else 'sets'})."
+
+        try:
+            return tasks["prices"].start(work)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+
+    @app.post("/api/tasks/social")
+    def start_social(max_age: float = 0):
+        """Lê os números de todos os vídeos vinculados em segundo plano. Com `max_age`, só se algum vídeo estiver
+        com a leitura mais velha que isso (ou sem leitura)."""
+        reads = last_reads(con())
+        if not reads:
+            return {**tasks["social"].state, "skipped": True}
+        if max_age and all(r and time.time() - datetime.fromisoformat(r).timestamp() < max_age for r in reads):
+            return {**tasks["social"].state, "fresh": True}
+
+        def work(progress):
+            n = refresh_numbers(con(), None, progress)
+            return f"{n} {'vídeo atualizado' if n == 1 else 'vídeos atualizados'}."
+
+        try:
+            return tasks["social"].start(work)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
 
     @app.delete("/api/runs/{run_id}")
     def delete(run_id: int):

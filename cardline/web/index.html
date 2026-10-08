@@ -27,6 +27,8 @@
   </header>
 
   <section id="view-resumo" class="view" hidden>
+    <p class="updated resumobar"><button class="btn ghost small" id="refresh-prices">↻ Atualizar preços</button>
+      <span id="updated"></span><span id="refresh-status" role="status"></span></p>
     <div class="stats" id="stats"></div>
     <section class="panel chartcard" aria-labelledby="chart-title">
       <div class="charthead">
@@ -58,9 +60,6 @@
       <div class="chartwrap ytcharts" id="yt-charts"></div>
       <details class="charttable" id="yt-tabledetails"><summary>Ver tabela</summary><div id="yt-table"></div></details>
     </section>
-    <div class="updated"><span id="updated"></span>
-      <button class="linkbtn" id="refresh-prices">Atualizar preços</button>
-      <span id="refresh-status" role="status"></span></div>
   </section>
 
   <section id="view-colecao" class="view" hidden>

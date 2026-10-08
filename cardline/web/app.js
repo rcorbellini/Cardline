@@ -939,34 +939,49 @@ new ResizeObserver(([entry]) => {
 }).observe($('#chart'));
 
 // ---- atualizar preços de hoje (o valor na abertura de cada carta não muda) ----
-$('#yt-refresh').onclick = async () => {
-  const btn = $('#yt-refresh'), status = $('#yt-refresh-status');
-  btn.disabled = true;
-  status.textContent = 'Lendo os números nas redes…';
-  try {
-    const r = await api('/api/social/stats', { method: 'POST' });
-    await refresh();
-    status.textContent = r.updated ? `${r.updated} ${r.updated === 1 ? 'vídeo atualizado' : 'vídeos atualizados'} agora.` : 'Nenhum vídeo para ler pela API.';
-  } catch (e) {
-    status.textContent = e.message;
-  }
-  btn.disabled = false;
+// ---- tarefas de fundo do Resumo: preços e números das redes (rodam no servidor; a página só acompanha) ----
+S.tasks = {};
+const taskSeen = {};  // tarefas que esta página viu rodando: só delas mostra a mensagem do fim
+let taskTimer = null;
+const TASK_UI = {
+  prices: { btn: '#refresh-prices', status: '#refresh-status', idle: '↻ Atualizar preços', busy: '↻ Atualizando preços…' },
+  social: { btn: '#yt-refresh', status: '#yt-refresh-status', idle: '↻ Atualizar números', busy: '↻ Atualizando números…' },
 };
-$('#refresh-prices').onclick = async () => {
-  const btn = $('#refresh-prices'), status = $('#refresh-status');
-  btn.disabled = true;
-  status.textContent = 'Buscando os preços de hoje…';
-  try {
-    const r = await api('/api/prices/refresh', { method: 'POST' });
-    S.meta = await api('/api/meta');
-    await refresh(true);
-    status.textContent = r.sets.length
-      ? 'Preços de hoje atualizados. O valor de cada carta na abertura continua o mesmo.' : 'Ainda não há cartas na coleção.';
-  } catch (e) {
-    status.textContent = e.message;
+function renderTasks() {
+  for (const [name, ui] of Object.entries(TASK_UI)) {
+    const t = S.tasks[name] || {}, btn = $(ui.btn), status = $(ui.status);
+    btn.disabled = !!t.running;
+    btn.textContent = t.running ? ui.busy : ui.idle;
+    status.textContent = t.running ? `${t.message || 'Começando'}…` : taskSeen[name] ? t.message || '' : '';
+    status.classList.toggle('taskerr', t.ok === false);
   }
-  btn.disabled = false;
-};
+}
+async function pollTasks() {
+  clearTimeout(taskTimer);
+  let st;
+  try { st = await api('/api/tasks'); } catch { return; }
+  const finished = Object.keys(st).filter(k => S.tasks[k]?.running && !st[k].running);
+  for (const k of Object.keys(st)) if (st[k].running) taskSeen[k] = true;
+  S.tasks = st;
+  renderTasks();
+  if (finished.includes('prices')) { S.meta = await api('/api/meta'); await refresh(true); }
+  else if (finished.length) await refresh();
+  if (Object.values(st).some(t => t.running)) taskTimer = setTimeout(pollTasks, 1500);
+}
+async function startTask(name, query = '') {
+  try {
+    const st = await api(`/api/tasks/${name}${query}`, { method: 'POST' });
+    if (st.running) { S.tasks[name] = st; taskSeen[name] = true; renderTasks(); }
+  } catch (e) {
+    S.tasks[name] = { ...(S.tasks[name] || {}), running: false, ok: false, message: e.message };
+    taskSeen[name] = true;
+    renderTasks();
+    return;
+  }
+  pollTasks();
+}
+$('#refresh-prices').onclick = () => startTask('prices');
+$('#yt-refresh').onclick = () => startTask('social');
 
 // ---- sets: base de coleções, ícones e sincronização ----
 S.sets = [];
@@ -1189,13 +1204,10 @@ async function ytSync() {  // a situação das redes muda fora da página (token
     if (st.login?.status === 'waiting' && !ytLoginTimer) { ytLogin = st.login; ytPollLogin(); }
   } catch (e) { console.warn(e); }
 }
-async function refreshSocialStats(maxAge) {
+async function refreshSocialStats(maxAge) {  // em segundo plano: o Resumo mostra que está lendo
   if (!S.runs.some(r => Object.keys(r.posts || {}).length)) return;
   if (!S.meta?.youtube?.connected && !S.meta?.instagram?.connected) return;
-  try {
-    const r = await api(`/api/social/stats?max_age=${maxAge}`, { method: 'POST' });
-    if (r.updated) await refresh();
-  } catch (e) { console.warn(e); }
+  await startTask('social', maxAge ? `?max_age=${maxAge}` : '');
 }
 
 function numbersLine(p) {
@@ -1522,7 +1534,7 @@ async function route() {
   for (const v of ['resumo', 'colecao', 'pipelines', 'run', 'nova', 'sets']) $('#view-' + v).hidden = v !== view;
   if (view === 'sets') loadSets();
   ytSync();
-  if (view === 'resumo') refreshSocialStats(1800);
+  if (view === 'resumo') { refreshSocialStats(1800); pollTasks(); }
   document.querySelectorAll('nav.tabs a').forEach(a => {
     const on = a.dataset.tab === view || (a.dataset.tab === 'pipelines' && (view === 'run' || view === 'nova'));
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');

@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -98,3 +101,40 @@ def test_refresh_endpoint_updates_today_but_not_the_opening_price(settings, run,
         assert client.post("/api/prices/refresh").json()["sets"] == ["1"]
         owned = client.get("/api/collection").json()["owned"][0]
     assert owned["price"] == 3.0 and owned["copies"][0]["paid"] == 1.0
+
+
+def wait_task(client, name):
+    for _ in range(100):
+        task = client.get("/api/tasks").json()[name]
+        if not task["running"]:
+            return task
+        time.sleep(0.05)
+    return task
+
+
+def test_prices_update_in_the_background_one_at_a_time(settings, run, monkeypatch):
+    con = db.connect(settings.db_path)
+    with con:
+        con.execute("INSERT INTO collection(card_id, run_id, price_usd, added_at) VALUES ('crd_a', ?, 1.0, 'x')", (run,))
+    release = threading.Event()
+
+    def slow_fetch(set_id):  # um set por consulta ao Lorcast
+        release.wait(5)
+        return [lorcast_card("crd_a", "1", 3.0, 7.0)]
+
+    monkeypatch.setattr("cardline.catalog.lorcast.fetch_set_cards", slow_fetch)
+    with TestClient(create_app(settings)) as client:
+        started = client.post("/api/tasks/prices").json()
+        assert started["running"] is True
+        assert client.post("/api/tasks/prices").status_code == 409  # uma de cada vez
+        for _ in range(100):  # a página mostra em que set está
+            if (message := client.get("/api/tasks").json()["prices"]["message"]).startswith("Set"):
+                break
+            time.sleep(0.02)
+        assert message == "Set 1 de 1: The First Chapter"
+        release.set()
+        task = wait_task(client, "prices")
+        assert task["ok"] is True and task["message"] == "Preços de hoje atualizados (1 set)."
+        assert client.get("/api/collection").json()["owned"][0]["price"] == 3.0
+        assert client.post("/api/tasks/social").json()["skipped"] is True  # nenhum vídeo para ler pela API
+
