@@ -190,3 +190,55 @@ def test_on_the_public_address_the_google_button_signs_in(settings, monkeypatch)
         assert client.get("/api/auth/me").json()["user"]["email"] == "dono@teste.dev"
         again = client.get(f"/api/auth/google/callback?state={q['state']}&code=abc", follow_redirects=False)
         assert "login_erro" in again.headers["location"]  # o mesmo retorno não serve duas vezes
+
+
+def test_logo_social_accounts_and_collection_belong_to_each_user(settings, monkeypatch):
+    import dataclasses
+    import io
+
+    from PIL import Image
+
+    from cardline import instagram, logo
+
+    settings.allowed_emails = ["amigo@teste.dev"]
+    con = db.connect(settings.db_path)
+    boss, pal = auth.upsert_user(con, "dono@teste.dev"), auth.upsert_user(con, "amigo@teste.dev")
+    of = lambda user: dataclasses.replace(settings, account=user.id)  # noqa: E731
+    # o dono tem logo padrão, canal do YouTube e Instagram conectados; o amigo, nada
+    png = io.BytesIO()
+    Image.new("RGBA", (40, 40), (255, 0, 0, 255)).save(png, "PNG")
+    logo.save(of(boss), png.getvalue(), name=logo.DEFAULT)
+    youtube._write(youtube.token_path(of(boss)), {"refresh_token": "r", "channel": {"title": "Canal do Dono"}})
+    instagram._write(of(boss), {"access_token": "t", "username": "dono_ig"})
+    mine = new_run(settings, "dono.mp4", boss.id)
+    with con:
+        con.execute("INSERT INTO cards(id, set_code, number, name) VALUES ('crd_a', '1', '1', 'A')")
+        con.execute("INSERT INTO collection(card_id, run_id, added_at, user_id) VALUES ('crd_a', ?, 'x', ?)", (mine, boss.id))
+    with TestClient(create_app(settings)) as client:
+        class As:  # um cliente só (a aplicação sobe uma vez), com a sessão de cada conta
+            def __init__(self, user):
+                self.headers = {"cookie": f"{auth.COOKIE}={auth.new_session(con, user.id)}"}
+
+            def __getattr__(self, method):
+                return lambda url, **kw: getattr(client, method)(url, headers=self.headers, **kw)
+
+        owner, friend = As(boss), As(pal)
+        m_owner, m_friend = owner.get("/api/meta").json(), friend.get("/api/meta").json()
+        assert m_owner["logo"]["default"] == "padrao.png" and m_friend["logo"]["default"] is None
+        assert owner.get("/logos/padrao.png").status_code == 200
+        assert friend.get("/logos/padrao.png").status_code == 404  # o logo do dono não aparece para o amigo
+        assert owner.get("/api/youtube").json()["connected"] and not friend.get("/api/youtube").json()["connected"]
+        assert owner.get("/api/instagram").json()["username"] == "dono_ig"
+        assert not friend.get("/api/instagram").json()["connected"]
+        # o amigo envia o logo dele: fica na pasta dele, e o dono não vê
+        sent = friend.post("/api/logos", content=png.getvalue()).json()["logo"]
+        assert logo.path(of(pal), sent) and not logo.path(of(boss), sent)
+        assert owner.get(f"/logos/{sent}").status_code == 404
+        # a coleção e as pipelines: cada um só a sua
+        assert len(owner.get("/api/collection").json()["owned"]) == 1
+        assert friend.get("/api/collection").json()["owned"] == [] and friend.get("/api/runs").json() == []
+        # postar e vincular nas redes só na pipeline que é sua (e com a conta das suas redes)
+        assert friend.put(f"/api/runs/{mine}/posts", json={"url": "https://youtu.be/abc"}).status_code == 404
+        assert friend.post(f"/api/runs/{mine}/posts/youtube", json={"title": "x"}).status_code == 404
+        assert friend.post("/api/youtube/disconnect").status_code == 200  # desconecta só o canal dele (nenhum)
+        assert owner.get("/api/youtube").json()["connected"]
