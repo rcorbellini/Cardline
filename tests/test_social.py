@@ -269,3 +269,15 @@ def test_views_by_day_add_up_the_last_read_of_each_post(settings):
         {"day": "2026-10-08", "views": {"youtube": 140, "tiktok": 300}},
     ]
 
+
+
+def test_caption_invites_people_to_make_their_own():
+    scan = {"cards": [{"set": "1", "pack": 1}]}
+    assert social.site_name("https://cardline.com.br") == "www.cardline.com.br"
+    assert social.site_name("https://www.cardline.com.br/") == "www.cardline.com.br" and social.site_name("") is None
+    caption = social.suggestion(scan, {"1": "The First Chapter"}, site="www.cardline.com.br")["caption"]
+    assert "Vídeo feito pelo www.cardline.com.br. Faça o seu também" in caption
+    assert caption.index("www.cardline.com.br") < caption.index("#lorcana")  # o convite antes das hashtags
+    sealed = social.sealed_suggestion({"packs": [{"set": "1"}]}, {"1": "The First Chapter"}, site="www.cardline.com.br")
+    assert "boosters lacrados" in sealed["caption"] and "www.cardline.com.br" in sealed["caption"]
+    assert "cardline" not in social.suggestion(scan, {"1": "The First Chapter"})["caption"]  # sem endereço público, sem convite

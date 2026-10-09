@@ -678,8 +678,9 @@ def create_app(settings: Settings) -> FastAPI:
                                 "writer": script.get("writer"), "voz": script.get("voz") or settings.narration_voice}
             if scan and run["kind"] in pipeline.VIDEO_KINDS:
                 names = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM sets")}
-                out["post_suggestion"] = (social.sealed_suggestion(scan, names, settings.youtube_tags) if run["kind"] == "lacrados"
-                                          else social.suggestion(scan, names, settings.youtube_tags))
+                site = social.site_name(settings.public_url)  # o convite da legenda: "feito pelo www.cardline.com.br"
+                out["post_suggestion"] = (social.sealed_suggestion(scan, names, settings.youtube_tags, site)
+                                          if run["kind"] == "lacrados" else social.suggestion(scan, names, settings.youtube_tags, site))
             log = folder / "pipeline.log"
             lines = log.read_text(errors="replace").splitlines()[-120:] if log.exists() else []
             out["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in lines)

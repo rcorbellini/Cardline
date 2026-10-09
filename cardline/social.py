@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -173,8 +174,26 @@ def game_tags(scan: dict, tags: list[str] = ()) -> list[str]:
     return list(tags) if game is games.LORCANA else list(game.tags)
 
 
-def suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> dict:
-    """Título e legenda sugeridos para o vídeo da abertura (sem spoiler do resultado)."""
+def site_name(public_url: str) -> str | None:
+    """O endereço como ele aparece na legenda ("https://cardline.com.br" → "www.cardline.com.br"); sem endereço
+    público, a legenda não convida ninguém."""
+    host = urllib.parse.urlparse(public_url).hostname if public_url else None
+    if not host:
+        return None
+    return host if host.startswith("www.") or host.count(".") > 2 else f"www.{host}"
+
+
+def invite(site: str | None, sealed: bool = False) -> str:
+    """O convite no fim da legenda: o vídeo é do cardline, e quem assiste pode fazer o seu."""
+    if not site:
+        return ""
+    how = ("filme os seus boosters lacrados e receba o vídeo com o valor da pilha" if sealed
+           else "envie o vídeo da sua abertura e receba de volta com o preço de cada carta")
+    return f"Vídeo feito pelo {site}. Faça o seu também: {how}.\n\n"
+
+
+def suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = (), site: str | None = None) -> dict:
+    """Título e legenda sugeridos para o vídeo da abertura (sem spoiler do resultado), com o convite do site."""
     game = games.get(scan.get("game"))
     tags = game_tags(scan, tags)
     packs = max((c.get("pack") or 1 for c in scan["cards"]), default=1)
@@ -183,12 +202,12 @@ def suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> d
     title = f"Abrindo {what} de {' + '.join(sets)} | {game.name}"
     caption = (f"Abertura de {what} de {game.name}: {', '.join(sets)}.\n"
                "Preço de cada carta pelo mercado (TCGplayer) no dia da abertura. Será que valeu?\n\n"
-               f"{game.hashtags}")
+               f"{invite(site)}{game.hashtags}")
     return {"title": title[:100], "caption": caption, "tags": list(dict.fromkeys([*tags, *sets])),
             "hashtags": HASHTAGS}
 
 
-def sealed_suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = ()) -> dict:
+def sealed_suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = (), site: str | None = None) -> dict:
     """Título e legenda do vídeo de registro de lacrados (sem o valor: ele aparece no fim do vídeo)."""
     game = games.get(scan.get("game"))
     tags = game_tags(scan, tags)
@@ -198,7 +217,7 @@ def sealed_suggestion(scan: dict, set_names: dict[str, str], tags: list[str] = (
     title = f"Contando {what} | {game.name}"
     caption = (f"Registro de {what} de {game.name}: {', '.join(sets[:6])}{' e outros' if len(sets) > 6 else ''}.\n"
                "Preço de mercado de cada booster (TCGplayer) no dia do registro. Quanto vale a pilha?\n\n"
-               f"{game.hashtags} #lacrado")
+               f"{invite(site, sealed=True)}{game.hashtags} #lacrado")
     return {"title": title[:100], "caption": caption, "tags": list(dict.fromkeys([*tags, *sets, "lacrado"])),
             "hashtags": HASHTAGS}
 
